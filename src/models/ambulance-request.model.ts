@@ -1,0 +1,93 @@
+import mongoose, { Schema, Types } from "mongoose";
+
+/**
+ * Patient-app ambulance request — the lightweight, real, persisted record
+ * behind "Book Ambulance" / SOS-dispatch in the patient app.
+ *
+ * Lifecycle: SEARCHING → ASSIGNED → ARRIVED → ON_TRIP → COMPLETED (or CANCELLED).
+ * The admin dispatch screen lists SEARCHING requests and assigns an ambulance +
+ * driver; on assignment the backend emits a socket event + FCM push to the user
+ * so the app flips from "Finding…" to live tracking.
+ */
+
+export type AmbulanceRequestStatus =
+  | "SEARCHING"
+  | "ASSIGNED"
+  | "ARRIVED"
+  | "ON_TRIP"
+  | "COMPLETED"
+  | "CANCELLED";
+
+interface Loc {
+  address?: string;
+  lat?: number;
+  lng?: number;
+}
+
+export interface IAmbulanceRequest {
+  _id: Types.ObjectId;
+  userId: Types.ObjectId;
+  type?: string; // BLS / ALS / etc. (display)
+  emergency: boolean;
+  pickup: Loc;
+  drop?: Loc;
+  patientName?: string;
+  notes?: string;
+  status: AmbulanceRequestStatus;
+  // Assignment
+  ambulanceId?: Types.ObjectId;
+  driverStaffId?: Types.ObjectId;
+  driverName?: string;
+  driverPhone?: string;
+  vehicleNumber?: string;
+  etaMinutes?: number;
+  otp?: string;
+  assignedAt?: Date;
+  // Live ambulance position (pushed by the assigned driver/staff app).
+  driverLocation?: Loc;
+  lastLocationAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const LocSchema = new Schema<Loc>(
+  { address: String, lat: Number, lng: Number },
+  { _id: false },
+);
+
+const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    type: String,
+    emergency: { type: Boolean, default: false },
+    pickup: { type: LocSchema, default: () => ({}) },
+    drop: { type: LocSchema },
+    patientName: String,
+    notes: String,
+    status: {
+      type: String,
+      enum: ["SEARCHING", "ASSIGNED", "ARRIVED", "ON_TRIP", "COMPLETED", "CANCELLED"],
+      default: "SEARCHING",
+      index: true,
+    },
+    ambulanceId: { type: Schema.Types.ObjectId, ref: "Ambulance" },
+    driverStaffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff" },
+    driverName: String,
+    driverPhone: String,
+    vehicleNumber: String,
+    etaMinutes: Number,
+    otp: String,
+    assignedAt: Date,
+    driverLocation: { type: LocSchema },
+    lastLocationAt: Date,
+  },
+  { timestamps: true },
+);
+
+AmbulanceRequestSchema.index({ userId: 1, status: 1, createdAt: -1 });
+
+export const AmbulanceRequest = mongoose.model<IAmbulanceRequest>(
+  "AmbulanceRequest",
+  AmbulanceRequestSchema,
+);
+export default AmbulanceRequest;

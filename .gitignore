@@ -1,0 +1,45 @@
+# ===== Dependencies =====
+node_modules/
+.pnpm-store/
+.yarn/
+.npm/
+
+# ===== Build output =====
+dist/
+build/
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# ===== Environment & secrets — NEVER commit =====
+.env
+.env.*
+!.env.example
+*.pem
+*secret*.json
+*credentials*.json
+firebase-service-account.json
+**/serviceAccount*.json
+
+# ===== Runtime data / user uploads =====
+uploads/
+tmp/
+temp/
+
+# ===== Logs =====
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===== Coverage / test output =====
+coverage/
+.nyc_output/
+
+# ===== Editor / OS =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
