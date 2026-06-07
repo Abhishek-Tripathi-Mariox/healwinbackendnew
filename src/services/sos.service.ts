@@ -150,21 +150,9 @@ export const triggerSOS = async (
   // Notify emergency contacts
   await notifyEmergencyContacts(sosAlert);
 
-  // Notify admin dashboard via socket. getIO() THROWS when sockets aren't
-  // initialised — guard it so a socket hiccup never fails the SOS trigger.
-  try {
-    socketUtils.getIO().to("admin").emit("sos:new", {
-      alertId: sosAlert._id,
-      location,
-      triggeredBy,
-      bookingId,
-      userId,
-      driverId,
-      timestamp: new Date(),
-    });
-  } catch {
-    /* sockets not ready — alert still persisted + pushed below */
-  }
+  // NOTE: the admin alarm (sos:new) is emitted by the /sos/trigger controller
+  // with the patient's name + address — emitting a second (generic) one here
+  // produced a DUPLICATE alert card, so it's intentionally not emitted now.
 
   // Notify the other party (if user triggers, notify driver and vice versa)
   if (booking) {
