@@ -157,58 +157,60 @@ export const triggerSOS = async (req: Request, res: Response) => {
       fullAddress || address
     );
 
-    // Also surface the SOS in the admin SOS Dashboard (which lists
-    // SOSSubmission records) so dispatchers see app-triggered SOS alongside
-    // call/form ones. Carries the patient's real name/phone for context.
-    const patient: any = userId
-      ? await User.findById(userId).select("fullName mobileNumber countryCode").lean()
-      : null;
-    const hasCoords = coords.lat !== 0 || coords.lng !== 0;
-    // Map the app's free-text type to the SOSSubmission emergencyType enum
-    // (enum: MEDICAL/ACCIDENT/FIRE/NATURAL_DISASTER/VIOLENCE/OTHER). A mismatch
-    // here previously threw a validation error, so the SOS never reached the
-    // dashboard and the richer realtime alert was skipped.
-    const ET: Record<string, string> = {
-      "medical emergency": "MEDICAL",
-      medical: "MEDICAL",
-      accident: "ACCIDENT",
-      fire: "FIRE",
-      "natural disaster": "NATURAL_DISASTER",
-      violence: "VIOLENCE",
-      other: "OTHER",
-    };
-    const emergencyType = ET[String(type || "").toLowerCase()] || "OTHER";
+    // Also surface the SOS in the admin SOS Dashboard (SOSSubmission list) +
+    // raise the realtime alarm. This is BEST-EFFORT: the core SOS alert above
+    // already succeeded, so a failure here must never turn the request into a
+    // 500 (the patient must always get "SOS sent").
+    let submission: any = null;
+    try {
+      const patient: any = userId
+        ? await User.findById(userId).select("fullName mobileNumber countryCode").lean()
+        : null;
+      const hasCoords = coords.lat !== 0 || coords.lng !== 0;
+      // Map the app's free-text type to the SOSSubmission emergencyType enum.
+      const ET: Record<string, string> = {
+        "medical emergency": "MEDICAL",
+        medical: "MEDICAL",
+        accident: "ACCIDENT",
+        fire: "FIRE",
+        "natural disaster": "NATURAL_DISASTER",
+        violence: "VIOLENCE",
+        other: "OTHER",
+      };
+      const emergencyType = ET[String(type || "").toLowerCase()] || "OTHER";
 
-    const submission = await SOSSubmission.create({
-      type: "FORM",
-      userId: userId || undefined,
-      name: req.body.name || patient?.fullName || "App SOS",
-      phone: patient?.mobileNumber
-        ? `${patient.countryCode || ""}${patient.mobileNumber}`
-        : "N/A",
-      address: fullAddress || address || undefined,
-      emergencyType,
-      description: description || undefined,
-      status: "PENDING",
-      ...(hasCoords
-        ? { location: { type: "Point", coordinates: [coords.lng, coords.lat] } }
-        : {}),
-    });
+      submission = await SOSSubmission.create({
+        type: "FORM",
+        userId: userId || undefined,
+        name: req.body.name || patient?.fullName || "App SOS",
+        phone: patient?.mobileNumber
+          ? `${patient.countryCode || ""}${patient.mobileNumber}`
+          : "N/A",
+        address: fullAddress || address || undefined,
+        emergencyType,
+        description: description || undefined,
+        status: "PENDING",
+        ...(hasCoords
+          ? { location: { type: "Point", coordinates: [coords.lng, coords.lat] } }
+          : {}),
+      });
 
-    // Realtime alert → admin alarm modal (patient + location for context).
-    emitToAdmin("sos:new", {
-      sosId: String(submission._id),
-      emergency: true,
-      patientName: req.body.name || patient?.fullName || "A patient",
-      address: fullAddress || address || "Location unavailable",
-    });
+      emitToAdmin("sos:new", {
+        sosId: String(submission._id),
+        emergency: true,
+        patientName: req.body.name || patient?.fullName || "A patient",
+        address: fullAddress || address || "Location unavailable",
+      });
+    } catch (e: any) {
+      console.error("SOS dashboard/submission step failed (non-fatal):", e?.message);
+    }
 
     res.status(201).json({
       success: true,
       message: "SOS alert triggered. Help is on the way.",
       data: {
         sosId: sosAlert._id,
-        submissionId: submission._id,
+        submissionId: submission?._id,
         status: sosAlert.status,
       },
     });

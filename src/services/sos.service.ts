@@ -150,10 +150,10 @@ export const triggerSOS = async (
   // Notify emergency contacts
   await notifyEmergencyContacts(sosAlert);
 
-  // Notify admin dashboard via socket
-  const io = socketUtils.getIO();
-  if (io) {
-    io.to("admin").emit("sos:new", {
+  // Notify admin dashboard via socket. getIO() THROWS when sockets aren't
+  // initialised — guard it so a socket hiccup never fails the SOS trigger.
+  try {
+    socketUtils.getIO().to("admin").emit("sos:new", {
       alertId: sosAlert._id,
       location,
       triggeredBy,
@@ -162,6 +162,8 @@ export const triggerSOS = async (
       driverId,
       timestamp: new Date(),
     });
+  } catch {
+    /* sockets not ready — alert still persisted + pushed below */
   }
 
   // Notify the other party (if user triggers, notify driver and vice versa)
