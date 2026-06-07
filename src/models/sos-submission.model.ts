@@ -53,11 +53,13 @@ const SOSSubmissionSchema = new Schema<ISOSSubmission>(
       type: String,
       trim: true,
     },
+    // No default on `type` — otherwise Mongoose materialises an empty
+    // { type: "Point" } (no coordinates) for location-less SOS, which the
+    // 2dsphere index rejects ("Can't extract geo keys"). Unset = no location.
     location: {
       type: {
         type: String,
         enum: ["Point"],
-        default: "Point",
       },
       coordinates: {
         type: [Number],

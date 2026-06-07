@@ -1,5 +1,15 @@
 import { Request, Response } from "express";
 import { SOSSubmission } from "../models/sos-submission.model";
+import { emitToAdmin } from "../utils/socket.util";
+
+/** Raise the admin alarm modal for a website/public SOS submission. */
+const alertAdmin = (submission: any) =>
+  emitToAdmin("sos:new", {
+    sosId: String(submission._id),
+    emergency: true,
+    patientName: submission.name || "A caller",
+    address: submission.address || "Location unavailable",
+  });
 
 /**
  * Submit SOS Call record (public - no auth required)
@@ -35,13 +45,7 @@ export const submitSOSCall = async (req: Request, res: Response) => {
     });
 
     // Emit socket event for real-time admin notification
-    const io = req.app.get("io");
-    if (io) {
-      io.to("admin").emit("sos:new-submission", {
-        type: "CALL",
-        submission,
-      });
-    }
+    alertAdmin(submission);
 
     res.status(201).json({
       success: true,
@@ -102,13 +106,7 @@ export const submitSOSForm = async (req: Request, res: Response) => {
     });
 
     // Emit socket event for real-time admin notification
-    const io = req.app.get("io");
-    if (io) {
-      io.to("admin").emit("sos:new-submission", {
-        type: "FORM",
-        submission,
-      });
-    }
+    alertAdmin(submission);
 
     res.status(201).json({
       success: true,
@@ -146,13 +144,7 @@ export const recordAppDownload = async (req: Request, res: Response) => {
     });
 
     // Emit socket event
-    const io = req.app.get("io");
-    if (io) {
-      io.to("admin").emit("sos:new-submission", {
-        type: "APP_DOWNLOAD",
-        submission,
-      });
-    }
+    alertAdmin(submission);
 
     res.status(201).json({
       success: true,
