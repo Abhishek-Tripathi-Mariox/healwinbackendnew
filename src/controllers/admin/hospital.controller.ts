@@ -115,7 +115,7 @@ export const listHospitalStaff = async (
 ) => {
   const { role, isActive, search } = req.query as Record<string, string | undefined>;
   const filter: any = {
-    hospitalId: req.params.id,
+    hospitalId: (req.params.id as string),
     isDeleted: false,
   };
   if (role) filter.role = role;
@@ -148,7 +148,7 @@ export const createHospitalStaff = async (
   next: NextFunction,
 ) => {
   const adminId = (req as any).adminId;
-  const hospitalId = req.params.id;
+  const hospitalId = (req.params.id as string);
   const hospital = await Centre.findById(hospitalId).lean();
   if (!hospital) {
     req.rCode = 5;
@@ -201,7 +201,7 @@ export const assignStaffToHospital = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const hospitalId = req.params.id;
+  const hospitalId = (req.params.id as string);
   const { staffId } = req.body || {};
   if (!staffId) {
     req.rCode = 0;
@@ -242,8 +242,8 @@ export const removeStaffFromHospital = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const hospitalId = req.params.id;
-  const staffId = req.params.staffId;
+  const hospitalId = (req.params.id as string);
+  const staffId = (req.params.staffId as string);
   const staff = await AmbulanceStaff.findById(staffId);
   if (!staff || String(staff.hospitalId) !== String(hospitalId)) {
     req.rCode = 5;

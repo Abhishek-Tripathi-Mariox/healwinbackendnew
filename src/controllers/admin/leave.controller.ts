@@ -45,7 +45,7 @@ export const saveType = async (
     color: b.color,
     isActive: b.isActive !== false,
   };
-  const item = req.params.id
+  const item = (req.params.id as string)
     ? await LeaveType.findByIdAndUpdate(req.params.id, payload, { new: true })
     : await LeaveType.create(payload);
 

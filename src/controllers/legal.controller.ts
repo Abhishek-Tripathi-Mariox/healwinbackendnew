@@ -37,7 +37,7 @@ export const getPublicLegalDocument = async (
     return;
   }
 
-  const doc = await LegalDocument.findOne({ type, audience })
+  const doc = await LegalDocument.findOne({ type, audience } as any)
     .select("type audience title content version updatedAt")
     .lean();
 

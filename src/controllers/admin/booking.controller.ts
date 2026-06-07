@@ -62,7 +62,7 @@ export const getAllBookings = async (req: Request, res: Response) => {
  * Get booking by ID
  */
 export const getBookingById = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const booking = await Booking.findById(id)
     .populate("userId", "fullName mobileNumber email profileImage")
@@ -85,7 +85,7 @@ export const getBookingById = async (req: Request, res: Response) => {
  * Cancel booking (Admin)
  */
 export const cancelBooking = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { reason, refundAmount } = req.body;
 
   const booking = await Booking.findById(id);
@@ -125,7 +125,7 @@ export const cancelBooking = async (req: Request, res: Response) => {
  * Process refund
  */
 export const processRefund = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { amount, reason } = req.body;
 
   const booking = await Booking.findById(id);
@@ -215,7 +215,7 @@ export const getAvailableDrivers = async (_req: Request, res: Response) => {
  * Assign driver manually
  */
 export const assignDriver = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { driverId } = req.body;
 
   const booking = await Booking.findById(id);

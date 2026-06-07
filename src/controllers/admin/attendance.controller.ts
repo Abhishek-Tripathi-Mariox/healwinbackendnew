@@ -76,7 +76,7 @@ export const byEmployeeMonth = async (
   const end = new Date(year, month - 1, total, 23, 59, 59, 999);
 
   const records = await Attendance.find({
-    employeeId: req.params.id,
+    employeeId: (req.params.id as string),
     date: { $gte: start, $lte: end },
   })
     .sort({ date: 1 })

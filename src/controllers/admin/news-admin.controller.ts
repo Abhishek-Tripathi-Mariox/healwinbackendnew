@@ -133,7 +133,7 @@ export const updateArticle = async (req: Request, res: Response) => {
   // If marking as featured, un-feature all others
   if (update.isFeatured) {
     await NewsArticle.updateMany(
-      { _id: { $ne: req.params.id } },
+      { _id: { $ne: (req.params.id as string) } },
       { isFeatured: false },
     );
   }

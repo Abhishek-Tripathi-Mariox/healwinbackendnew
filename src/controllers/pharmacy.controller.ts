@@ -61,7 +61,7 @@ export const adminDetail = async (
   next: NextFunction,
 ) => {
   const pharmacy = await Pharmacy.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   })
     .populate("state", "name")
@@ -138,7 +138,7 @@ export const adminUpdate = async (
 ) => {
   const b = req.body || {};
   const pharmacy = await Pharmacy.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!pharmacy) {
@@ -167,7 +167,7 @@ export const adminApprove = async (
   next: NextFunction,
 ) => {
   const pharmacy = await Pharmacy.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!pharmacy) {
@@ -191,7 +191,7 @@ export const adminRemove = async (
   next: NextFunction,
 ) => {
   const pharmacy = await Pharmacy.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!pharmacy) {

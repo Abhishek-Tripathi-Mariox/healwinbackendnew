@@ -85,7 +85,7 @@ export const searchCentres = async (req: Request, res: Response) => {
 
 // Get single centre
 export const getCentreByIdPublic = async (req: Request, res: Response) => {
-  const centre = await Centre.findOne({ _id: req.params.id, isActive: true })
+  const centre = await Centre.findOne({ _id: (req.params.id as string), isActive: true })
     .populate("state", "name code")
     .populate("district", "name")
     .populate("division", "name")

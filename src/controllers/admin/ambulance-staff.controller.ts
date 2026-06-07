@@ -131,7 +131,7 @@ export const update = async (
   next: NextFunction,
 ) => {
   const staff = await AmbulanceStaff.findOneAndUpdate(
-    { _id: req.params.id, isDeleted: false },
+    { _id: (req.params.id as string), isDeleted: false },
     req.body,
     { returnDocument: "after" },
   );
@@ -152,7 +152,7 @@ export const deactivate = async (
   next: NextFunction,
 ) => {
   const staff = await AmbulanceStaff.findOneAndUpdate(
-    { _id: req.params.id, isDeleted: false },
+    { _id: (req.params.id as string), isDeleted: false },
     { isActive: false, isOnline: false, isDutyOn: false },
     { returnDocument: "after" },
   );
@@ -182,7 +182,7 @@ export const softDelete = async (
   next: NextFunction,
 ) => {
   const staff = await AmbulanceStaff.findOneAndUpdate(
-    { _id: req.params.id, isDeleted: false },
+    { _id: (req.params.id as string), isDeleted: false },
     {
       isDeleted: true,
       isActive: false,

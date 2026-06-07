@@ -14,7 +14,7 @@ export const listStates = async (_req: Request, res: Response) => {
 
 // List districts by state
 export const listDistrictsByState = async (req: Request, res: Response) => {
-  const { stateId } = req.params;
+  const { stateId } = req.params as Record<string, string>;
   const districts = await District.find({ state: stateId, isActive: true })
     .populate("state", "name code")
     .sort({ sortOrder: 1, name: 1 });
@@ -34,7 +34,7 @@ export const listDistricts = async (req: Request, res: Response) => {
 
 // List divisions by district
 export const listDivisionsByDistrict = async (req: Request, res: Response) => {
-  const { districtId } = req.params;
+  const { districtId } = req.params as Record<string, string>;
   const divisions = await Division.find({
     district: districtId,
     isActive: true,

@@ -16,7 +16,7 @@ export const listServices = async (req: Request, res: Response) => {
 
 export const getServiceBySlug = async (req: Request, res: Response) => {
   const service = await Service.findOne({
-    slug: req.params.slug,
+    slug: (req.params.slug as string),
     isActive: true,
   }).populate("category", "name slug icon ctaOptions");
   if (!service) {

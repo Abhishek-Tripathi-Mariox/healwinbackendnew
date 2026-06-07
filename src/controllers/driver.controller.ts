@@ -254,7 +254,7 @@ export const updateAddress = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { addressId } = req.params;
+    const { addressId } = req.params as Record<string, string>;
     const updateData = req.body;
 
     await DriverModel.updateOne(
@@ -276,7 +276,7 @@ export const deleteAddress = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { addressId } = req.params;
+    const { addressId } = req.params as Record<string, string>;
 
     await DriverModel.updateOne(
       { _id: driverId },
@@ -573,7 +573,7 @@ export const acceptBooking = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
 
     // Use dispatch service to handle acceptance (auto-closes for other drivers)
     const result = await BookingDispatchService.handleDriverAcceptance(
@@ -612,7 +612,7 @@ export const rejectBooking = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
 
     // Use dispatch service to handle rejection
     await BookingDispatchService.handleDriverRejection(bookingId, driverId);
@@ -631,7 +631,7 @@ export const arrivedAtPickup = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
 
     const booking = await BookingModel.findOneAndUpdate(
       {
@@ -667,7 +667,7 @@ export const verifyPickupOtp = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const { otp } = req.body;
 
     const booking = await BookingModel.findOne({
@@ -707,7 +707,7 @@ export const startTrip = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
 
     const booking = await BookingModel.findOneAndUpdate(
       {
@@ -743,7 +743,7 @@ export const completeTrip = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
 
     const booking = await BookingModel.findOne({
       _id: bookingId,
@@ -785,7 +785,7 @@ export const collectCashPayment = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
 
     const booking = await BookingModel.findOneAndUpdate(
       {
@@ -818,7 +818,7 @@ export const getBookingDetails = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
 
     const booking = await BookingModel.findOne({
       _id: bookingId,
@@ -950,7 +950,7 @@ export const updateVehicle = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { vehicleId } = req.params;
+    const { vehicleId } = req.params as Record<string, string>;
     const updateData = req.body;
 
     const vehicle = await DriverVehicleModel.findOneAndUpdate(
@@ -974,7 +974,7 @@ export const deleteVehicle = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { vehicleId } = req.params;
+    const { vehicleId } = req.params as Record<string, string>;
 
     await DriverVehicleModel.deleteOne({
       _id: vehicleId,
@@ -995,7 +995,7 @@ export const setActiveVehicle = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { vehicleId } = req.params;
+    const { vehicleId } = req.params as Record<string, string>;
 
     // Deactivate all vehicles
     await DriverVehicleModel.updateMany(
@@ -1077,7 +1077,7 @@ export const getTrainingModuleDetails = async (
   next: NextFunction,
 ) => {
   try {
-    const { moduleId } = req.params;
+    const { moduleId } = req.params as Record<string, string>;
 
     const module = {
       _id: moduleId,
@@ -1122,7 +1122,7 @@ export const completeTrainingLesson = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { moduleId, lessonId } = req.params;
+    const { moduleId, lessonId } = req.params as Record<string, string>;
 
     await DriverModel.findByIdAndUpdate(driverId, {
       $addToSet: { completedLessons: `${moduleId}_${lessonId}` },
@@ -1241,7 +1241,7 @@ export const getBadgeRequirements = async (
   next: NextFunction,
 ) => {
   try {
-    const { badgeId } = req.params;
+    const { badgeId } = req.params as Record<string, string>;
 
     const requirements: Record<string, any> = {
       "3": { type: "trips", target: 50, description: "Complete 50 trips" },

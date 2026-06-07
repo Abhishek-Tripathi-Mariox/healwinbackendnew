@@ -78,7 +78,7 @@ export const createVehicleType = async (req: Request, res: Response) => {
  * Update vehicle type
  */
 export const updateVehicleType = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const vehicleType = await VehicleType.findByIdAndUpdate(id, req.body, {
     returnDocument: "after",
@@ -101,7 +101,7 @@ export const updateVehicleType = async (req: Request, res: Response) => {
  * Toggle vehicle type active status
  */
 export const toggleVehicleType = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const vehicleType = await VehicleType.findById(id);
 
@@ -125,7 +125,7 @@ export const toggleVehicleType = async (req: Request, res: Response) => {
  * Soft delete vehicle type
  */
 export const deleteVehicleType = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const vehicleType = await VehicleType.findByIdAndUpdate(
     id,
@@ -150,7 +150,7 @@ export const deleteVehicleType = async (req: Request, res: Response) => {
  * Restore deleted vehicle type
  */
 export const restoreVehicleType = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const vehicleType = await VehicleType.findByIdAndUpdate(
     id,
@@ -231,7 +231,7 @@ export const createAddonService = async (req: Request, res: Response) => {
  * Update addon service
  */
 export const updateAddonService = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const addon = await AddonService.findByIdAndUpdate(id, req.body, {
     returnDocument: "after",
@@ -342,7 +342,7 @@ export const getAppSettings = async (req: Request, res: Response) => {
  * Update app setting
  */
 export const updateAppSetting = async (req: Request, res: Response) => {
-  const { key } = req.params;
+  const { key } = req.params as Record<string, string>;
   const { value } = req.body;
 
   const setting = await AppConfig.findOneAndUpdate(

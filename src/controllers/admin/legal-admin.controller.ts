@@ -62,7 +62,7 @@ export const getLegalDocument = async (
   req: Request,
   res: Response,
 ) => {
-  const { type, audience } = req.params;
+  const { type, audience } = req.params as Record<string, string>;
   if (!isValidType(type) || !isValidAudience(audience)) {
     res.status(400).json({
       code: 0,
@@ -92,7 +92,7 @@ export const upsertLegalDocument = async (
   req: Request,
   res: Response,
 ) => {
-  const { type, audience } = req.params;
+  const { type, audience } = req.params as Record<string, string>;
   if (!isValidType(type) || !isValidAudience(audience)) {
     res.status(400).json({
       code: 0,

@@ -111,7 +111,7 @@ export const getUserTickets = async (req: Request, res: Response) => {
 export const getTicketById = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
-    const { ticketId } = req.params;
+    const { ticketId } = req.params as Record<string, string>;
 
     const ticket = await SupportTicket.findOne({
       _id: ticketId,
@@ -154,7 +154,7 @@ export const getTicketById = async (req: Request, res: Response) => {
 export const addMessage = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
-    const { ticketId } = req.params;
+    const { ticketId } = req.params as Record<string, string>;
     const { message, messageType, attachments } = req.body;
 
     // Verify ticket belongs to user and is not closed
@@ -208,7 +208,7 @@ export const addMessage = async (req: Request, res: Response) => {
 export const closeTicket = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
-    const { ticketId } = req.params;
+    const { ticketId } = req.params as Record<string, string>;
     const { rating, feedback } = req.body;
 
     const ticket = await SupportTicket.findOne({

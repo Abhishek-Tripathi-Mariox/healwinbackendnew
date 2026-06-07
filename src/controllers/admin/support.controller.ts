@@ -25,7 +25,7 @@ export const getAllTickets = async (req: Request, res: Response) => {
  * Get ticket by ID
  */
 export const getTicket = async (req: Request, res: Response) => {
-  const { ticketId } = req.params;
+  const { ticketId } = req.params as Record<string, string>;
 
   const ticket = await SupportService.getTicketById(ticketId);
 
@@ -45,7 +45,7 @@ export const getTicket = async (req: Request, res: Response) => {
  * Assign ticket to admin
  */
 export const assignTicket = async (req: Request, res: Response) => {
-  const { ticketId } = req.params;
+  const { ticketId } = req.params as Record<string, string>;
   const { adminId } = req.body;
 
   const ticket = await SupportService.assignTicket(
@@ -70,7 +70,7 @@ export const assignTicket = async (req: Request, res: Response) => {
  * Update ticket status
  */
 export const updateTicketStatus = async (req: Request, res: Response) => {
-  const { ticketId } = req.params;
+  const { ticketId } = req.params as Record<string, string>;
   const { status, resolution } = req.body;
 
   const ticket = await SupportService.updateTicketStatus(
@@ -96,7 +96,7 @@ export const updateTicketStatus = async (req: Request, res: Response) => {
  * Reply to ticket
  */
 export const replyToTicket = async (req: Request, res: Response) => {
-  const { ticketId } = req.params;
+  const { ticketId } = req.params as Record<string, string>;
   const { message, attachments } = req.body;
 
   const ticket = await SupportService.getTicketById(ticketId);

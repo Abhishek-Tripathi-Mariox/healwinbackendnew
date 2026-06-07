@@ -53,7 +53,7 @@ export const detail = async (
   next: NextFunction,
 ) => {
   const employee = await HrEmployee.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   })
     .populate("departmentId", "name")
@@ -153,7 +153,7 @@ export const update = async (
 ) => {
   const b = req.body || {};
   const employee = await HrEmployee.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!employee) {
@@ -184,7 +184,7 @@ export const updateSalaryStructure = async (
 ) => {
   const b = req.body || {};
   const employee = await HrEmployee.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!employee) {
@@ -211,7 +211,7 @@ export const remove = async (
   next: NextFunction,
 ) => {
   const employee = await HrEmployee.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!employee) {

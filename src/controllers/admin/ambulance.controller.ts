@@ -146,7 +146,7 @@ export const assign = async (
 
   try {
     const updated = await Ambulance.findByIdAndUpdate(
-      req.params.id,
+      (req.params.id as string),
       { [field]: staff._id },
       { returnDocument: "after" },
     );
@@ -173,7 +173,7 @@ export const unassign = async (
   const { role } = req.body as { role: "driver" | "attendant" };
   const field = role === "driver" ? "assignedDriverId" : "assignedAttendantId";
   const updated = await Ambulance.findByIdAndUpdate(
-    req.params.id,
+    (req.params.id as string),
     { [field]: null },
     { returnDocument: "after" },
   );

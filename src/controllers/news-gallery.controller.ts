@@ -27,7 +27,7 @@ export const getPublishedArticles = async (req: Request, res: Response) => {
 // Get single article by slug
 export const getArticleBySlug = async (req: Request, res: Response) => {
   const article = await NewsArticle.findOne({
-    slug: req.params.slug,
+    slug: (req.params.slug as string),
     isPublished: true,
   }).select("-createdBy -updatedBy");
 

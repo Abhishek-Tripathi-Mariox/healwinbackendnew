@@ -43,7 +43,7 @@ export const listCareers = async (_req: Request, res: Response) => {
 };
 
 export const getCareer = async (req: Request, res: Response) => {
-  const career = await Career.findOne({ _id: req.params.id, isActive: true })
+  const career = await Career.findOne({ _id: (req.params.id as string), isActive: true })
     .populate("states", "name code")
     .populate("districts", "name state");
   if (!career) {
@@ -315,7 +315,7 @@ export const applyToCareer = async (req: Request, res: Response) => {
     selectedStates,
     selectedDistricts,
   } = req.body;
-  const careerId = req.params.id;
+  const careerId = (req.params.id as string);
 
   const normalizedEmail = String(email || "")
     .trim()

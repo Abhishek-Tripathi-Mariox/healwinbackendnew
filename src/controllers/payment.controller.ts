@@ -29,7 +29,7 @@ export const getPaymentMethods = async (req: Request, res: Response) => {
 export const createBookingPaymentOrder = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
 
     const result = await PaymentService.createBookingPaymentOrder(
       new Types.ObjectId(bookingId),
@@ -65,7 +65,7 @@ export const createBookingPaymentOrder = async (req: Request, res: Response) => 
  */
 export const verifyBookingPayment = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const { orderId, paymentId, signature } = req.body;
 
     if (!orderId || !paymentId || !signature) {
@@ -110,7 +110,7 @@ export const verifyBookingPayment = async (req: Request, res: Response) => {
 export const payUsingWallet = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
 
     const result = await PaymentService.payUsingWallet(
       userId,
@@ -284,7 +284,7 @@ export const handleWebhook = async (req: Request, res: Response) => {
  */
 export const requestRefund = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const { amount, reason } = req.body;
 
     const result = await PaymentService.processRefund(

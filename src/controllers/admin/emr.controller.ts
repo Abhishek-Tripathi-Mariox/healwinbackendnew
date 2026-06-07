@@ -22,7 +22,7 @@ export const listByPatient = async (
   next: NextFunction,
 ) => {
   const patient = await HospitalPatient.findOne({
-    _id: req.params.patientId,
+    _id: (req.params.patientId as string),
     isDeleted: false,
   }).lean();
   if (!patient) {
@@ -32,7 +32,7 @@ export const listByPatient = async (
     return next();
   }
 
-  const encounters = await EmrEncounter.find({ patientId: req.params.patientId })
+  const encounters = await EmrEncounter.find({ patientId: (req.params.patientId as string) })
     .sort({ visitDate: -1 })
     .populate("doctorId", "fullName email roleName")
     .lean();

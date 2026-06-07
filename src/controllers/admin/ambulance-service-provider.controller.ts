@@ -59,7 +59,7 @@ export const detail = async (
   next: NextFunction,
 ) => {
   const provider = await AmbulanceServiceProvider.findById(
-    req.params.id,
+    (req.params.id as string),
   ).lean();
   if (!provider) {
     req.rCode = 5;
@@ -82,7 +82,7 @@ export const update = async (
   next: NextFunction,
 ) => {
   const provider = await AmbulanceServiceProvider.findByIdAndUpdate(
-    req.params.id,
+    (req.params.id as string),
     req.body,
     { returnDocument: "after" },
   );
@@ -103,7 +103,7 @@ export const softDelete = async (
   next: NextFunction,
 ) => {
   const activeAmbulances = await Ambulance.countDocuments({
-    providerId: req.params.id,
+    providerId: (req.params.id as string),
     isActive: true,
   });
   if (activeAmbulances > 0) {
@@ -113,7 +113,7 @@ export const softDelete = async (
     return next();
   }
   const provider = await AmbulanceServiceProvider.findByIdAndUpdate(
-    req.params.id,
+    (req.params.id as string),
     { isActive: false },
     { returnDocument: "after" },
   );

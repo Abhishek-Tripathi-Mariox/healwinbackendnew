@@ -57,7 +57,7 @@ export const update = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const patch: any = {};
   if (typeof req.body.label === "string") patch.label = req.body.label.trim();
   if (typeof req.body.isActive === "boolean") patch.isActive = req.body.isActive;
@@ -89,7 +89,7 @@ export const remove = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const item = await OffDutyReason.findByIdAndDelete(id).lean();
   if (!item) {
     return res.status(404).json({ rCode: 0, rMsg: "not_found", rData: {} });

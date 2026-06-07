@@ -39,7 +39,7 @@ export const save = async (req: Request, _res: Response, next: NextFunction) => 
     type: b.type || "public",
     isActive: b.isActive !== false,
   };
-  const item = req.params.id
+  const item = (req.params.id as string)
     ? await Holiday.findByIdAndUpdate(req.params.id, payload, { new: true })
     : await Holiday.create(payload);
 

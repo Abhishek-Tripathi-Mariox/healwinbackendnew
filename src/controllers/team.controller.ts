@@ -12,7 +12,7 @@ export const listTeamMembers = async (_req: Request, res: Response) => {
 
 export const getTeamMember = async (req: Request, res: Response) => {
   const member = await TeamMember.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isActive: true,
   });
   if (!member) {
@@ -26,7 +26,7 @@ export const getTeamMember = async (req: Request, res: Response) => {
 /* Public profile lookup by uniqueId — for QR verification */
 export const getTeamMemberByUniqueId = async (req: Request, res: Response) => {
   const member = await TeamMember.findOne({
-    uniqueId: req.params.uniqueId,
+    uniqueId: (req.params.uniqueId as string),
     isActive: true,
   });
   if (!member) {

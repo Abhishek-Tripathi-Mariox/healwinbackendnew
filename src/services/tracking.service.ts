@@ -57,7 +57,7 @@ export const updateDriverLocation = async (
   // Check if driver has active booking, emit to user
   const activeBooking = await Booking.findOne({
     driverId,
-    status: { $in: ["ASSIGNED", "DRIVER_ARRIVED", "PICKED_UP", "IN_TRANSIT"] },
+    status: { $in: ["ASSIGNED", "DRIVER_ARRIVED", "PICKED", "IN_PROGRESS"] },
   });
 
   if (activeBooking) {

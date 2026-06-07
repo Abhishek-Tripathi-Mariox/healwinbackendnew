@@ -140,7 +140,7 @@ export const getAvailablePromos = async (req: Request, res: Response) => {
  */
 export const getPromoDetails = async (req: Request, res: Response) => {
   try {
-    const { code } = req.params;
+    const { code } = req.params as Record<string, string>;
     const userId = (req as any).user._id;
 
     const promo = await PromoCode.findOne({

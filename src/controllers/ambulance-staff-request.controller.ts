@@ -63,7 +63,7 @@ export const activeRequest = async (req: Request, _res: Response, next: NextFunc
 
 const own = async (req: Request) => {
   const r: any = await AmbulanceRequest.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     driverStaffId: sid(req),
   });
   return r;

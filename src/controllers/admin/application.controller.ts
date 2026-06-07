@@ -87,7 +87,7 @@ export const updateApplicationStatus = async (req: Request, res: Response) => {
   const oldStatus = existingApp.status;
 
   const application = await CareerApplication.findByIdAndUpdate(
-    req.params.id,
+    (req.params.id as string),
     { status },
     { returnDocument: "after" },
   )

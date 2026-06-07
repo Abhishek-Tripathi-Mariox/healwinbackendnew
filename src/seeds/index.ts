@@ -179,7 +179,7 @@ const seedDatabase = async () => {
     ];
 
     for (const st of serviceTypes) {
-      await ServiceType.findOneAndUpdate({ code: st.code }, st, {
+      await ServiceType.findOneAndUpdate({ code: st.code } as any, st as any, {
         upsert: true,
         returnDocument: "after",
       });

@@ -47,7 +47,7 @@ export const getAllPromos = async (req: Request, res: Response) => {
  * Get promo by ID
  */
 export const getPromoById = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const promo = await PromoCode.findById(id).populate(
     "applicableVehicleTypes",
@@ -122,7 +122,7 @@ export const createPromo = async (req: Request, res: Response) => {
  * Update promo code
  */
 export const updatePromo = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const updateData = req.body;
 
   // Don't allow code change
@@ -150,7 +150,7 @@ export const updatePromo = async (req: Request, res: Response) => {
  * Delete promo code (soft delete)
  */
 export const deletePromo = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const promo = await PromoService.deletePromoCode(new Types.ObjectId(id));
 
@@ -170,7 +170,7 @@ export const deletePromo = async (req: Request, res: Response) => {
  * Get promo code usage stats
  */
 export const getPromoStats = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const stats = await PromoService.getPromoCodeStats(new Types.ObjectId(id));
 
@@ -181,7 +181,7 @@ export const getPromoStats = async (req: Request, res: Response) => {
  * Toggle promo code status
  */
 export const togglePromoStatus = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const promo = await PromoCode.findById(id);
 

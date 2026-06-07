@@ -95,7 +95,7 @@ export const getMyEnterprise = async (req: Request, res: Response) => {
 export const updateEnterprise = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
-    const { enterpriseId } = req.params;
+    const { enterpriseId } = req.params as Record<string, string>;
 
     const enterprise = await EnterpriseService.updateEnterprise(
       new Types.ObjectId(enterpriseId),
@@ -237,7 +237,7 @@ export const addEnterpriseUser = async (req: Request, res: Response) => {
 export const removeEnterpriseUser = async (req: Request, res: Response) => {
   try {
     const adminUserId = (req as any).user._id;
-    const { userId: targetUserId } = req.params;
+    const { userId: targetUserId } = req.params as Record<string, string>;
 
     const userEnterprise =
       await EnterpriseService.getUserEnterprise(adminUserId);

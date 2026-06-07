@@ -54,7 +54,7 @@ export const updateState = async (req: Request, res: Response) => {
   if (code !== undefined) {
     const existing = await State.findOne({
       code: code.toUpperCase(),
-      _id: { $ne: req.params.id },
+      _id: { $ne: (req.params.id as string) },
     });
     if (existing)
       return res

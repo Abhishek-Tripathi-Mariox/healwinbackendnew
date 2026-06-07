@@ -64,7 +64,7 @@ export const updateDesignation = async (req: Request, res: Response) => {
   if (sortOrder !== undefined) update.sortOrder = Number(sortOrder);
 
   const designation = await Designation.findByIdAndUpdate(
-    req.params.id,
+    (req.params.id as string),
     update,
     { returnDocument: "after" },
   );

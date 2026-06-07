@@ -9,7 +9,7 @@ import { SOSSubmission } from "../../models/sos-submission.model";
 export const createDispatch = async (req: Request, res: Response) => {
   try {
     const adminId = (req as any).admin._id;
-    const { id } = req.params;
+    const { id } = req.params as Record<string, string>;
     const {
       dispatchType,
       serviceName,
@@ -96,7 +96,7 @@ export const getDispatchesForSubmission = async (
   res: Response,
 ) => {
   try {
-    const { id } = req.params;
+    const { id } = req.params as Record<string, string>;
 
     const dispatches = await EmergencyDispatch.find({ sosSubmission: id })
       .populate("dispatchedBy", "name email")
@@ -168,7 +168,7 @@ export const getAllDispatches = async (req: Request, res: Response) => {
  */
 export const updateDispatchStatus = async (req: Request, res: Response) => {
   try {
-    const { dispatchId } = req.params;
+    const { dispatchId } = req.params as Record<string, string>;
     const { status, responseNotes, cancelReason } = req.body;
 
     const validStatuses = [

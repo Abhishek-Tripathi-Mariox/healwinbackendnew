@@ -80,7 +80,7 @@ export const updateLocatorServiceType = async (req: Request, res: Response) => {
     let slug = slugify(name);
     const existing = await LocatorServiceType.findOne({
       slug,
-      _id: { $ne: req.params.id },
+      _id: { $ne: (req.params.id as string) },
     });
     if (existing) slug = `${slug}-${Date.now()}`;
     update.slug = slug;
@@ -93,7 +93,7 @@ export const updateLocatorServiceType = async (req: Request, res: Response) => {
   if (sortOrder !== undefined) update.sortOrder = Number(sortOrder);
 
   const type = await LocatorServiceType.findByIdAndUpdate(
-    req.params.id,
+    (req.params.id as string),
     update,
     { returnDocument: "after" },
   );

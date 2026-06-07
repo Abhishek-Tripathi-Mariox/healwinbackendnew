@@ -94,7 +94,7 @@ export const updateUserAddress = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { houseNo, area, district, state, pinCode } = req.body;
 
   if (houseNo || area || district || state || pinCode) {
@@ -174,7 +174,7 @@ export const selectAddress = async (
   next: NextFunction,
 ) => {
   const userId = (req as any).userId;
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const query = {
     userId,
@@ -200,7 +200,7 @@ export const getUserAddressDetail = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const address = await UserAddressService.fetch(id);
 

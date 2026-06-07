@@ -360,7 +360,7 @@ export const getUserBookings = async (req: Request, res: Response) => {
  */
 export const getBookingById = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const userId = (req as any).user._id;
 
     const booking = await Booking.findOne({ _id: bookingId, userId })
@@ -392,7 +392,7 @@ export const getBookingById = async (req: Request, res: Response) => {
  */
 export const trackBooking = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const userId = (req as any).user._id;
 
     const booking = await Booking.findOne({ _id: bookingId, userId })
@@ -433,7 +433,7 @@ export const trackBooking = async (req: Request, res: Response) => {
  */
 export const applyPromoCode = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const { promoCode } = req.body;
     const userId = (req as any).user._id;
 
@@ -499,7 +499,7 @@ export const applyPromoCode = async (req: Request, res: Response) => {
  */
 export const applyCoins = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const { coinsToUse } = req.body;
     const userId = (req as any).user._id;
 
@@ -598,7 +598,7 @@ export const getScheduledBookings = async (req: Request, res: Response) => {
  */
 export const cancelScheduledBooking = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const userId = (req as any).user._id;
 
     const booking = await Booking.findOne({
@@ -636,14 +636,14 @@ export const cancelScheduledBooking = async (req: Request, res: Response) => {
  */
 export const cancelBooking = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const { cancellationReasonId } = req.body;
     const userId = (req as any).user._id;
 
     const booking = await Booking.findOne({
       _id: bookingId,
       userId,
-      status: { $in: ["PENDING", "ACCEPTED", "DRIVER_ASSIGNED"] },
+      status: { $in: ["SEARCHING", "ASSIGNED", "DRIVER_ARRIVED"] },
     });
 
     if (!booking) {
@@ -693,7 +693,7 @@ export const cancelBooking = async (req: Request, res: Response) => {
  */
 export const rateBooking = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const { rating, review } = req.body;
     const userId = (req as any).user._id;
 
@@ -740,7 +740,7 @@ export const rateBooking = async (req: Request, res: Response) => {
  */
 export const getBookingInvoice = async (req: Request, res: Response) => {
   try {
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
     const userId = (req as any).user._id;
 
     const booking = await Booking.findOne({

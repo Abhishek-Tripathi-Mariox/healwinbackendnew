@@ -157,7 +157,7 @@ export const nearbyAmbulances = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const sos = await resolveSosLocation(req.params.sosId);
+  const sos = await resolveSosLocation((req.params.sosId as string));
   if (!sos.ok) {
     if (sos.kind === "not_found") {
       req.rCode = 5;
@@ -209,7 +209,7 @@ export const dispatch = async (
   const adminId = req.adminId!;
   const { ambulanceId } = req.body as { ambulanceId: string };
 
-  const sos = await resolveSosLocation(req.params.sosId);
+  const sos = await resolveSosLocation((req.params.sosId as string));
   if (!sos.ok) {
     req.rCode = 5;
     req.msg =
@@ -248,7 +248,7 @@ export const dispatch = async (
   let dispatchDoc: any;
   try {
     dispatchDoc = await createDispatch({
-      sosId: new Types.ObjectId(req.params.sosId),
+      sosId: new Types.ObjectId((req.params.sosId as string)),
       ambulanceId: new Types.ObjectId(picked.ambulanceId),
       adminId: new Types.ObjectId(adminId),
       roadDistanceKm: picked.roadDistanceKm,
@@ -274,7 +274,7 @@ export const dispatch = async (
 
   const payload: Record<string, string | number | boolean> = {
     dispatchId: String(dispatchDoc._id),
-    sosId: String(req.params.sosId),
+    sosId: String((req.params.sosId as string)),
     patientLat: lat,
     patientLng: lng,
     address: sos.address || "",
@@ -314,7 +314,7 @@ export const dispatch = async (
   // here so the row visibly moves to "In Progress" in the dashboard.
   if (sos.source === "SUBMISSION") {
     await SOSSubmission.updateOne(
-      { _id: req.params.sosId, status: "PENDING" },
+      { _id: (req.params.sosId as string), status: "PENDING" },
       {
         status: "IN_PROGRESS",
         respondedBy: new Types.ObjectId(adminId),
@@ -326,7 +326,7 @@ export const dispatch = async (
   emitToUser(picked.driverId, "dispatch:incoming", payload);
   emitToUser(picked.attendantId, "dispatch:incoming_info", payload);
   emitToUser(String(adminId), "sos:dispatched", {
-    sosId: String(req.params.sosId),
+    sosId: String((req.params.sosId as string)),
     dispatchId: String(dispatchDoc._id),
   });
 
@@ -353,7 +353,7 @@ export const searchAmbulances = async (
     return next();
   }
   // Use the SOS coords if available so the search still shows distance.
-  const sos = await resolveSosLocation(req.params.sosId);
+  const sos = await resolveSosLocation((req.params.sosId as string));
   const lat = sos.ok ? sos.lat : undefined;
   const lng = sos.ok ? sos.lng : undefined;
   const results = await searchAmbulancesByMobile(mobile, lat, lng);
@@ -371,7 +371,7 @@ export const getDispatchForSos = async (
   next: NextFunction,
 ) => {
   const dispatchDoc = await EmergencyDispatch.findOne({
-    sosSubmission: req.params.sosId,
+    sosSubmission: (req.params.sosId as string),
     dispatchType: "AMBULANCE",
   })
     .sort({ createdAt: -1 })
@@ -459,7 +459,7 @@ export const cancelDispatch = async (
   const adminId = req.adminId!;
 
   const dispatch: any = await EmergencyDispatch.findOne({
-    sosSubmission: req.params.sosId,
+    sosSubmission: (req.params.sosId as string),
     status: { $in: ["DISPATCHED", "ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE"] },
   }).sort({ dispatchedAt: -1 });
 
@@ -484,11 +484,11 @@ export const cancelDispatch = async (
   // Revert the SOS to the state createDispatch advanced it from, so it
   // reappears in the actionable queue for re-dispatch.
   await SOSAlert.updateOne(
-    { _id: req.params.sosId, status: "RESPONDED" },
+    { _id: (req.params.sosId as string), status: "RESPONDED" },
     { status: "ACTIVE" },
   );
   await SOSSubmission.updateOne(
-    { _id: req.params.sosId, status: "IN_PROGRESS" },
+    { _id: (req.params.sosId as string), status: "IN_PROGRESS" },
     { status: "PENDING" },
   );
 
@@ -496,15 +496,15 @@ export const cancelDispatch = async (
   if (dispatch.driverStaffId)
     emitToUser(String(dispatch.driverStaffId), "dispatch:cancelled", {
       dispatchId: String(dispatch._id),
-      sosId: String(req.params.sosId),
+      sosId: String((req.params.sosId as string)),
     });
   if (dispatch.attendantStaffId)
     emitToUser(String(dispatch.attendantStaffId), "dispatch:cancelled", {
       dispatchId: String(dispatch._id),
-      sosId: String(req.params.sosId),
+      sosId: String((req.params.sosId as string)),
     });
   emitToUser(String(adminId), "sos:dispatch-cancelled", {
-    sosId: String(req.params.sosId),
+    sosId: String((req.params.sosId as string)),
     dispatchId: String(dispatch._id),
   });
 

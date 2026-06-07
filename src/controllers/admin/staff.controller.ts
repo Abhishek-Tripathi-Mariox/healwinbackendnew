@@ -77,7 +77,7 @@ export const getAllStaff = async (req: Request, res: Response) => {
  * Get staff member by ID
  */
 export const getStaffById = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const staff = await Admin.findOne({ _id: id, isDeleted: false })
     .select("-password -resetPasswordToken -resetPasswordExpires")
@@ -167,7 +167,7 @@ export const createStaff = async (req: Request, res: Response) => {
  * Update staff member
  */
 export const updateStaff = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { fullName, email, phone, roleId, customPermissions, profileImage, doctorProfile } =
     req.body;
 
@@ -267,7 +267,7 @@ export const updateStaff = async (req: Request, res: Response) => {
  * Delete staff member (soft delete)
  */
 export const deleteStaff = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const staff = await Admin.findOne({ _id: id, isDeleted: false });
 
@@ -305,7 +305,7 @@ export const deleteStaff = async (req: Request, res: Response) => {
  * Toggle staff status (activate/deactivate)
  */
 export const toggleStaffStatus = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const staff = await Admin.findOne({ _id: id, isDeleted: false });
 
@@ -348,7 +348,7 @@ export const toggleStaffStatus = async (req: Request, res: Response) => {
  * Reset staff password
  */
 export const resetStaffPassword = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { newPassword } = req.body;
 
   if (!newPassword || newPassword.length < 8) {
@@ -410,7 +410,7 @@ export const getAllRoles = async (req: Request, res: Response) => {
  * Get role by ID
  */
 export const getRoleById = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const role = await Role.findById(id).populate("createdBy", "fullName email");
 
@@ -490,7 +490,7 @@ export const createRole = async (req: Request, res: Response) => {
  * Update role
  */
 export const updateRole = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { name, description, permissions } = req.body;
 
   const role = await Role.findById(id);
@@ -571,7 +571,7 @@ export const updateRole = async (req: Request, res: Response) => {
  * Delete role
  */
 export const deleteRole = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const role = await Role.findById(id);
 

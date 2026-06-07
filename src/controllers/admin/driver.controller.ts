@@ -92,7 +92,7 @@ export const getPendingVerifications = async (req: Request, res: Response) => {
  * Get driver by ID
  */
 export const getDriverById = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const driver = await Driver.findById(id);
 
@@ -133,7 +133,7 @@ export const getDriverById = async (req: Request, res: Response) => {
  * Verify driver (Approve/Reject)
  */
 export const verifyDriver = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { action, rejectionReason } = req.body;
 
   if (!["approve", "reject"].includes(action)) {
@@ -174,7 +174,7 @@ export const verifyDriver = async (req: Request, res: Response) => {
  * Update driver status
  */
 export const updateDriverStatus = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { status, reason } = req.body;
 
   const validStatuses = [
@@ -220,7 +220,7 @@ export const updateDriverStatus = async (req: Request, res: Response) => {
  * Get driver documents
  */
 export const getDriverDocuments = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const kyc = await DriverKYC.findOne({ driverId: id });
 
@@ -264,7 +264,7 @@ export const getDriverStats = async (req: Request, res: Response) => {
  * Update driver profile
  */
 export const updateDriver = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const {
     fullName,
     email,
@@ -299,7 +299,7 @@ export const updateDriver = async (req: Request, res: Response) => {
  * Update bank details
  */
 export const updateBankDetails = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { accountHolderName, bankName, accountNumber, ifscCode } = req.body;
 
   const driver = await Driver.findByIdAndUpdate(
@@ -333,7 +333,7 @@ export const updateBankDetails = async (req: Request, res: Response) => {
  * Verify bank details
  */
 export const verifyBankDetails = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const driver = await Driver.findByIdAndUpdate(
     id,
@@ -358,7 +358,7 @@ export const verifyBankDetails = async (req: Request, res: Response) => {
  * Get driver vehicles
  */
 export const getDriverVehicles = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const vehicles = await DriverVehicle.find({ driverId: id, isDeleted: false })
     .populate("vehicleTypeId", "name icon maxWeightKg")
@@ -371,7 +371,7 @@ export const getDriverVehicles = async (req: Request, res: Response) => {
  * Delete driver (soft delete)
  */
 export const deleteDriver = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const driver = await Driver.findByIdAndUpdate(
     id,
@@ -401,7 +401,7 @@ export const deleteDriver = async (req: Request, res: Response) => {
  * Restore deleted driver
  */
 export const restoreDriver = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const driver = await Driver.findByIdAndUpdate(
     id,
@@ -426,7 +426,7 @@ export const restoreDriver = async (req: Request, res: Response) => {
  * Get driver bookings
  */
 export const getDriverBookings = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { page = 0, limit = 20 } = req.query;
 
   const bookings = await Booking.find({ driverId: id })
@@ -450,7 +450,7 @@ export const getDriverBookings = async (req: Request, res: Response) => {
  * Get driver earnings
  */
 export const getDriverEarnings = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { dateFrom, dateTo } = req.query;
 
   const matchQuery: any = { driverId: id, status: "COMPLETED" };

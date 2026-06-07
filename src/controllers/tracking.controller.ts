@@ -8,7 +8,7 @@ import * as TrackingService from "../services/tracking.service";
 export const getBookingTracking = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
-    const { bookingId } = req.params;
+    const { bookingId } = req.params as Record<string, string>;
 
     const tracking = await TrackingService.getBookingTracking(
       new Types.ObjectId(bookingId),
@@ -32,7 +32,7 @@ export const getBookingTracking = async (req: Request, res: Response) => {
  */
 export const getDriverLocation = async (req: Request, res: Response) => {
   try {
-    const { driverId } = req.params;
+    const { driverId } = req.params as Record<string, string>;
 
     const location = await TrackingService.getDriverLocation(
       new Types.ObjectId(driverId),
@@ -193,7 +193,7 @@ export const getDriversOnMap = async (req: Request, res: Response) => {
  */
 export const getDriverLocationHistory = async (req: Request, res: Response) => {
   try {
-    const { driverId } = req.params;
+    const { driverId } = req.params as Record<string, string>;
     const { startTime, endTime } = req.query;
 
     if (!startTime || !endTime) {

@@ -82,7 +82,7 @@ router.post("/family-members", verifyUserToken, async (req, res) => {
 router.put("/family-members/:id", verifyUserToken, async (req, res) => {
   const b = req.body ?? {};
   const updated = await PatientFamilyMember.findOneAndUpdate(
-    { _id: req.params.id, userId: uid(req) },
+    { _id: (req.params.id as string), userId: uid(req) },
     { $set: { name: b.name, relation: b.relation, phone: b.phone, age: b.age != null ? String(b.age) : undefined, gender: b.gender, bloodGroup: b.bloodGroup, conditions: b.conditions } },
     { new: true },
   );
@@ -91,7 +91,7 @@ router.put("/family-members/:id", verifyUserToken, async (req, res) => {
 });
 
 router.delete("/family-members/:id", verifyUserToken, async (req, res) => {
-  await PatientFamilyMember.deleteOne({ _id: req.params.id, userId: uid(req) });
+  await PatientFamilyMember.deleteOne({ _id: (req.params.id as string), userId: uid(req) });
   ok(res);
 });
 
@@ -138,7 +138,7 @@ router.get("/doctors", async (req, res) => {
   res.json({ success: true, data: list.map(toAppDoctor), message: "ok" });
 });
 router.get("/doctors/:id", async (req, res) => {
-  const a = await Admin.findOne({ _id: req.params.id, roleName: "Doctor", isDeleted: false }).lean();
+  const a = await Admin.findOne({ _id: (req.params.id as string), roleName: "Doctor", isDeleted: false }).lean();
   if (!a) return res.status(404).json({ success: false, message: "Doctor not found" });
   ok(res, toAppDoctor(a));
 });
@@ -164,7 +164,7 @@ router.get("/pharmacy/products", async (req, res) => {
   res.json({ success: true, data: list, message: "ok" });
 });
 router.get("/pharmacy/products/:id", async (req, res) => {
-  const p = await PharmacyProduct.findOne({ _id: req.params.id, isDeleted: false }).lean();
+  const p = await PharmacyProduct.findOne({ _id: (req.params.id as string), isDeleted: false }).lean();
   if (!p) return res.status(404).json({ success: false, message: "Product not found" });
   ok(res, p);
 });
@@ -190,7 +190,7 @@ router.get("/lab/tests", async (req, res) => {
   res.json({ success: true, data: list, message: "ok" });
 });
 router.get("/lab/tests/:id", async (req, res) => {
-  const t = await LabTest.findOne({ _id: req.params.id, isDeleted: false }).lean();
+  const t = await LabTest.findOne({ _id: (req.params.id as string), isDeleted: false }).lean();
   if (!t) return res.status(404).json({ success: false, message: "Test not found" });
   ok(res, t);
 });
@@ -242,7 +242,7 @@ router.post(
 );
 
 router.get("/medical-records/:id", verifyUserToken, async (req, res) => {
-  const r = await PatientMedicalRecord.findOne({ _id: req.params.id, userId: uid(req) }).lean();
+  const r = await PatientMedicalRecord.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
   if (!r) {
     return res.status(404).json({ success: false, message: "Record not found" });
   }
@@ -250,7 +250,7 @@ router.get("/medical-records/:id", verifyUserToken, async (req, res) => {
 });
 
 router.delete("/medical-records/:id", verifyUserToken, async (req, res) => {
-  await PatientMedicalRecord.deleteOne({ _id: req.params.id, userId: uid(req) });
+  await PatientMedicalRecord.deleteOne({ _id: (req.params.id as string), userId: uid(req) });
   ok(res);
 });
 
@@ -386,14 +386,14 @@ router.get("/ambulance/active", verifyUserToken, async (req, res) => {
 });
 
 router.get("/ambulance/:id", verifyUserToken, async (req, res) => {
-  const r = await AmbulanceRequest.findOne({ _id: req.params.id, userId: uid(req) }).lean();
+  const r = await AmbulanceRequest.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
   if (!r) return res.status(404).json({ success: false, message: "Request not found" });
   ok(res, toApp(r));
 });
 
 router.post("/ambulance/:id/cancel", verifyUserToken, async (req, res) => {
   const r = await AmbulanceRequest.findOneAndUpdate(
-    { _id: req.params.id, userId: uid(req) },
+    { _id: (req.params.id as string), userId: uid(req) },
     { $set: { status: "CANCELLED", notes: req.body?.reason } },
     { new: true },
   ).lean();

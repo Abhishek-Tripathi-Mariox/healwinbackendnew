@@ -387,7 +387,7 @@ export const clockIn = async (
 ) => {
   const staffId = (req as any).staffId;
   const shift = await Shift.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     staffId,
   });
   if (!shift) {
@@ -442,7 +442,7 @@ export const clockOut = async (
 ) => {
   const staffId = (req as any).staffId;
   const shift = await Shift.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     staffId,
   });
   if (!shift) {
@@ -556,7 +556,7 @@ export const markNotificationRead = async (
   next: NextFunction,
 ) => {
   const staffId = (req as any).staffId;
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   if (!Types.ObjectId.isValid(id)) {
     return res
       .status(400)

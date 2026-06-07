@@ -41,7 +41,7 @@ export const getDriversOnMap = async (req: Request, res: Response) => {
  */
 export const getDriverLocation = async (req: Request, res: Response) => {
   try {
-    const { driverId } = req.params;
+    const { driverId } = req.params as Record<string, string>;
 
     const location = await TrackingService.getDriverLocation(
       new Types.ObjectId(driverId),
@@ -71,7 +71,7 @@ export const getDriverLocation = async (req: Request, res: Response) => {
  */
 export const getDriverLocationHistory = async (req: Request, res: Response) => {
   try {
-    const { driverId } = req.params;
+    const { driverId } = req.params as Record<string, string>;
     const { startTime, endTime } = req.query;
 
     if (!startTime || !endTime) {

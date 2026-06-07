@@ -235,7 +235,7 @@ export const getSubmissionStats = async (req: Request, res: Response) => {
  */
 export const getSubmissionDetails = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { id } = req.params as Record<string, string>;
     const submission = await SOSSubmission.findById(id).populate(
       "respondedBy",
       "name email",
@@ -266,7 +266,7 @@ export const getSubmissionDetails = async (req: Request, res: Response) => {
 export const updateSubmissionStatus = async (req: Request, res: Response) => {
   try {
     const adminId = (req as any).admin._id;
-    const { id } = req.params;
+    const { id } = req.params as Record<string, string>;
     const { status, resolutionNotes } = req.body;
 
     const validStatuses = ["IN_PROGRESS", "RESOLVED", "CLOSED"];

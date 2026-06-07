@@ -222,7 +222,7 @@ export const getRedemptionHistory = async (req: Request, res: Response) => {
     const [transactions, total] = await Promise.all([
       CoinTransaction.find({
         userId,
-        type: { $in: ["REDEEMED", "TRANSFERRED", "BANK_TRANSFER"] },
+        type: { $in: ["REDEEMED", "TRANSFERRED"] },
       })
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -230,7 +230,7 @@ export const getRedemptionHistory = async (req: Request, res: Response) => {
         .populate("bookingId", "bookingNumber"),
       CoinTransaction.countDocuments({
         userId,
-        type: { $in: ["REDEEMED", "TRANSFERRED", "BANK_TRANSFER"] },
+        type: { $in: ["REDEEMED", "TRANSFERRED"] },
       }),
     ]);
 

@@ -159,7 +159,7 @@ export const updateMessage = async (req: Request, res: Response) => {
   }
 
   const message = await ContactMessage.findByIdAndUpdate(
-    req.params.id,
+    (req.params.id as string),
     update,
     { returnDocument: "after", runValidators: true },
   ).populate("repliedBy", "name email");

@@ -43,7 +43,7 @@ const makeCrud = (model: Model<any>, searchFields: string[]) => ({
 
   update: async (req: Request, _res: Response, next: NextFunction) => {
     const item = await model.findOneAndUpdate(
-      { _id: req.params.id, isDeleted: false },
+      { _id: (req.params.id as string), isDeleted: false },
       { $set: req.body },
       { new: true },
     );

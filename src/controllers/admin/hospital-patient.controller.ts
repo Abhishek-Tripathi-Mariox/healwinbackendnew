@@ -69,7 +69,7 @@ export const detail = async (
   next: NextFunction,
 ) => {
   const patient = await HospitalPatient.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   }).lean();
 
@@ -144,7 +144,7 @@ export const update = async (
 ) => {
   const b = req.body || {};
   const patient = await HospitalPatient.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!patient) {
@@ -197,7 +197,7 @@ export const remove = async (
   next: NextFunction,
 ) => {
   const patient = await HospitalPatient.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!patient) {
@@ -226,7 +226,7 @@ export const addDocument = async (
   next: NextFunction,
 ) => {
   const patient = await HospitalPatient.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!patient) {

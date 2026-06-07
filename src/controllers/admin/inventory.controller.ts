@@ -54,7 +54,7 @@ export const detail = async (
   next: NextFunction,
 ) => {
   const item = await InventoryItem.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   }).lean();
   if (!item) {
@@ -146,7 +146,7 @@ export const update = async (
 ) => {
   const b = req.body || {};
   const item = await InventoryItem.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!item) {
@@ -193,7 +193,7 @@ export const remove = async (
   next: NextFunction,
 ) => {
   const item = await InventoryItem.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!item) {
@@ -235,7 +235,7 @@ export const adjust = async (
   }
 
   const item = await InventoryItem.findOne({
-    _id: req.params.id,
+    _id: (req.params.id as string),
     isDeleted: false,
   });
   if (!item) {

@@ -196,7 +196,7 @@ export const getAllUsers = async (req: Request, res: Response) => {
  * Get user by ID
  */
 export const getUserById = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const user = await User.findById(id);
 
@@ -237,7 +237,7 @@ export const getUserById = async (req: Request, res: Response) => {
  * Update user status
  */
 export const updateUserStatus = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { isActive, reason } = req.body;
 
   const user = await User.findByIdAndUpdate(id, { isActive }, { returnDocument: "after" });
@@ -261,7 +261,7 @@ export const updateUserStatus = async (req: Request, res: Response) => {
  * Update user profile information
  */
 export const updateUser = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const allowedFields = [
     "fullName",
     "email",
@@ -296,7 +296,7 @@ export const updateUser = async (req: Request, res: Response) => {
  * Block a user
  */
 export const blockUser = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { reason } = req.body;
 
   const blockReason = reason?.trim() || "Blocked by admin";
@@ -329,7 +329,7 @@ export const blockUser = async (req: Request, res: Response) => {
  * Unblock a user
  */
 export const unblockUser = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const user = await User.findByIdAndUpdate(
     id,
@@ -359,7 +359,7 @@ export const unblockUser = async (req: Request, res: Response) => {
  * Soft delete a user
  */
 export const deleteUser = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const user = await User.findByIdAndUpdate(
     id,
@@ -390,7 +390,7 @@ export const deleteUser = async (req: Request, res: Response) => {
  * Restore a deleted user
  */
 export const restoreUser = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const user = await User.findByIdAndUpdate(
     id,
@@ -418,7 +418,7 @@ export const restoreUser = async (req: Request, res: Response) => {
  * Get user bookings
  */
 export const getUserBookings = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { status, page = 0, limit = 20 } = req.query;
 
   const query: any = { userId: id };
@@ -445,7 +445,7 @@ export const getUserBookings = async (req: Request, res: Response) => {
  * Get user wallet
  */
 export const getUserWallet = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const wallet = await Wallet.findOne({ userId: id });
   const coinWallet = await CoinWallet.findOne({ userId: id });
@@ -460,7 +460,7 @@ export const getUserWallet = async (req: Request, res: Response) => {
  * Add balance to user wallet (Admin)
  */
 export const addWalletBalance = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { amount, reason } = req.body;
 
   if (!amount || amount <= 0) {
@@ -535,7 +535,7 @@ export const getUserStats = async (req: Request, res: Response) => {
  * Get user transactions
  */
 export const getUserTransactions = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const { page = 0, limit = 20, type } = req.query;
 
   const query: Record<string, unknown> = { userId: id };
@@ -562,7 +562,7 @@ export const getUserTransactions = async (req: Request, res: Response) => {
  * Get user addresses
  */
 export const getUserAddresses = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
 
   const addresses = await UserAddress.find({ userId: id, isActive: true }).sort(
     { isSelected: -1, updatedAt: -1 },
@@ -575,7 +575,7 @@ export const getUserAddresses = async (req: Request, res: Response) => {
  * Add user address (Admin)
  */
 export const addUserAddress = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const { id } = req.params as Record<string, string>;
   const {
     fullName,
     mobileNumber,
@@ -642,7 +642,7 @@ export const addUserAddress = async (req: Request, res: Response) => {
  * Update user address (Admin)
  */
 export const updateUserAddress = async (req: Request, res: Response) => {
-  const { id, addressId } = req.params;
+  const { id, addressId } = req.params as Record<string, string>;
   const {
     fullName,
     mobileNumber,
@@ -723,7 +723,7 @@ export const updateUserAddress = async (req: Request, res: Response) => {
  * Delete user address (Admin)
  */
 export const deleteUserAddress = async (req: Request, res: Response) => {
-  const { id, addressId } = req.params;
+  const { id, addressId } = req.params as Record<string, string>;
 
   const address = await UserAddress.findOneAndUpdate(
     { _id: addressId, userId: id, isActive: true },
@@ -747,7 +747,7 @@ export const deleteUserAddress = async (req: Request, res: Response) => {
  * Set address as primary (Admin)
  */
 export const setAddressPrimary = async (req: Request, res: Response) => {
-  const { id, addressId } = req.params;
+  const { id, addressId } = req.params as Record<string, string>;
 
   // Unselect all addresses for this user
   await UserAddress.updateMany(

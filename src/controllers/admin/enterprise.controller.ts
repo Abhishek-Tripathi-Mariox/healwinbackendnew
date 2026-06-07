@@ -35,7 +35,7 @@ export const getAllEnterprises = async (req: Request, res: Response) => {
  */
 export const getEnterpriseById = async (req: Request, res: Response) => {
   try {
-    const { enterpriseId } = req.params;
+    const { enterpriseId } = req.params as Record<string, string>;
 
     const enterprise = await EnterpriseService.getEnterpriseById(
       new Types.ObjectId(enterpriseId),
@@ -74,7 +74,7 @@ export const getEnterpriseById = async (req: Request, res: Response) => {
 export const approveEnterprise = async (req: Request, res: Response) => {
   try {
     const adminId = (req as any).admin._id;
-    const { enterpriseId } = req.params;
+    const { enterpriseId } = req.params as Record<string, string>;
     const { creditLimit, discountPercentage, paymentTerms } = req.body;
 
     if (!creditLimit || discountPercentage === undefined || !paymentTerms) {
@@ -118,7 +118,7 @@ export const approveEnterprise = async (req: Request, res: Response) => {
  */
 export const rejectEnterprise = async (req: Request, res: Response) => {
   try {
-    const { enterpriseId } = req.params;
+    const { enterpriseId } = req.params as Record<string, string>;
     const { reason } = req.body;
 
     if (!reason) {
@@ -158,7 +158,7 @@ export const rejectEnterprise = async (req: Request, res: Response) => {
  */
 export const suspendEnterprise = async (req: Request, res: Response) => {
   try {
-    const { enterpriseId } = req.params;
+    const { enterpriseId } = req.params as Record<string, string>;
     const { reason } = req.body;
 
     if (!reason) {
@@ -198,7 +198,7 @@ export const suspendEnterprise = async (req: Request, res: Response) => {
  */
 export const updateCreditLimit = async (req: Request, res: Response) => {
   try {
-    const { enterpriseId } = req.params;
+    const { enterpriseId } = req.params as Record<string, string>;
     const { creditLimit } = req.body;
 
     if (!creditLimit) {
@@ -238,7 +238,7 @@ export const updateCreditLimit = async (req: Request, res: Response) => {
  */
 export const getEnterpriseUsers = async (req: Request, res: Response) => {
   try {
-    const { enterpriseId } = req.params;
+    const { enterpriseId } = req.params as Record<string, string>;
     const { page = 1, limit = 20 } = req.query;
 
     const result = await EnterpriseService.getEnterpriseUsers(
@@ -264,7 +264,7 @@ export const getEnterpriseUsers = async (req: Request, res: Response) => {
  */
 export const getEnterpriseBookings = async (req: Request, res: Response) => {
   try {
-    const { enterpriseId } = req.params;
+    const { enterpriseId } = req.params as Record<string, string>;
     const { startDate, endDate, status, page = 1, limit = 20 } = req.query;
 
     const result = await EnterpriseService.getEnterpriseBookings(

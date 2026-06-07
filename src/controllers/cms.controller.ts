@@ -3,7 +3,7 @@ import { CmsPage } from "../models/cms-page.model";
 
 // Get CMS page by slug (public)
 export const getCmsPageBySlug = async (req: Request, res: Response) => {
-  const page = await CmsPage.findOne({ slug: req.params.slug, isActive: true }).lean();
+  const page = await CmsPage.findOne({ slug: (req.params.slug as string), isActive: true }).lean();
   if (!page)
     return res.status(404).json({ success: false, message: "Page not found" });
   res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=600");

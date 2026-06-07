@@ -133,7 +133,7 @@ export const updateStatus = async (req: Request, _res: Response, next: NextFunct
     return next();
   }
   const reqDoc = await AmbulanceRequest.findByIdAndUpdate(
-    req.params.id,
+    (req.params.id as string),
     { $set: { status } },
     { new: true },
   );

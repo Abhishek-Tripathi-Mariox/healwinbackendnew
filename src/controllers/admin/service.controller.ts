@@ -248,7 +248,7 @@ export const updateService = async (req: Request, res: Response) => {
     let slug = slugify(title);
     const existing = await Service.findOne({
       slug,
-      _id: { $ne: req.params.id },
+      _id: { $ne: (req.params.id as string) },
     });
     if (existing) {
       slug = `${slug}-${Date.now()}`;

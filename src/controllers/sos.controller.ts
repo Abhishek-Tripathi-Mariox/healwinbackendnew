@@ -64,7 +64,7 @@ export const addEmergencyContact = async (req: Request, res: Response) => {
 export const updateEmergencyContact = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
-    const { contactId } = req.params;
+    const { contactId } = req.params as Record<string, string>;
 
     const contact = await SOSService.updateEmergencyContact(
       userId,
@@ -98,7 +98,7 @@ export const updateEmergencyContact = async (req: Request, res: Response) => {
 export const deleteEmergencyContact = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
-    const { contactId } = req.params;
+    const { contactId } = req.params as Record<string, string>;
 
     const deleted = await SOSService.deleteEmergencyContact(
       userId,
@@ -176,7 +176,7 @@ export const triggerSOS = async (req: Request, res: Response) => {
 export const cancelSOS = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
-    const { sosId } = req.params;
+    const { sosId } = req.params as Record<string, string>;
 
     const sosAlert = await SOSService.cancelSOS(
       new Types.ObjectId(sosId),
@@ -290,7 +290,7 @@ export const getActiveSOSAlerts = async (req: Request, res: Response) => {
  */
 export const getSOSDetails = async (req: Request, res: Response) => {
   try {
-    const { sosId } = req.params;
+    const { sosId } = req.params as Record<string, string>;
 
     const sosAlert = await SOSService.getSOSById(new Types.ObjectId(sosId));
 
@@ -319,7 +319,7 @@ export const getSOSDetails = async (req: Request, res: Response) => {
 export const respondToSOS = async (req: Request, res: Response) => {
   try {
     const adminId = (req as any).admin._id;
-    const { sosId } = req.params;
+    const { sosId } = req.params as Record<string, string>;
 
     const sosAlert = await SOSService.respondToSOS(
       new Types.ObjectId(sosId),
@@ -352,7 +352,7 @@ export const respondToSOS = async (req: Request, res: Response) => {
 export const resolveSOS = async (req: Request, res: Response) => {
   try {
     const adminId = (req as any).admin._id;
-    const { sosId } = req.params;
+    const { sosId } = req.params as Record<string, string>;
     const { resolutionNotes, isFalseAlarm } = req.body;
 
     const sosAlert = await SOSService.resolveSOS(
@@ -388,7 +388,7 @@ export const resolveSOS = async (req: Request, res: Response) => {
 export const notifyPolice = async (req: Request, res: Response) => {
   try {
     const adminId = (req as any).admin._id;
-    const { sosId } = req.params;
+    const { sosId } = req.params as Record<string, string>;
 
     const sosAlert = await SOSService.notifyPolice(
       new Types.ObjectId(sosId),

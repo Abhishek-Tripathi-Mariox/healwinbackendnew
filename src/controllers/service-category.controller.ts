@@ -11,7 +11,7 @@ export const listCategories = async (_req: Request, res: Response) => {
 
 export const getCategoryBySlug = async (req: Request, res: Response) => {
   const category = await ServiceCategory.findOne({
-    slug: req.params.slug,
+    slug: (req.params.slug as string),
     isActive: true,
   });
   if (!category) {

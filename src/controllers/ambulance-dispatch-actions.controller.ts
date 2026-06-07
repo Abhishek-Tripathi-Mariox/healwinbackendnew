@@ -24,7 +24,7 @@ export const accept = async (
   const staffId = (req as any).staffId;
   try {
     const d = await transitionDispatch(
-      asId(req.params.id),
+      asId((req.params.id as string)),
       asId(staffId),
       "ACKNOWLEDGED",
     );
@@ -52,7 +52,7 @@ export const reject = async (
   const staffId = (req as any).staffId;
   const { reason } = req.body || {};
 
-  const existing = await EmergencyDispatch.findById(req.params.id);
+  const existing = await EmergencyDispatch.findById((req.params.id as string));
   if (!existing) {
     return res
       .status(404)
@@ -65,7 +65,7 @@ export const reject = async (
   }
 
   try {
-    const d = await rejectDispatch(asId(req.params.id), reason);
+    const d = await rejectDispatch(asId((req.params.id as string)), reason);
     if (d?.dispatchedBy) {
       emitToUser(String(d.dispatchedBy), "dispatch:status", {
         dispatchId: String(d._id),
@@ -89,7 +89,7 @@ const makeTransition =
     const staffId = (req as any).staffId;
     try {
       const d = await transitionDispatch(
-        asId(req.params.id),
+        asId((req.params.id as string)),
         asId(staffId),
         to,
       );
