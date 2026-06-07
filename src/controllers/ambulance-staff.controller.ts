@@ -229,6 +229,30 @@ export const updateLocation = async (
         etaMinutes,
       });
     }
+
+    // Same for an active SOS EmergencyDispatch this crew is on — push the live
+    // position to the SOS patient so they see how far the ambulance is.
+    const activeDisp: any = await EmergencyDispatch.findOneAndUpdate(
+      {
+        $or: [{ driverStaffId: staff._id }, { attendantStaffId: staff._id }],
+        status: { $in: ["ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE", "ON_TRIP"] },
+      } as any,
+      { driverLocation: { lat, lng }, lastLocationAt: now },
+      { returnDocument: "after", new: true },
+    );
+    if (activeDisp?.patientUserId) {
+      const coords = activeDisp.patientLocation?.coordinates;
+      const pickup = coords ? { lat: coords[1], lng: coords[0] } : null;
+      const distanceKm = haversineKm(pickup, { lat, lng });
+      const etaMinutes = etaMinutesFromKm(distanceKm) ?? activeDisp.etaMinutes ?? null;
+      emitToUser(String(activeDisp.patientUserId), "ambulance:location", {
+        dispatchId: String(activeDisp._id),
+        lat,
+        lng,
+        distanceKm,
+        etaMinutes,
+      });
+    }
   }
 
   req.rData = { ambulanceId: amb?._id || null };

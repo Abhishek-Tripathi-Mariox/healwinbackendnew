@@ -11,6 +11,7 @@ import { Admin } from "../models/admin.model";
 import LabTest from "../models/lab-test.model";
 import PharmacyProduct from "../models/pharmacy-product.model";
 import AmbulanceRequest from "../models/ambulance-request.model";
+import { EmergencyDispatch } from "../models/emergency-dispatch.model";
 import { haversineKm, etaMinutesFromKm } from "../utils/geo.util";
 import { emitToAdmin } from "../utils/socket.util";
 
@@ -414,6 +415,45 @@ router.get("/ambulance/active", verifyUserToken, async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
   ok(res, r ? toApp(r) : null);
+});
+
+// Active SOS dispatch (admin-dispatched EmergencyDispatch) for live tracking.
+router.get("/sos/active", verifyUserToken, async (req, res) => {
+  const d: any = await EmergencyDispatch.findOne({
+    patientUserId: uid(req),
+    status: { $in: ["DISPATCHED", "ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE", "ON_TRIP"] },
+  } as any)
+    .sort({ createdAt: -1 })
+    .populate("ambulanceId", "registrationNumber currentLocation")
+    .populate("driverStaffId", "fullName mobileNumber")
+    .lean();
+  if (!d) return ok(res, null);
+
+  const amb = d.ambulanceId;
+  const ac = amb?.currentLocation?.coordinates;
+  const driverLocation =
+    d.driverLocation?.lat != null
+      ? { lat: d.driverLocation.lat, lng: d.driverLocation.lng }
+      : ac
+        ? { lat: ac[1], lng: ac[0] }
+        : null;
+  const pc = d.patientLocation?.coordinates;
+  const pickup = pc ? { lat: pc[1], lng: pc[0] } : null;
+  const distanceKm = haversineKm(pickup, driverLocation);
+  ok(res, {
+    _id: d._id,
+    kind: "sos",
+    status: String(d.status || "DISPATCHED").toLowerCase(),
+    otp: d.otp || null,
+    driver: d.driverStaffId
+      ? { name: d.driverStaffId.fullName, phone: d.driverStaffId.mobileNumber }
+      : null,
+    vehicle: amb?.registrationNumber ? { number: amb.registrationNumber } : null,
+    pickup,
+    driverLocation,
+    distanceKm,
+    etaMinutes: etaMinutesFromKm(distanceKm) ?? d.etaMinutes ?? null,
+  });
 });
 
 router.get("/ambulance/:id", verifyUserToken, async (req, res) => {

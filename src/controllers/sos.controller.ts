@@ -164,14 +164,30 @@ export const triggerSOS = async (req: Request, res: Response) => {
       ? await User.findById(userId).select("fullName mobileNumber countryCode").lean()
       : null;
     const hasCoords = coords.lat !== 0 || coords.lng !== 0;
+    // Map the app's free-text type to the SOSSubmission emergencyType enum
+    // (enum: MEDICAL/ACCIDENT/FIRE/NATURAL_DISASTER/VIOLENCE/OTHER). A mismatch
+    // here previously threw a validation error, so the SOS never reached the
+    // dashboard and the richer realtime alert was skipped.
+    const ET: Record<string, string> = {
+      "medical emergency": "MEDICAL",
+      medical: "MEDICAL",
+      accident: "ACCIDENT",
+      fire: "FIRE",
+      "natural disaster": "NATURAL_DISASTER",
+      violence: "VIOLENCE",
+      other: "OTHER",
+    };
+    const emergencyType = ET[String(type || "").toLowerCase()] || "OTHER";
+
     const submission = await SOSSubmission.create({
       type: "FORM",
+      userId: userId || undefined,
       name: req.body.name || patient?.fullName || "App SOS",
       phone: patient?.mobileNumber
         ? `${patient.countryCode || ""}${patient.mobileNumber}`
         : "N/A",
       address: fullAddress || address || undefined,
-      emergencyType: type || "Medical Emergency",
+      emergencyType,
       description: description || undefined,
       status: "PENDING",
       ...(hasCoords
@@ -179,11 +195,11 @@ export const triggerSOS = async (req: Request, res: Response) => {
         : {}),
     });
 
-    // Richer realtime alert so the admin modal shows the patient + location.
+    // Realtime alert → admin alarm modal (patient + location for context).
     emitToAdmin("sos:new", {
       sosId: String(submission._id),
       emergency: true,
-      patientName: patient?.fullName || "A patient",
+      patientName: req.body.name || patient?.fullName || "A patient",
       address: fullAddress || address || "Location unavailable",
     });
 

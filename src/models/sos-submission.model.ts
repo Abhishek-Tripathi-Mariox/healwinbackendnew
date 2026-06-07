@@ -3,6 +3,7 @@ import mongoose, { Schema, Types } from "mongoose";
 export interface ISOSSubmission {
   _id: Types.ObjectId;
   type: "CALL" | "FORM" | "APP_DOWNLOAD";
+  userId?: Types.ObjectId; // the app patient who triggered it (for notify/track)
   // Common fields
   name: string;
   phone: string;
@@ -32,6 +33,7 @@ export interface ISOSSubmission {
 
 const SOSSubmissionSchema = new Schema<ISOSSubmission>(
   {
+    userId: { type: Schema.Types.ObjectId, ref: "User", index: true },
     type: {
       type: String,
       required: true,

@@ -512,7 +512,8 @@ export const rejectDispatch = async (
 export const transitionDispatch = async (
   dispatchId: Types.ObjectId,
   driverStaffId: Types.ObjectId,
-  toStatus: "ACKNOWLEDGED" | "EN_ROUTE" | "ON_SCENE" | "COMPLETED",
+  toStatus: "ACKNOWLEDGED" | "EN_ROUTE" | "ON_SCENE" | "ON_TRIP" | "COMPLETED",
+  opts?: { otp?: string },
 ) => {
   const dispatch = await EmergencyDispatch.findById(dispatchId);
   if (!dispatch) throw new Error("dispatch_not_found");
@@ -524,10 +525,18 @@ export const transitionDispatch = async (
     ACKNOWLEDGED: ["DISPATCHED"],
     EN_ROUTE: ["ACKNOWLEDGED"],
     ON_SCENE: ["EN_ROUTE"],
-    COMPLETED: ["ON_SCENE"],
+    ON_TRIP: ["ON_SCENE"],
+    COMPLETED: ["ON_SCENE", "ON_TRIP"],
   };
   if (!allowedPrev[toStatus].includes(dispatch.status)) {
     throw new Error("invalid_status_transition");
+  }
+
+  // Starting the trip (patient pickup) requires the OTP shown to the patient.
+  if (toStatus === "ON_TRIP" && dispatch.otp) {
+    if (!opts?.otp || String(opts.otp) !== String(dispatch.otp)) {
+      throw new Error("invalid_otp");
+    }
   }
 
   dispatch.status = toStatus;

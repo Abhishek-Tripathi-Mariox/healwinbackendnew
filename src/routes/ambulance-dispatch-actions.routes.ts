@@ -40,6 +40,22 @@ router.post(
 );
 
 router.post(
+  "/:id/start",
+  auth.verifyStaffToken,
+  auth.requireDriver,
+  ErrorHandlerMiddleware(C.startTrip),
+  ResponseMiddleware,
+);
+
+router.post(
+  "/:id/destination",
+  auth.verifyStaffToken,
+  auth.requireDriver,
+  ErrorHandlerMiddleware(C.setDestination),
+  ResponseMiddleware,
+);
+
+router.post(
   "/:id/complete",
   auth.verifyStaffToken,
   auth.requireDriver,

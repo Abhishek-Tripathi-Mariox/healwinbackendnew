@@ -28,8 +28,13 @@ export interface IEmergencyDispatch {
     | "ACKNOWLEDGED"
     | "EN_ROUTE"
     | "ON_SCENE"
+    | "ON_TRIP"
     | "COMPLETED"
     | "CANCELLED";
+  patientUserId?: Types.ObjectId; // SOS patient (for notify + live tracking)
+  otp?: string; // pickup verification code shown to the patient
+  driverLocation?: { lat?: number; lng?: number };
+  lastLocationAt?: Date;
   acknowledgedAt?: Date;
   arrivedAt?: Date;
   completedAt?: Date;
@@ -120,11 +125,16 @@ const EmergencyDispatchSchema = new Schema<IEmergencyDispatch>(
         "ACKNOWLEDGED",
         "EN_ROUTE",
         "ON_SCENE",
+        "ON_TRIP",
         "COMPLETED",
         "CANCELLED",
       ],
       default: "DISPATCHED",
     },
+    patientUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
+    otp: String,
+    driverLocation: { lat: Number, lng: Number },
+    lastLocationAt: Date,
     acknowledgedAt: Date,
     arrivedAt: Date,
     completedAt: Date,

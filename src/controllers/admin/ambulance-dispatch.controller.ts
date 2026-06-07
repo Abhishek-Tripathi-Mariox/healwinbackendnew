@@ -10,8 +10,18 @@ import { SOSSubmission } from "../../models/sos-submission.model";
 import { EmergencyDispatch } from "../../models/emergency-dispatch.model";
 import AmbulanceStaff from "../../models/ambulance-staff.model";
 import Ambulance from "../../models/ambulance.model";
-import { sendDispatchPush } from "../../services/notification.service";
+import { sendDispatchPush, sendToUser } from "../../services/notification.service";
 import { emitToUser } from "../../utils/socket.util";
+
+/** Find the app patient behind an SOS (submission or alert) for notify/track. */
+const resolvePatientUserId = async (
+  sosId: string,
+): Promise<Types.ObjectId | null> => {
+  const sub: any = await SOSSubmission.findById(sosId).select("userId").lean();
+  if (sub?.userId) return sub.userId;
+  const alert: any = await SOSAlert.findById(sosId).select("userId").lean();
+  return alert?.userId || null;
+};
 
 const STALE_LOCATION_MS = 5 * 60 * 1000;
 
@@ -266,6 +276,17 @@ export const dispatch = async (
     throw err;
   }
 
+  // Link the SOS patient + mint a pickup OTP, so the patient app can flip to
+  // live tracking and the crew can verify the patient at pickup.
+  const patientUserId = await resolvePatientUserId(req.params.sosId as string);
+  const otp = String(Math.floor(1000 + Math.random() * 9000));
+  await EmergencyDispatch.updateOne(
+    { _id: dispatchDoc._id },
+    { patientUserId: patientUserId || undefined, otp },
+  );
+  dispatchDoc.otp = otp;
+  dispatchDoc.patientUserId = patientUserId;
+
   // Fetch driver & attendant for FCM tokens
   const [driver, attendant] = await Promise.all([
     AmbulanceStaff.findById(picked.driverId).select("fcmToken").lean(),
@@ -329,6 +350,23 @@ export const dispatch = async (
     sosId: String((req.params.sosId as string)),
     dispatchId: String(dispatchDoc._id),
   });
+
+  // Notify the SOS patient — their app flips from "SOS sent" to live tracking.
+  if (patientUserId) {
+    emitToUser(String(patientUserId), "booking:accepted", {
+      dispatchId: String(dispatchDoc._id),
+      status: "ASSIGNED",
+      etaMinutes: picked.etaMinutes,
+      otp,
+    });
+    await sendToUser(
+      patientUserId as any,
+      "BOOKING",
+      "Ambulance dispatched 🚑",
+      `Help is on the way — ETA ${picked.etaMinutes} min. Share OTP ${otp} with the crew.`,
+      { route: "Tracking", dispatchId: String(dispatchDoc._id), screen: "Tracking" },
+    ).catch(() => undefined);
+  }
 
   req.rData = { dispatch: dispatchDoc, picked };
   req.msg = "dispatch_created";
