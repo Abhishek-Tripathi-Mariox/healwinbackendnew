@@ -47,6 +47,11 @@ const startServer = async () => {
 
     // Initialize Firebase Admin (push notifications). Non-fatal if missing.
     await initializeFirebase();
+    // Initialize Socket.io on the SAME http server (real-time dispatch, SOS
+    // admin alerts, live ambulance tracking). Without this, /socket.io/
+    // 404s and no realtime works. Runs after Redis so the adapter can attach.
+    await initSocket(httpServer);
+    console.log("Socket.io initialized");
 
     // Shift state machine — transitions scheduled/active/completed and
     // maintains the ambulance's "current crew" cache. Must run AFTER the

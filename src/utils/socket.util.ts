@@ -51,8 +51,20 @@ export const initSocket = async (httpServer: HttpServer): Promise<Server> => {
 
     try {
       const decoded = jwt.verify(token, config.jwt.secret) as any;
-      socket.userId = decoded._id || decoded.userId;
-      socket.userType = decoded.userType || "USER";
+      // Token id key differs per role: patient { userId }, driver { driverId },
+      // ambulance-staff { staffId }, admin { adminId }. emitToUser() targets
+      // `user:<thatId>`, so the socket must join the room for whichever id the
+      // token carries — otherwise dispatch:incoming / booking:request never
+      // reach the crew.
+      socket.userId =
+        decoded._id ||
+        decoded.userId ||
+        decoded.driverId ||
+        decoded.staffId ||
+        decoded.adminId;
+      socket.userType =
+        decoded.userType ||
+        (decoded.driverId ? "DRIVER" : decoded.adminId ? "ADMIN" : "USER");
       next();
     } catch (error) {
       next(new Error("Invalid token"));
