@@ -13,6 +13,7 @@ export interface IPatientFamilyMember {
   phone?: string;
   age?: string;
   gender?: string;
+  photo?: string;
   bloodGroup?: string;
   conditions?: string[];
   createdAt: Date;
@@ -27,6 +28,7 @@ const PatientFamilyMemberSchema = new Schema<IPatientFamilyMember>(
     phone: { type: String, trim: true },
     age: { type: String, trim: true },
     gender: { type: String, trim: true },
+    photo: { type: String, trim: true },
     bloodGroup: { type: String, trim: true },
     conditions: { type: [String], default: [] },
   },

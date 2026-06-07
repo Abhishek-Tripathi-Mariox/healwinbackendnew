@@ -1,6 +1,9 @@
 import { Request, Response } from "express";
 import { Types } from "mongoose";
 import * as SOSService from "../services/sos.service";
+import { SOSSubmission } from "../models/sos-submission.model";
+import User from "../models/Users";
+import { emitToAdmin } from "../utils/socket.util";
 
 /**
  * Get emergency contacts
@@ -154,11 +157,42 @@ export const triggerSOS = async (req: Request, res: Response) => {
       fullAddress || address
     );
 
+    // Also surface the SOS in the admin SOS Dashboard (which lists
+    // SOSSubmission records) so dispatchers see app-triggered SOS alongside
+    // call/form ones. Carries the patient's real name/phone for context.
+    const patient: any = userId
+      ? await User.findById(userId).select("fullName mobileNumber countryCode").lean()
+      : null;
+    const hasCoords = coords.lat !== 0 || coords.lng !== 0;
+    const submission = await SOSSubmission.create({
+      type: "FORM",
+      name: req.body.name || patient?.fullName || "App SOS",
+      phone: patient?.mobileNumber
+        ? `${patient.countryCode || ""}${patient.mobileNumber}`
+        : "N/A",
+      address: fullAddress || address || undefined,
+      emergencyType: type || "Medical Emergency",
+      description: description || undefined,
+      status: "PENDING",
+      ...(hasCoords
+        ? { location: { type: "Point", coordinates: [coords.lng, coords.lat] } }
+        : {}),
+    });
+
+    // Richer realtime alert so the admin modal shows the patient + location.
+    emitToAdmin("sos:new", {
+      sosId: String(submission._id),
+      emergency: true,
+      patientName: patient?.fullName || "A patient",
+      address: fullAddress || address || "Location unavailable",
+    });
+
     res.status(201).json({
       success: true,
       message: "SOS alert triggered. Help is on the way.",
       data: {
         sosId: sosAlert._id,
+        submissionId: submission._id,
         status: sosAlert.status,
       },
     });

@@ -36,6 +36,24 @@ const recordsUpload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
+// Family-member photo uploads (served from /uploads/family by the static handler).
+const familyDir = path.join(process.cwd(), "uploads", "family");
+try {
+  fs.mkdirSync(familyDir, { recursive: true });
+} catch {
+  /* exists */
+}
+const familyUpload = multer({
+  storage: multer.diskStorage({
+    destination: familyDir,
+    filename: (_req, file, cb) =>
+      cb(null, `${Date.now()}-${randomUUID()}${path.extname(file.originalname)}`),
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+const servedUrl = (req: Request, sub: string, file?: Express.Multer.File) =>
+  file ? `${req.protocol}://${req.get("host")}/uploads/${sub}/${path.basename(file.path)}` : undefined;
+
 /**
  * Stub implementations for patient-app domains that don't have real backend
  * controllers yet (doctors, pharmacy, lab, medical records, family members,
@@ -64,8 +82,9 @@ router.get("/family-members", verifyUserToken, async (req, res) => {
   res.json({ success: true, data: list, message: "ok" });
 });
 
-router.post("/family-members", verifyUserToken, async (req, res) => {
+router.post("/family-members", verifyUserToken, familyUpload.single("photo"), async (req, res) => {
   const b = req.body ?? {};
+  const photo = servedUrl(req, "family", req.file);
   const member = await PatientFamilyMember.create({
     userId: uid(req),
     name: b.name,
@@ -73,17 +92,29 @@ router.post("/family-members", verifyUserToken, async (req, res) => {
     phone: b.phone,
     age: b.age != null ? String(b.age) : undefined,
     gender: b.gender,
+    photo,
     bloodGroup: b.bloodGroup,
     conditions: b.conditions,
   });
   ok(res, member);
 });
 
-router.put("/family-members/:id", verifyUserToken, async (req, res) => {
+router.put("/family-members/:id", verifyUserToken, familyUpload.single("photo"), async (req, res) => {
   const b = req.body ?? {};
+  const photo = servedUrl(req, "family", req.file);
+  const set: Record<string, any> = {
+    name: b.name,
+    relation: b.relation,
+    phone: b.phone,
+    age: b.age != null ? String(b.age) : undefined,
+    gender: b.gender,
+    bloodGroup: b.bloodGroup,
+    conditions: b.conditions,
+  };
+  if (photo) set.photo = photo; // only overwrite when a new image was uploaded
   const updated = await PatientFamilyMember.findOneAndUpdate(
     { _id: (req.params.id as string), userId: uid(req) },
-    { $set: { name: b.name, relation: b.relation, phone: b.phone, age: b.age != null ? String(b.age) : undefined, gender: b.gender, bloodGroup: b.bloodGroup, conditions: b.conditions } },
+    { $set: set },
     { new: true },
   );
   if (!updated) return res.status(404).json({ success: false, message: "Member not found" });

@@ -8,6 +8,9 @@ export interface IUser extends Document {
   profileImage: string;
   gender: Gender;
   dob: string;
+  age: string;
+  idType: string;
+  idNumber: string;
   countryCode: string;
   mobileNumber: string;
   isActive: boolean;

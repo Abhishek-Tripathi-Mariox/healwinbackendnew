@@ -57,6 +57,10 @@ export const editUser = async (
     req.body.profileImage = images.images;
   }
 
+  // Drop empty enum fields so a blank value can't trip schema validation
+  // (e.g. gender "" → "not a valid enum value"). Empty enum = "leave unchanged".
+  if (!req.body.gender) delete req.body.gender;
+
   await UserService.updateUsers(userId, req.body);
   const userData = await UserService.fetch(userId);
 

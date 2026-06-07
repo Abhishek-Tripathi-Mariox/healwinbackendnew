@@ -29,6 +29,18 @@ const UserSchema: Schema<IUser> = new Schema(
       type: String,
       default: "",
     },
+    age: {
+      type: String,
+      default: "",
+    },
+    idType: {
+      type: String,
+      default: "",
+    },
+    idNumber: {
+      type: String,
+      default: "",
+    },
     countryCode: {
       type: String,
       required: [true, "Country code is required!"],
