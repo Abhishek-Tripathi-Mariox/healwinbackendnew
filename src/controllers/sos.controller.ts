@@ -134,6 +134,12 @@ export const triggerSOS = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?._id || (req as any).userId;
     const { location, bookingId, address, type, description } = req.body;
+    // 'CALL' → SOS Dashboard "SOS Calls" tab (one-tap SOS Call from the app,
+    // mirrors a website phone call); anything else → "SOS Forms" tab.
+    const submissionType =
+      String(req.body.submissionType || "").toUpperCase() === "CALL"
+        ? "CALL"
+        : "FORM";
 
     // Location is best-effort: the patient app's SOS form may not capture GPS.
     // Fall back to (0,0) so the alert still reaches the admin dashboard with
@@ -180,7 +186,7 @@ export const triggerSOS = async (req: Request, res: Response) => {
       const emergencyType = ET[String(type || "").toLowerCase()] || "OTHER";
 
       submission = await SOSSubmission.create({
-        type: "FORM",
+        type: submissionType,
         userId: userId || undefined,
         name: req.body.name || patient?.fullName || "App SOS",
         phone: patient?.mobileNumber
