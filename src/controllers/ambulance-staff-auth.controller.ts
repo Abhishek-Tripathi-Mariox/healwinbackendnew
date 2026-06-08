@@ -104,12 +104,20 @@ export const verifyOtp = async (
   const isMaster =
     masterOtp.length > 0 && String(otp).trim() === masterOtp && !!record;
 
+  // txnId already uniquely identifies the OTP record (it's the Redis key), so
+  // the mobile/country comparison is a defensive extra — only enforce it when
+  // the client actually sent those fields, otherwise a valid OTP would be
+  // rejected just because the body omitted mobileNumber.
+  const mobileMismatch =
+    mobileNumber !== undefined && record.mobileNumber !== mobileNumber;
+  const ccMismatch =
+    req.body.countryCode !== undefined && record.countryCode !== countryCode;
   if (
     !isMaster &&
     (!record ||
       String(record.otp) !== String(otp) ||
-      record.mobileNumber !== mobileNumber ||
-      record.countryCode !== countryCode)
+      mobileMismatch ||
+      ccMismatch)
   ) {
     return res
       .status(401)

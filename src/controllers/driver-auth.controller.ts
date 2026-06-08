@@ -135,11 +135,17 @@ export const verifyDriverOtp = async (
     return next();
   }
 
+  // GetRedis already JSON-parses, so result[0] is the OTP record object
+  // (matching how the patient auth flow reads it — do NOT JSON.parse again).
   const otpData = result[0];
-  const { mobileNumber, countryCode } = JSON.parse(otpData);
+  const { mobileNumber, countryCode } = otpData;
+
+  const providedOtp = String(otp).trim();
+  const storedOtp = String(otpData.otp).trim();
+  const masterOtp = String(config.auth.masterOtp ?? "").trim();
 
   // Master OTP check
-  if (otp == config.auth.masterOtp) {
+  if (providedOtp === masterOtp) {
     let driver = await DriverService.getDriverByMobile(
       mobileNumber,
       countryCode,
@@ -165,7 +171,7 @@ export const verifyDriverOtp = async (
   }
 
   // Normal OTP validation
-  if (otp !== otpData.otp) {
+  if (providedOtp !== storedOtp) {
     req.rCode = 0;
     req.msg = "incorrect_otp";
     return next();
