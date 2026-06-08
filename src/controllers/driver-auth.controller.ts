@@ -9,6 +9,7 @@ import helpers from "../utils/helpers";
 import redis from "../utils/redis";
 import config from "../config";
 import fileUploadService from "../utils/s3";
+import { sendOtpSms } from "../services/sms.service";
 
 /**
  * Driver Login - Step 1
@@ -29,18 +30,9 @@ export const driverLogin = async (
     countryCode,
   );
 
-  const redisKey = `DRIVER_Mob_${mobileNumber}`;
-  const redisKeys = await redis().GetKeys(redisKey);
-
-  let txnId: string | undefined;
-
-  if (redisKeys.length > 0) {
-    const result = await redis().GetRedis<any>(redisKeys[0]);
-    if (result?.[0]) {
-      txnId = result[0].txnId;
-    }
-  }
-
+  // Fresh txnId on every request. Reusing a previous txnId (old behavior) tied
+  // the new OTP to a new Redis entry while the client kept referencing the
+  // stale txnId — so verification (and the OTP itself) never lined up.
   const newTxnId = uuidv4();
 
   const otpData = {
@@ -65,9 +57,16 @@ export const driverLogin = async (
     600,
   );
 
+  // Actually deliver the OTP to the driver's phone (was never sent before).
+  try {
+    await sendOtpSms(mobileNumber, String(otp));
+  } catch (err) {
+    console.error("[DriverAuth] Failed to send login OTP SMS:", err);
+  }
+
   req.rData = {
     driverRegistered: !!driver,
-    txnId: txnId || newTxnId,
+    txnId: newTxnId,
   };
 
   req.msg = "otp_sent";
@@ -733,6 +732,13 @@ export const resendDriverOtp = async (
     JSON.stringify(otpData),
     600,
   );
+
+  // Deliver the resent OTP to the driver's phone.
+  try {
+    await sendOtpSms(mobileNumber, String(otp));
+  } catch (err) {
+    console.error("[DriverAuth] Failed to resend OTP SMS:", err);
+  }
 
   const driver = await DriverService.getDriverByMobile(
     mobileNumber,

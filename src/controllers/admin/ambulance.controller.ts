@@ -107,10 +107,7 @@ export const assign = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const { staffId, role } = req.body as {
-    staffId: string;
-    role: "driver" | "attendant";
-  };
+  const { staffId } = req.body as { staffId: string };
 
   const ambulance = await Ambulance.findById(req.params.id);
   if (!ambulance) {
@@ -128,12 +125,10 @@ export const assign = async (
     return next();
   }
 
-  if (staff.role !== role) {
-    req.rCode = 0;
-    req.msg = "staff_role_mismatch";
-    req.rData = { staffRole: staff.role, requestedRole: role };
-    return next();
-  }
+  // The seat (driver/attendant) is decided by the staff member's OWN role —
+  // the backend is the source of truth, so the client never sends a role.
+  const role: "driver" | "attendant" =
+    staff.role === "attendant" ? "attendant" : "driver";
 
   if (String(staff.providerId) !== String(ambulance.providerId)) {
     req.rCode = 0;

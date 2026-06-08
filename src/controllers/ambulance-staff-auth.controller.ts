@@ -5,6 +5,7 @@ import AmbulanceStaff from "../models/ambulance-staff.model";
 import helpers from "../utils/helpers";
 import redis from "../utils/redis";
 import config from "../config";
+import { sendOtpSms } from "../services/sms.service";
 
 const OTP_TTL_SEC = 600;
 
@@ -54,6 +55,14 @@ export const login = async (
 
   if (config.env !== "production") {
     console.log(`[DEV] Ambulance staff OTP for ${mobileNumber}: ${otp}`);
+  }
+
+  // Actually deliver the OTP to the staff member's phone (was console-only
+  // before, so on-device login never received a code in production).
+  try {
+    await sendOtpSms(mobileNumber, String(otp));
+  } catch (err) {
+    console.error("[AmbStaffAuth] Failed to send login OTP SMS:", err);
   }
 
   req.rData = { txnId, role: staff.role };
