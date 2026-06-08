@@ -113,9 +113,17 @@ export const arrived = async (req: Request, _res: Response, next: NextFunction) 
 };
 
 /** POST /requests/:id/start — patient onboard, heading to hospital. */
-export const startTrip = async (req: Request, _res: Response, next: NextFunction) => {
+export const startTrip = async (req: Request, res: Response, next: NextFunction) => {
   const r = await own(req);
   if (!guard(req, next, r)) return;
+  // Verify the patient's OTP before the trip can start (the patient sees this
+  // OTP in their tracking screen and reads it out to the crew).
+  const otp = String(req.body?.otp || "").trim();
+  if (r.otp && otp !== String(r.otp)) {
+    return res
+      .status(400)
+      .json({ rCode: 0, rMsg: "Incorrect OTP. Ask the patient again.", rData: {} });
+  }
   r.status = "ON_TRIP";
   await r.save();
   await notifyPatient(r, "ON_TRIP", "Trip started", "You are on the way to the hospital.");

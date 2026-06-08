@@ -3,6 +3,7 @@ import { Types } from "mongoose";
 import * as SOSService from "../services/sos.service";
 import { SOSSubmission } from "../models/sos-submission.model";
 import User from "../models/Users";
+import { emitToAdmin } from "../utils/socket.util";
 
 /**
  * Get emergency contacts
@@ -193,9 +194,17 @@ export const triggerSOS = async (req: Request, res: Response) => {
           ? { location: { type: "Point", coordinates: [coords.lng, coords.lat] } }
           : {}),
       });
-      // NOTE: no admin "sos:new" emit here. The patient app also creates an
-      // emergency AmbulanceRequest which emits the single rich sos:new (with
-      // requestId) — emitting here too caused TWO alarm cards for one SOS.
+      // Single realtime alert → admin alarm modal. (This is the ONLY sos:new
+      // emit for an app SOS — SOSService no longer emits, and the SOS screen
+      // doesn't create an AmbulanceRequest, so there's no duplicate.)
+      emitToAdmin("sos:new", {
+        sosId: String(submission._id),
+        emergency: true,
+        patientName: req.body.name || patient?.fullName || "A patient",
+        address: fullAddress || address || "Location unavailable",
+        lat: hasCoords ? coords.lat : undefined,
+        lng: hasCoords ? coords.lng : undefined,
+      });
     } catch (e: any) {
       console.error("SOS dashboard/submission step failed (non-fatal):", e?.message);
     }

@@ -9,15 +9,68 @@ export const create = async (
   next: NextFunction,
 ) => {
   const adminId = req.adminId;
-  const staff = await AmbulanceStaff.create({
-    ...req.body,
-    createdByAdminId: adminId,
-    isActive: true,
+  const b = req.body || {};
+  const fullName = String(b.fullName || "").trim();
+  const mobileNumber = String(b.mobileNumber || "").trim();
+  const countryCode = String(b.countryCode || "+91").trim();
+
+  // Field validation → clean 400 messages the admin UI can show.
+  const errors: string[] = [];
+  if (!fullName) errors.push("Full name is required");
+  else if (fullName.length < 2) errors.push("Enter a valid full name");
+  if (!mobileNumber) errors.push("Mobile number is required");
+  else if (!/^[6-9]\d{9}$/.test(mobileNumber))
+    errors.push("Mobile number must be a valid 10-digit number (starting 6-9)");
+  if (!b.role || !["driver", "attendant"].includes(b.role))
+    errors.push("A valid role (driver/attendant) is required");
+  if (!b.providerId) errors.push("Service provider is required");
+  if (b.email && !/^\S+@\S+\.\S+$/.test(String(b.email).trim()))
+    errors.push("Enter a valid email address");
+  if (errors.length) {
+    return res
+      .status(400)
+      .json({ code: 0, message: errors.join(". "), data: {} });
+  }
+
+  // Reject duplicate active staff with the same number up front.
+  const dup = await AmbulanceStaff.findOne({
+    mobileNumber,
+    countryCode,
     isDeleted: false,
-  });
-  req.rData = { staff };
-  req.msg = "staff_created";
-  next();
+  }).lean();
+  if (dup) {
+    return res.status(400).json({
+      code: 0,
+      message: "A staff member with this mobile number already exists.",
+      data: {},
+    });
+  }
+
+  try {
+    const staff = await AmbulanceStaff.create({
+      ...b,
+      fullName,
+      mobileNumber,
+      countryCode,
+      createdByAdminId: adminId,
+      isActive: true,
+      isDeleted: false,
+    });
+    req.rData = { staff };
+    req.msg = "staff_created";
+    next();
+  } catch (e: any) {
+    if (e?.code === 11000) {
+      return res.status(400).json({
+        code: 0,
+        message: "A staff member with this mobile number already exists.",
+        data: {},
+      });
+    }
+    return res
+      .status(400)
+      .json({ code: 0, message: e?.message || "Could not create staff", data: {} });
+  }
 };
 
 export const list = async (
