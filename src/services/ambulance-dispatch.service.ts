@@ -103,7 +103,15 @@ export const getNearbyAmbulances = async (
   const results: NearbyAmbulance[] = shortlist.map((a: any) => {
     const lat = a.currentLocation?.coordinates?.[1];
     const lng = a.currentLocation?.coordinates?.[0];
-    const hasLoc = typeof lat === "number" && typeof lng === "number";
+    // A vehicle that has never pinged real GPS has currentLocation [0,0] — that
+    // is NOT a real position, so don't compute distance against it (it produced
+    // nonsense like "8778 km" from the null-island origin). Treat as unknown.
+    const hasLoc =
+      Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      (lat !== 0 || lng !== 0) &&
+      Math.abs(lat) <= 90 &&
+      Math.abs(lng) <= 180;
     const straightKm = hasLoc
       ? haversineKm(patientLat, patientLng, lat, lng)
       : 0;
