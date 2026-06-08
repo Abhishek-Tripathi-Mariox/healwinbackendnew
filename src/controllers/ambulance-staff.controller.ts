@@ -68,12 +68,10 @@ export const setDuty = async (
   // reason exists and is still active so a stale picker selection can't
   // sneak in.
   let reasonLabel: string | undefined;
-  if (isDutyOn === false) {
-    if (!reasonId) {
-      return res
-        .status(400)
-        .json({ rCode: 0, rMsg: "reason_required", rData: {} });
-    }
+  // Off-duty: a reason is OPTIONAL (the in-app duty toggle has no picker, so
+  // requiring one made every toggle-off fail). If a reason IS supplied, still
+  // validate it so a stale/disabled selection can't sneak in.
+  if (isDutyOn === false && reasonId) {
     const reason = await OffDutyReason.findById(reasonId).lean();
     if (!reason || !reason.isActive) {
       return res

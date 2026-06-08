@@ -3,9 +3,6 @@ import Ambulance from "../models/ambulance.model";
 import AmbulanceStaff from "../models/ambulance-staff.model";
 import { SOSAlert } from "../models/sos.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
-import { distanceMatrix } from "./distance-matrix.service";
-
-const STALE_LOCATION_MS = 5 * 60 * 1000; // 5 minutes
 
 export interface NearbyAmbulance {
   ambulanceId: string;
@@ -38,34 +35,30 @@ export const getNearbyAmbulances = async (
   patientLng: number,
   excludeAmbulanceIds: Types.ObjectId[] = [],
   limit = 10,
-  maxDistanceKm = 10,
+  // Kept for API compatibility; ignored in GPS-optional mode (see below).
+  _maxDistanceKm = 10,
 ): Promise<NearbyAmbulance[]> => {
-  const staleCutoff = new Date(Date.now() - STALE_LOCATION_MS);
-
-  const geoNearStage: Record<string, unknown> = {
-    near: { type: "Point", coordinates: [patientLng, patientLat] },
-    distanceField: "distanceMeters",
-    spherical: true,
-    query: {
-      // status:"available" already excludes anything on_dispatch /
-      // offline / maintenance, so occupied vehicles never appear here.
-      status: "available",
-      isActive: true,
-      lastLocationAt: { $gte: staleCutoff },
-      assignedDriverId: { $ne: null },
-      assignedAttendantId: { $ne: null },
-      ...(excludeAmbulanceIds.length > 0
-        ? { _id: { $nin: excludeAmbulanceIds } }
-        : {}),
-    },
-  };
-  if (maxDistanceKm > 0) {
-    geoNearStage.maxDistance = maxDistanceKm * 1000;
-  }
-
+  // GPS-OPTIONAL MODE (live GPS not available yet): we no longer require a
+  // fresh ambulance location to dispatch. We list every eligible ambulance
+  // (active, available, both crew seats assigned, crew not deleted). A vehicle's
+  // position is whatever its assigned driver last reported (Ambulance
+  // .currentLocation is written from the driver's pings); when that exists we
+  // show distance/ETA, otherwise distance is unknown (0) and the radius cap is
+  // skipped. The old $geoNear path is gone because it silently dropped every
+  // vehicle without a location.
   const pipeline: any[] = [
-    { $geoNear: geoNearStage },
-    { $limit: limit * 3 },
+    {
+      $match: {
+        // status:"available" already excludes on_dispatch / offline / maintenance.
+        status: "available",
+        isActive: true,
+        assignedDriverId: { $ne: null },
+        assignedAttendantId: { $ne: null },
+        ...(excludeAmbulanceIds.length > 0
+          ? { _id: { $nin: excludeAmbulanceIds } }
+          : {}),
+      },
+    },
     {
       $lookup: {
         from: "ambulancestaffs",
@@ -85,22 +78,11 @@ export const getNearbyAmbulances = async (
     },
     { $unwind: "$attendant" },
     {
-      // Crew must be active (not deleted/deactivated by admin), but
-      // we don't require both online here — the duty handler already
-      // set `status: "available"` based on at-least-one-online policy,
-      // so the geoNear status filter is the gate. Requiring AT LEAST
-      // ONE reachable FCM token guarantees the dispatch push has
-      // somewhere to land — otherwise sending a dispatch FCM is a
-      // no-op and the crew never sees the alert.
       $match: {
         "driver.isActive": true,
         "driver.isDeleted": false,
         "attendant.isActive": true,
         "attendant.isDeleted": false,
-        $or: [
-          { "driver.fcmToken": { $ne: null } },
-          { "attendant.fcmToken": { $ne: null } },
-        ],
       },
     },
     {
@@ -112,61 +94,47 @@ export const getNearbyAmbulances = async (
       },
     },
     { $unwind: "$provider" },
-    { $limit: limit },
+    { $limit: limit * 3 },
   ];
 
   const shortlist = await Ambulance.aggregate(pipeline);
   if (shortlist.length === 0) return [];
 
-  const destinations = shortlist.map((a: any) => ({
-    lat: a.currentLocation.coordinates[1],
-    lng: a.currentLocation.coordinates[0],
-  }));
+  const results: NearbyAmbulance[] = shortlist.map((a: any) => {
+    const lat = a.currentLocation?.coordinates?.[1];
+    const lng = a.currentLocation?.coordinates?.[0];
+    const hasLoc = typeof lat === "number" && typeof lng === "number";
+    const straightKm = hasLoc
+      ? haversineKm(patientLat, patientLng, lat, lng)
+      : 0;
+    return {
+      ambulanceId: String(a._id),
+      providerId: String(a.provider._id),
+      providerName: a.provider.name,
+      registrationNumber: a.registrationNumber,
+      ambulanceType: a.ambulanceType,
+      driverId: String(a.driver._id),
+      driverName: a.driver.fullName,
+      driverPhone: a.driver.mobileNumber,
+      attendantId: String(a.attendant._id),
+      attendantName: a.attendant.fullName,
+      // Ambulance position = assigned driver's last reported position.
+      ambulanceLocation: { lat: hasLoc ? lat : 0, lng: hasLoc ? lng : 0 },
+      straightLineKm: Math.round(straightKm * 100) / 100,
+      roadDistanceKm: Math.round(straightKm * 100) / 100,
+      etaMinutes: hasLoc ? Math.round((straightKm / 40) * 60) : 0,
+    };
+  });
 
-  let matrix: {
-    distanceMeters: number;
-    durationSeconds: number;
-    status: string;
-  }[];
-  try {
-    matrix = await distanceMatrix(
-      { lat: patientLat, lng: patientLng },
-      destinations,
-    );
-  } catch (err) {
-    console.error(
-      "Distance Matrix failed — falling back to straight-line:",
-      err,
-    );
-    matrix = shortlist.map((a: any) => ({
-      distanceMeters: a.distanceMeters,
-      durationSeconds: Math.round((a.distanceMeters / 1000 / 40) * 3600),
-      status: "FALLBACK",
-    }));
-  }
-
-  const results: NearbyAmbulance[] = shortlist.map((a: any, i: number) => ({
-    ambulanceId: String(a._id),
-    providerId: String(a.provider._id),
-    providerName: a.provider.name,
-    registrationNumber: a.registrationNumber,
-    ambulanceType: a.ambulanceType,
-    driverId: String(a.driver._id),
-    driverName: a.driver.fullName,
-    driverPhone: a.driver.mobileNumber,
-    attendantId: String(a.attendant._id),
-    attendantName: a.attendant.fullName,
-    ambulanceLocation: {
-      lat: a.currentLocation.coordinates[1],
-      lng: a.currentLocation.coordinates[0],
-    },
-    straightLineKm: Math.round((a.distanceMeters / 1000) * 100) / 100,
-    roadDistanceKm: Math.round((matrix[i].distanceMeters / 1000) * 100) / 100,
-    etaMinutes: Math.round(matrix[i].durationSeconds / 60),
-  }));
-
-  results.sort((a, b) => a.roadDistanceKm - b.roadDistanceKm);
-  return results;
+  // Known-distance vehicles first (nearest first); unknown-location ones last.
+  results.sort((a, b) => {
+    const au = a.roadDistanceKm === 0;
+    const bu = b.roadDistanceKm === 0;
+    if (au && !bu) return 1;
+    if (bu && !au) return -1;
+    return a.roadDistanceKm - b.roadDistanceKm;
+  });
+  return results.slice(0, limit);
 };
 
 /**

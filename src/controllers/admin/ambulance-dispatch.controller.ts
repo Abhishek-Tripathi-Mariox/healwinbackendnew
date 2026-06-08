@@ -152,9 +152,9 @@ const fleetDiagnostics = async () => {
       r.hasDriver &&
       r.hasAttendant &&
       // New rule: at least one crew member online is enough.
-      (r.driverOnline || r.attendantOnline) &&
-      r.lastLocationAt &&
-      r.lastLocationAt >= staleCutoff
+      // NOTE: live-GPS / stale-location is NO LONGER a dispatch gate (GPS not
+      // available yet) — a vehicle is dispatchable on crew + status alone.
+      (r.driverOnline || r.attendantOnline)
     ) {
       stats.available++;
     }
