@@ -214,7 +214,7 @@ export const updateLocation = async (
         status: { $in: ["ASSIGNED", "ARRIVED", "ON_TRIP"] },
       },
       { driverLocation: { lat, lng }, lastLocationAt: now },
-      { returnDocument: "after", new: true },
+      { returnDocument: "after" },
     );
     if (activeReq) {
       const distanceKm = haversineKm(activeReq.pickup, { lat, lng });
@@ -236,7 +236,7 @@ export const updateLocation = async (
         status: { $in: ["ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE", "ON_TRIP"] },
       } as any,
       { driverLocation: { lat, lng }, lastLocationAt: now },
-      { returnDocument: "after", new: true },
+      { returnDocument: "after" },
     );
     if (activeDisp?.patientUserId) {
       const coords = activeDisp.patientLocation?.coordinates;
@@ -259,11 +259,41 @@ export const updateLocation = async (
 };
 
 /**
- * Staff can update ONLY their own profile photo. All other profile fields
- * (name, email, license number, gender, dob, …) are admin-managed via the
- * /admin/ambulance-staff endpoints — there is intentionally no general-purpose
- * "update me" endpoint here.
+ * Self-service profile edit. Staff may change their own personal details
+ * (name, email, gender, dob) and photo. Organisational fields — mobile number,
+ * role, provider/hospital assignment — remain admin-managed via the
+ * /admin/ambulance-staff endpoints and are intentionally not editable here.
  */
+export const updateProfile = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const staffId = (req as any).staffId;
+  const { fullName, email, gender, dob } = req.body;
+
+  const staff = await AmbulanceStaff.findByIdAndUpdate(
+    staffId,
+    {
+      ...(fullName && { fullName }),
+      ...(email !== undefined && { email }),
+      ...(gender && { gender }),
+      ...(dob !== undefined && { dob }),
+    },
+    { returnDocument: "after" },
+  ).lean();
+
+  if (!staff) {
+    return res
+      .status(404)
+      .json({ rCode: 0, rMsg: "not_found", rData: {} });
+  }
+
+  req.rData = { staff };
+  req.msg = "profile_updated";
+  next();
+};
+
 export const updateProfilePhoto = async (
   req: Request,
   res: Response,

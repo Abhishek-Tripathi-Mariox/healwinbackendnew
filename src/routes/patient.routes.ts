@@ -6,6 +6,7 @@ import fs from "fs";
 import AuthMiddleware from "../middlewares/auth.middleware";
 import Pharmacy from "../models/pharmacy.model";
 import PatientFamilyMember from "../models/patient-family-member.model";
+import SavedContact from "../models/saved-contact.model";
 import PatientMedicalRecord from "../models/patient-medical-record.model";
 import { Admin } from "../models/admin.model";
 import LabTest from "../models/lab-test.model";
@@ -124,6 +125,53 @@ router.put("/family-members/:id", verifyUserToken, familyUpload.single("photo"),
 
 router.delete("/family-members/:id", verifyUserToken, async (req, res) => {
   await PatientFamilyMember.deleteOne({ _id: (req.params.id as string), userId: uid(req) });
+  ok(res);
+});
+
+// ================== Saved contacts — "book for someone else" (persisted) ==================
+// A reusable recipient book (name + phone + optional address/location), parcel-app
+// style: pick a saved contact when booking an ambulance for another person, and it's
+// remembered for next time.
+const contactFields = (b: any) => ({
+  name: b.name,
+  phone: b.phone,
+  relation: b.relation || undefined,
+  address: b.address || undefined,
+  lat: b.lat != null ? Number(b.lat) : undefined,
+  lng: b.lng != null ? Number(b.lng) : undefined,
+  isDefault: b.isDefault === true || b.isDefault === "true",
+});
+
+router.get("/contacts", verifyUserToken, async (req, res) => {
+  const list = await SavedContact.find({ userId: uid(req) }).sort({ isDefault: -1, createdAt: -1 }).lean();
+  res.json({ success: true, data: list, message: "ok" });
+});
+
+router.post("/contacts", verifyUserToken, async (req, res) => {
+  const f = contactFields(req.body ?? {});
+  if (!f.name || !f.phone) {
+    return res.status(400).json({ success: false, message: "name and phone are required" });
+  }
+  // Only one default per user.
+  if (f.isDefault) await SavedContact.updateMany({ userId: uid(req) }, { $set: { isDefault: false } });
+  const contact = await SavedContact.create({ userId: uid(req), ...f });
+  ok(res, contact);
+});
+
+router.put("/contacts/:id", verifyUserToken, async (req, res) => {
+  const f = contactFields(req.body ?? {});
+  if (f.isDefault) await SavedContact.updateMany({ userId: uid(req) }, { $set: { isDefault: false } });
+  const updated = await SavedContact.findOneAndUpdate(
+    { _id: (req.params.id as string), userId: uid(req) },
+    { $set: f },
+    { new: true },
+  );
+  if (!updated) return res.status(404).json({ success: false, message: "Contact not found" });
+  ok(res, updated);
+});
+
+router.delete("/contacts/:id", verifyUserToken, async (req, res) => {
+  await SavedContact.deleteOne({ _id: (req.params.id as string), userId: uid(req) });
   ok(res);
 });
 
@@ -359,6 +407,9 @@ const toApp = (r: any) => {
     drop: r.drop || null,
     patientName: r.patientName || null,
     notes: r.notes || null,
+    contactId: r.contactId ? String(r.contactId) : null,
+    recipientName: r.recipientName || null,
+    recipientPhone: r.recipientPhone || null,
     driver: r.driverName ? { name: r.driverName, phone: r.driverPhone } : null,
     vehicle: r.vehicleNumber ? { number: r.vehicleNumber } : null,
     otp: r.otp || null,
@@ -374,14 +425,22 @@ const toApp = (r: any) => {
 
 const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
   const b: any = req.body ?? {};
+  // "Book for someone else": the patient may send a saved contact (contactId)
+  // plus the recipient's name/phone. We mirror the recipient name into
+  // patientName so the existing admin/driver "who is this for" display works
+  // without changes, and keep the structured recipient fields too.
+  const recipientName = b.recipientName || b.patientName || undefined;
   const r = await AmbulanceRequest.create({
     userId: uid(req),
     type: b.type,
     emergency,
     pickup: b.pickup || {},
     drop: b.drop,
-    patientName: b.patientName,
+    patientName: recipientName,
     notes: b.notes,
+    contactId: b.contactId || undefined,
+    recipientName,
+    recipientPhone: b.recipientPhone || undefined,
     status: "SEARCHING",
   });
   // Real-time: light up the admin dispatch dashboard the instant a request
@@ -391,6 +450,7 @@ const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
     emergency,
     type: r.type || "Ambulance",
     patientName: r.patientName || null,
+    recipientPhone: r.recipientPhone || null,
     pickup: r.pickup || null,
     createdAt: r.createdAt,
   });

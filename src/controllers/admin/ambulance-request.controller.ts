@@ -94,6 +94,7 @@ export const assign = async (req: Request, _res: Response, next: NextFunction) =
       requestId: String(reqDoc._id),
       kind: "request",
       patientName: reqDoc.patientName || "Patient",
+      patientPhone: reqDoc.recipientPhone || undefined,
       address: reqDoc.pickup?.address || "Patient location",
       patientLat: reqDoc.pickup?.lat,
       patientLng: reqDoc.pickup?.lng,

@@ -33,6 +33,11 @@ export interface IAmbulanceRequest {
   drop?: Loc;
   patientName?: string;
   notes?: string;
+  // "Book for someone else" — the saved contact this ride is for (parcel-style).
+  // patientName mirrors the recipient's name for existing admin/driver display.
+  contactId?: Types.ObjectId;
+  recipientName?: string;
+  recipientPhone?: string;
   status: AmbulanceRequestStatus;
   // Assignment
   ambulanceId?: Types.ObjectId;
@@ -64,6 +69,9 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     drop: { type: LocSchema },
     patientName: String,
     notes: String,
+    contactId: { type: Schema.Types.ObjectId, ref: "SavedContact" },
+    recipientName: String,
+    recipientPhone: String,
     status: {
       type: String,
       enum: ["SEARCHING", "ASSIGNED", "ARRIVED", "ON_TRIP", "COMPLETED", "CANCELLED"],

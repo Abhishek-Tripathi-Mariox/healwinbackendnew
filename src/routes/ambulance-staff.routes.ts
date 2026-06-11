@@ -35,6 +35,13 @@ router.post(
   ResponseMiddleware,
 );
 
+router.put(
+  "/profile",
+  auth.verifyStaffToken,
+  ErrorHandlerMiddleware(C.updateProfile),
+  ResponseMiddleware,
+);
+
 router.post(
   "/profile-photo",
   auth.verifyStaffToken,
