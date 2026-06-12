@@ -14,7 +14,11 @@ import { sendToUser, sendDispatchPush } from "../../services/notification.servic
 const ACTIVE = ["SEARCHING", "ASSIGNED", "ARRIVED", "ON_TRIP"];
 
 export const list = async (req: Request, _res: Response, next: NextFunction) => {
-  const query: any = {};
+  // SOS emergencies are handled exclusively by the SOS Dashboard (SOSSubmission
+  // + EmergencyDispatch). The Ambulance Requests queue must only show ordinary
+  // patient ambulance bookings, so emergency-flagged requests are excluded here
+  // permanently — even if one ever gets created, it never leaks into this list.
+  const query: any = { emergency: { $ne: true } };
   if (req.query.status) query.status = req.query.status;
   else query.status = { $in: ACTIVE }; // default: open requests
   const items = await AmbulanceRequest.find(query)
@@ -58,7 +62,33 @@ export const assign = async (req: Request, _res: Response, next: NextFunction) =
   reqDoc.vehicleNumber = b.vehicleNumber;
   reqDoc.etaMinutes = b.etaMinutes != null ? Number(b.etaMinutes) : reqDoc.etaMinutes;
   if (b.ambulanceId) reqDoc.ambulanceId = b.ambulanceId;
-  if (b.driverStaffId) reqDoc.driverStaffId = b.driverStaffId;
+
+  // Resolve the ambulance crew member to notify. Preferred: the admin picked a
+  // real driver from the crew dropdown (driverStaffId). Fallback: the admin used
+  // "manual entry" and only typed a phone — match it against a registered
+  // driver/staff so the driver STILL gets a dispatch alert. We match on the last
+  // 10 digits so country-code/spacing differences ("+91 98765 43210" vs
+  // "9876543210") don't break the lookup.
+  if (b.driverStaffId) {
+    reqDoc.driverStaffId = b.driverStaffId;
+  } else if (b.driverPhone) {
+    const last10 = String(b.driverPhone).replace(/\D/g, "").slice(-10);
+    if (last10.length === 10) {
+      const match: any = await AmbulanceStaff.findOne({
+        mobileNumber: { $regex: `${last10}$` },
+        isDeleted: { $ne: true },
+      })
+        .select("_id fullName mobileNumber")
+        .lean();
+      if (match) {
+        reqDoc.driverStaffId = match._id;
+        // Backfill the display name from the matched crew record if the admin
+        // left it blank.
+        if (!reqDoc.driverName) reqDoc.driverName = match.fullName;
+      }
+    }
+  }
+
   reqDoc.status = "ASSIGNED";
   reqDoc.assignedAt = new Date();
   if (!reqDoc.otp) reqDoc.otp = String(Math.floor(1000 + Math.random() * 9000));
