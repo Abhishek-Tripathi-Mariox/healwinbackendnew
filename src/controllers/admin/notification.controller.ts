@@ -5,6 +5,7 @@ import { DeviceToken } from "../../models/device-token.model";
 import { Notification } from "../../models/notification.model";
 import User from "../../models/Users";
 import AmbulanceStaff from "../../models/ambulance-staff.model";
+import { emitToUser } from "../../utils/socket.util";
 
 type Audience = "ALL" | "ANONYMOUS" | "PATIENTS" | "DRIVERS";
 
@@ -235,6 +236,17 @@ export const sendToUser = async (req: Request, res: Response) => {
       body,
       data: { ...(data || {}), route },
       isRead: false,
+    });
+
+    // Real-time: surface the admin message in the user's app immediately.
+    emitToUser(String(oid), "notification:new", {
+      _id: String(notification._id),
+      type: notifType,
+      title,
+      body,
+      data: { ...(data || {}), route },
+      isRead: false,
+      createdAt: (notification as any).createdAt,
     });
 
     let success = 0;

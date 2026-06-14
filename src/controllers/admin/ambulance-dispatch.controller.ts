@@ -11,7 +11,7 @@ import { EmergencyDispatch } from "../../models/emergency-dispatch.model";
 import AmbulanceStaff from "../../models/ambulance-staff.model";
 import Ambulance from "../../models/ambulance.model";
 import { sendDispatchPush, sendToUser } from "../../services/notification.service";
-import { emitToUser } from "../../utils/socket.util";
+import { emitToUser, emitToSosSubmission } from "../../utils/socket.util";
 
 /** Find the app patient behind an SOS (submission or alert) for notify/track. */
 const resolvePatientUserId = async (
@@ -350,6 +350,15 @@ export const dispatch = async (
     sosId: String((req.params.sosId as string)),
     dispatchId: String(dispatchDoc._id),
   });
+
+  // Public website caller (anonymous) watching this submission → "ambulance on
+  // the way" with ETA.
+  if (sos.source === "SUBMISSION") {
+    emitToSosSubmission(String((req.params.sosId as string)), "DISPATCHED", {
+      dispatchId: String(dispatchDoc._id),
+      etaMinutes: picked.etaMinutes,
+    });
+  }
 
   // Notify the SOS patient — their app flips from "SOS sent" to live tracking.
   if (patientUserId) {

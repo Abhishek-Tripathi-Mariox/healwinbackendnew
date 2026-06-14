@@ -27,10 +27,15 @@ interface Loc {
 export interface IAmbulanceRequest {
   _id: Types.ObjectId;
   userId: Types.ObjectId;
-  type?: string; // BLS / ALS / etc. (display)
+  type?: string; // BLS / ALS / etc. (display name, resolved from VehicleType)
+  vehicleTypeId?: Types.ObjectId; // chosen VehicleType (fare source of truth)
   emergency: boolean;
   pickup: Loc;
   drop?: Loc;
+  // Real fare, computed at booking time from the VehicleType + trip distance.
+  distanceKm?: number;
+  amount?: number;
+  fareBreakdown?: Record<string, any>;
   patientName?: string;
   notes?: string;
   // "Book for someone else" — the saved contact this ride is for (parcel-style).
@@ -64,9 +69,13 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
     type: String,
+    vehicleTypeId: { type: Schema.Types.ObjectId, ref: "VehicleType" },
     emergency: { type: Boolean, default: false },
     pickup: { type: LocSchema, default: () => ({}) },
     drop: { type: LocSchema },
+    distanceKm: Number,
+    amount: Number,
+    fareBreakdown: { type: Schema.Types.Mixed },
     patientName: String,
     notes: String,
     contactId: { type: Schema.Types.ObjectId, ref: "SavedContact" },

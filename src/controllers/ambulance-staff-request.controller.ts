@@ -141,10 +141,41 @@ export const complete = async (req: Request, _res: Response, next: NextFunction)
   if (r.ambulanceId) {
     await Ambulance.updateOne(
       { _id: r.ambulanceId },
-      { status: "available" },
+      { status: "available", currentDispatchId: null },
     ).catch(() => undefined);
   }
   await notifyPatient(r, "COMPLETED", "Trip completed", "Your ambulance trip is complete. Get well soon.");
+  req.rData = { request: r };
+  req.msg = "success";
+  return next();
+};
+
+/**
+ * POST /requests/:id/reject — crew declines the dispatch (same as SOS reject).
+ * Releases the reserved ambulance, reverts the request to SEARCHING so admin can
+ * re-dispatch, and clears the assignment so the patient app shows "Finding…".
+ */
+export const reject = async (req: Request, _res: Response, next: NextFunction) => {
+  const r = await own(req);
+  if (!guard(req, next, r)) return;
+  if (r.ambulanceId) {
+    await Ambulance.updateOne(
+      { _id: r.ambulanceId },
+      { status: "available", currentDispatchId: null },
+    ).catch(() => undefined);
+  }
+  const userId = String(r.userId);
+  r.status = "SEARCHING";
+  r.ambulanceId = undefined;
+  r.driverStaffId = undefined;
+  r.driverName = undefined;
+  r.driverPhone = undefined;
+  r.vehicleNumber = undefined;
+  r.etaMinutes = undefined;
+  r.assignedAt = undefined;
+  await r.save();
+  // Patient app flips back to "Finding an ambulance".
+  emitToUser(userId, "booking:status", { requestId: String(r._id), status: "SEARCHING" });
   req.rData = { request: r };
   req.msg = "success";
   return next();

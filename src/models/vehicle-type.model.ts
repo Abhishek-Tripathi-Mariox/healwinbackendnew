@@ -5,6 +5,16 @@ const VehicleTypeSchema = new Schema<IVehicleType>(
   {
     name: { type: String, required: true, unique: true },
     description: { type: String },
+    // Distinguishes ambulance "Types & Pricing" entries (shown in the patient
+    // ambulance booking) from legacy goods/parcel vehicle types. Defaults to
+    // "ambulance" since this product is ambulance-first; legacy rows created
+    // before this field simply lack it and are excluded from the ambulance list.
+    category: {
+      type: String,
+      enum: ["ambulance", "goods"],
+      default: "ambulance",
+      index: true,
+    },
     maxWeightKg: { type: Number, required: true },
     baseFare: { type: Number, required: true, min: 0 },
     perKmRate: { type: Number, required: true, min: 0 },

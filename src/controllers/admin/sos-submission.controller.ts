@@ -313,6 +313,12 @@ export const updateSubmissionStatus = async (req: Request, res: Response) => {
       io.to("admin").emit("sos:submission-updated", {
         submission,
       });
+      // Public website caller watching this submission's live status.
+      io.to(`sos-submission:${id}`).emit("sos:status", {
+        submissionId: String(id),
+        status,
+        timestamp: new Date().toISOString(),
+      });
     }
 
     res.json({

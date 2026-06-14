@@ -81,6 +81,8 @@ import adminHrDashboardRoutes from "./admin-hr-dashboard.routes";
 // Patient-app catalog (doctors / pharmacy products / lab tests)
 import adminCatalogRoutes from "./admin-catalog.routes";
 import adminAmbulanceRequestsRoutes from "./admin-ambulance-requests.routes";
+import adminMembershipRoutes from "./admin-membership.routes";
+import adminHomePromoRoutes from "./admin-home-promo.routes";
 
 const router = Router();
 
@@ -164,6 +166,8 @@ router.use("/admin/hr/dashboard", adminHrDashboardRoutes);
 // Patient-app catalog management
 router.use("/admin/catalog", adminCatalogRoutes);
 router.use("/admin/ambulance-requests", adminAmbulanceRequestsRoutes);
+router.use("/admin/membership-plans", adminMembershipRoutes);
+router.use("/admin/home-promos", adminHomePromoRoutes);
 
 router.use("/admin", ambulanceDispatchRoutes);
 router.use("/admin", adminRoutes);

@@ -129,7 +129,7 @@ router.get(
 
 // ===== Leave / Patients / Case-notes / Stock (staff app) =====
 router.get("/leaves", auth.verifyStaffToken, ErrorHandlerMiddleware(X.listLeaves), ResponseMiddleware);
-router.post("/leaves", auth.verifyStaffToken, ErrorHandlerMiddleware(X.applyLeave), ResponseMiddleware);
+router.post("/leaves", auth.verifyStaffToken, upload.array("attachment", 1), ErrorHandlerMiddleware(X.applyLeave), ResponseMiddleware);
 router.get("/patients", auth.verifyStaffToken, ErrorHandlerMiddleware(X.listPatients), ResponseMiddleware);
 router.post("/patients", auth.verifyStaffToken, ErrorHandlerMiddleware(X.addPatient), ResponseMiddleware);
 router.post("/case-notes", auth.verifyStaffToken, ErrorHandlerMiddleware(X.saveCaseNote), ResponseMiddleware);
@@ -138,6 +138,7 @@ router.post("/stock-requests", auth.verifyStaffToken, ErrorHandlerMiddleware(X.c
 // ===== Patient AmbulanceRequest dispatch actions (SOS / Book-Ambulance loop) =====
 router.get("/requests/active", auth.verifyStaffToken, ErrorHandlerMiddleware(R.activeRequest), ResponseMiddleware);
 router.post("/requests/:id/accept", auth.verifyStaffToken, ErrorHandlerMiddleware(R.accept), ResponseMiddleware);
+router.post("/requests/:id/reject", auth.verifyStaffToken, ErrorHandlerMiddleware(R.reject), ResponseMiddleware);
 router.post("/requests/:id/en-route", auth.verifyStaffToken, ErrorHandlerMiddleware(R.enRoute), ResponseMiddleware);
 router.post("/requests/:id/arrived", auth.verifyStaffToken, ErrorHandlerMiddleware(R.arrived), ResponseMiddleware);
 router.post("/requests/:id/start", auth.verifyStaffToken, ErrorHandlerMiddleware(R.startTrip), ResponseMiddleware);

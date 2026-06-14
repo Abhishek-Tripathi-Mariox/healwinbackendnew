@@ -15,6 +15,7 @@ export interface IStaffLeave {
   toDate: Date;
   day: string; // 'Full Day' | 'Half Day'
   reason?: string;
+  attachmentUrl?: string; // optional supporting doc (e.g. medical certificate)
   status: "Pending" | "Approved" | "Rejected";
   createdAt: Date;
   updatedAt: Date;
@@ -27,6 +28,7 @@ const StaffLeaveSchema = new Schema<IStaffLeave>(
     toDate: { type: Date, required: true },
     day: { type: String, default: "Full Day" },
     reason: String,
+    attachmentUrl: String,
     status: { type: String, enum: ["Pending", "Approved", "Rejected"], default: "Pending" },
   },
   { timestamps: true },

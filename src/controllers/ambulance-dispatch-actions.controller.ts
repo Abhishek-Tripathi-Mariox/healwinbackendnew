@@ -5,7 +5,7 @@ import {
   rejectDispatch,
   transitionDispatch,
 } from "../services/ambulance-dispatch.service";
-import { emitToUser } from "../utils/socket.util";
+import { emitToUser, emitToSosSubmission } from "../utils/socket.util";
 
 const asId = (v: string) => new Types.ObjectId(v);
 
@@ -29,6 +29,13 @@ const notifyParties = (d: any) => {
     emitToUser(String(d.patientUserId), "booking:status", {
       dispatchId: String(d._id),
       status: d.status,
+    });
+  }
+  // Public website caller watching this SOS submission (anonymous, no user id).
+  if (d?.sosSubmission) {
+    emitToSosSubmission(String(d.sosSubmission), d.status, {
+      dispatchId: String(d._id),
+      etaMinutes: d.etaMinutes,
     });
   }
 };

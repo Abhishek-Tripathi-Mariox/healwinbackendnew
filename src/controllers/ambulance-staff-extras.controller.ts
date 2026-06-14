@@ -5,6 +5,7 @@ import {
   StaffCaseNote,
   StaffStockRequest,
 } from "../models/ambulance-staff-extras.model";
+import { uploadFileToAws } from "../utils/s3";
 
 /** Leave / Patient / Case-notes / Stock for the ambulance-staff app. */
 
@@ -25,6 +26,13 @@ export const applyLeave = async (req: Request, _res: Response, next: NextFunctio
     req.rData = { hint: "type, from and to are required" };
     return next();
   }
+  // Optional supporting document (e.g. medical certificate) sent as multipart.
+  let attachmentUrl: string | undefined;
+  const files = req.files as Express.Multer.File[] | undefined;
+  if (Array.isArray(files) && files.length > 0) {
+    const { images } = await uploadFileToAws(files);
+    attachmentUrl = images;
+  }
   const item = await StaffLeave.create({
     staffId: sid(req),
     type: b.type,
@@ -32,6 +40,7 @@ export const applyLeave = async (req: Request, _res: Response, next: NextFunctio
     toDate: new Date(b.to),
     day: b.day || "Full Day",
     reason: b.reason,
+    attachmentUrl,
   });
   req.rData = { item };
   req.msg = "success";

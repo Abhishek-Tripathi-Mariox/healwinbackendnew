@@ -5,6 +5,7 @@ export interface IVehicleType {
 
   name: string;
   description?: string;
+  category?: "ambulance" | "goods";
   maxWeightKg: number;
 
   baseFare: number;

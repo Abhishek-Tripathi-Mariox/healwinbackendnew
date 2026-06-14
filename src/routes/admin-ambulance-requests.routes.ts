@@ -23,6 +23,13 @@ router.get(
   ErrorHandlerMiddleware(C.detail),
   ResponseMiddleware,
 );
+router.get(
+  "/:id/nearby-ambulances",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.SOS_RESPOND),
+  ErrorHandlerMiddleware(C.nearby),
+  ResponseMiddleware,
+);
 router.post(
   "/:id/assign",
   auth.verifyAdminToken,

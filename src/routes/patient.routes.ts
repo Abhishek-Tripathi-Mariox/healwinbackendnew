@@ -13,8 +13,14 @@ import LabTest from "../models/lab-test.model";
 import PharmacyProduct from "../models/pharmacy-product.model";
 import AmbulanceRequest from "../models/ambulance-request.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
+import VehicleType from "../models/vehicle-type.model";
+import { PharmacyOrder, LabBooking, Consultation } from "../models/patient-commerce.model";
+import HomePromo from "../models/home-promo.model";
+import { MembershipPlan, UserMembership } from "../models/membership.model";
+import { calculateFare } from "../services/fare.service";
 import { haversineKm, etaMinutesFromKm } from "../utils/geo.util";
 import { emitToAdmin } from "../utils/socket.util";
+import { Types } from "mongoose";
 
 const router = Router();
 const { verifyUserToken } = AuthMiddleware();
@@ -223,12 +229,38 @@ router.get("/doctors/:id", async (req, res) => {
   ok(res, toAppDoctor(a));
 });
 router.get("/doctors/:id/slots", (_req, res) => emptyList(res));
-router.post("/consultations", verifyUserToken, (req, res) =>
-  ok(res, { _id: "stub", ...req.body })
-);
-router.get("/consultations/:id", verifyUserToken, (req, res) =>
-  res.status(404).json({ success: false, message: "Consultation not found" })
-);
+
+// Real, persisted doctor consultations (booked from the app, fulfilled by the
+// Doctor-role admin). Captures the doctor's fee + speciality at booking time.
+router.post("/consultations", verifyUserToken, async (req, res) => {
+  const b: any = req.body ?? {};
+  if (!b.doctorId) {
+    return res.status(400).json({ success: false, message: "doctorId is required" });
+  }
+  const doc = await Admin.findOne({ _id: b.doctorId, roleName: "Doctor", isDeleted: false }).lean();
+  if (!doc) return res.status(404).json({ success: false, message: "Doctor not found" });
+  const c = await Consultation.create({
+    userId: uid(req),
+    doctorId: doc._id,
+    doctorName: doc.fullName,
+    speciality: (doc as any).doctorProfile?.speciality,
+    familyMemberId: b.familyMemberId || undefined,
+    slotId: b.slotId || undefined,
+    symptoms: b.symptoms || undefined,
+    teleconsult: b.teleconsult !== false,
+    fee: (doc as any).doctorProfile?.consultationFee ?? 0,
+  });
+  ok(res, c);
+});
+router.get("/consultations", verifyUserToken, async (req, res) => {
+  const list = await Consultation.find({ userId: uid(req) }).sort({ createdAt: -1 }).lean();
+  res.json({ success: true, data: list, message: "ok" });
+});
+router.get("/consultations/:id", verifyUserToken, async (req, res) => {
+  const c = await Consultation.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
+  if (!c) return res.status(404).json({ success: false, message: "Consultation not found" });
+  ok(res, c);
+});
 
 // ================== Pharmacy (from DB) ==================
 router.get("/pharmacy/categories", async (_req, res) => {
@@ -252,13 +284,48 @@ router.get("/pharmacy/cart", verifyUserToken, (_req, res) =>
   ok(res, { items: [], total: 0 })
 );
 router.post("/pharmacy/cart", verifyUserToken, (req, res) => ok(res, req.body));
-router.post("/pharmacy/orders", verifyUserToken, (req, res) =>
-  ok(res, { _id: "stub", ...req.body })
-);
-router.get("/pharmacy/orders", verifyUserToken, (_req, res) => emptyList(res));
-router.get("/pharmacy/orders/:id", verifyUserToken, (req, res) =>
-  res.status(404).json({ success: false, message: "Order not found" })
-);
+
+// Real, persisted pharmacy orders. Prices are read from the catalog at order
+// time so the stored total can't be tampered with from the client.
+router.post("/pharmacy/orders", verifyUserToken, async (req, res) => {
+  const b: any = req.body ?? {};
+  const reqItems: { productId: string; qty: number }[] = Array.isArray(b.items) ? b.items : [];
+  if (reqItems.length === 0) {
+    return res.status(400).json({ success: false, message: "items are required" });
+  }
+  const ids = reqItems.map((i) => i.productId).filter(Boolean);
+  const products = await PharmacyProduct.find({ _id: { $in: ids }, isDeleted: { $ne: true } }).lean();
+  const byId = new Map(products.map((p: any) => [String(p._id), p]));
+  const items = reqItems
+    .map((i) => {
+      const p: any = byId.get(String(i.productId));
+      if (!p) return null;
+      const qty = Math.max(1, Number(i.qty) || 1);
+      return { productId: p._id, name: p.name, price: p.price ?? 0, qty };
+    })
+    .filter(Boolean) as any[];
+  if (items.length === 0) {
+    return res.status(400).json({ success: false, message: "No valid products in order" });
+  }
+  const totalAmount = items.reduce((s, it) => s + it.price * it.qty, 0);
+  const order = await PharmacyOrder.create({
+    userId: uid(req),
+    items,
+    addressId: b.addressId || undefined,
+    prescriptionUrl: b.prescriptionUrl || undefined,
+    totalAmount,
+  });
+  ok(res, order);
+});
+router.get("/pharmacy/orders", verifyUserToken, async (req, res) => {
+  const list = await PharmacyOrder.find({ userId: uid(req) }).sort({ createdAt: -1 }).lean();
+  res.json({ success: true, data: list, message: "ok" });
+});
+router.get("/pharmacy/orders/:id", verifyUserToken, async (req, res) => {
+  const o = await PharmacyOrder.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
+  if (!o) return res.status(404).json({ success: false, message: "Order not found" });
+  ok(res, o);
+});
 
 // ================== Lab tests (from DB) ==================
 router.get("/lab/tests", async (req, res) => {
@@ -274,13 +341,38 @@ router.get("/lab/tests/:id", async (req, res) => {
   if (!t) return res.status(404).json({ success: false, message: "Test not found" });
   ok(res, t);
 });
-router.post("/lab/bookings", verifyUserToken, (req, res) =>
-  ok(res, { _id: "stub", ...req.body })
-);
-router.get("/lab/bookings", verifyUserToken, (_req, res) => emptyList(res));
-router.get("/lab/bookings/:id", verifyUserToken, (req, res) =>
-  res.status(404).json({ success: false, message: "Lab booking not found" })
-);
+// Real, persisted lab bookings. Test prices captured from the catalog.
+router.post("/lab/bookings", verifyUserToken, async (req, res) => {
+  const b: any = req.body ?? {};
+  const testIds: string[] = Array.isArray(b.testIds) ? b.testIds : [];
+  if (testIds.length === 0) {
+    return res.status(400).json({ success: false, message: "testIds are required" });
+  }
+  const found = await LabTest.find({ _id: { $in: testIds }, isDeleted: { $ne: true } }).lean();
+  if (found.length === 0) {
+    return res.status(400).json({ success: false, message: "No valid tests in booking" });
+  }
+  const tests = found.map((t: any) => ({ testId: t._id, name: t.name, price: t.price ?? 0 }));
+  const totalAmount = tests.reduce((s, t) => s + t.price, 0);
+  const booking = await LabBooking.create({
+    userId: uid(req),
+    tests,
+    addressId: b.addressId || undefined,
+    familyMemberId: b.familyMemberId || undefined,
+    slot: b.slot || undefined,
+    totalAmount,
+  });
+  ok(res, booking);
+});
+router.get("/lab/bookings", verifyUserToken, async (req, res) => {
+  const list = await LabBooking.find({ userId: uid(req) }).sort({ createdAt: -1 }).lean();
+  res.json({ success: true, data: list, message: "ok" });
+});
+router.get("/lab/bookings/:id", verifyUserToken, async (req, res) => {
+  const bk = await LabBooking.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
+  if (!bk) return res.status(404).json({ success: false, message: "Lab booking not found" });
+  ok(res, bk);
+});
 
 // ================== Medical records ==================
 router.get("/medical-records", verifyUserToken, async (req, res) => {
@@ -373,20 +465,182 @@ router.get("/home/feed", (_req, res) =>
 );
 router.get("/home/banners", (_req, res) => emptyList(res));
 
-// ================== Ambulance (alias over bookings) ==================
-router.get("/ambulance/types", (_req, res) =>
+// Admin-managed home promo shortcut cards (real, ordered).
+router.get("/home/promos", async (_req, res) => {
+  const promos = await HomePromo.find({ isActive: true, isDeleted: { $ne: true } })
+    .sort({ sortOrder: 1, createdAt: 1 })
+    .lean();
   res.json({
     success: true,
-    data: [
-      { _id: "basic", name: "Basic Life Support", priceFrom: 800 },
-      { _id: "als", name: "Advanced Life Support", priceFrom: 1500 },
-      { _id: "icu", name: "ICU on wheels", priceFrom: 2500 },
-    ],
-  })
-);
-router.post("/ambulance/estimate", verifyUserToken, (req, res) =>
-  ok(res, { amount: 1200, currency: "INR", ...req.body })
-);
+    data: promos.map((p) => ({
+      _id: String(p._id),
+      titleTop: p.titleTop,
+      titleBold: p.titleBold,
+      cta: p.cta,
+      target: p.target,
+      image: p.image || null,
+    })),
+    message: "ok",
+  });
+});
+
+// ================== Membership ==================
+// Admin-managed plans + the user's active subscription.
+router.get("/membership/plans", async (_req, res) => {
+  const plans = await MembershipPlan.find({ isActive: true, isDeleted: { $ne: true } })
+    .sort({ sortOrder: 1, price: 1 })
+    .lean();
+  res.json({
+    success: true,
+    data: plans.map((p) => ({
+      _id: String(p._id),
+      tier: p.tier,
+      name: p.name,
+      price: p.price,
+      durationMonths: p.durationMonths,
+      concessionPercent: p.concessionPercent ?? 0,
+      bullets: p.bullets || [],
+    })),
+    message: "ok",
+  });
+});
+
+// The user's current active membership (null if none) — drives the "active
+// plan" card with real enrolment/validity + live family-member count.
+router.get("/membership", verifyUserToken, async (req, res) => {
+  const m: any = await UserMembership.findOne({ userId: uid(req), status: "active" })
+    .sort({ createdAt: -1 })
+    .lean();
+  if (!m) return ok(res, null);
+  const familyCount = await PatientFamilyMember.countDocuments({ userId: uid(req) });
+  ok(res, {
+    _id: String(m._id),
+    planName: m.planName,
+    tier: m.tier,
+    enrolledAt: m.enrolledAt,
+    validUpto: m.validUpto,
+    familyCount,
+    status: m.status,
+  });
+});
+
+// Enroll into a plan. Payment is handled separately (mock for now); this records
+// the membership with a real validity window derived from the plan duration.
+router.post("/membership/enroll", verifyUserToken, async (req, res) => {
+  const planId = (req.body?.planId as string) || "";
+  const plan: any = await MembershipPlan.findOne({ _id: planId, isActive: true, isDeleted: { $ne: true } }).lean();
+  if (!plan) return res.status(404).json({ success: false, message: "Plan not found" });
+  const enrolledAt = new Date();
+  const validUpto = new Date(enrolledAt);
+  validUpto.setMonth(validUpto.getMonth() + (plan.durationMonths || 12));
+  // One active membership per user — supersede any prior active one.
+  await UserMembership.updateMany(
+    { userId: uid(req), status: "active" },
+    { $set: { status: "cancelled" } },
+  );
+  const m = await UserMembership.create({
+    userId: uid(req),
+    planId: plan._id,
+    planName: plan.name,
+    tier: plan.tier,
+    enrolledAt,
+    validUpto,
+    status: "active",
+  });
+  ok(res, m);
+});
+
+// ================== Ambulance ==================
+// Ambulance "types" are the admin-managed VehicleTypes (Types & Pricing page).
+// One source of truth for both the admin panel and the patient app.
+const toAppType = (t: any) => ({
+  _id: String(t._id),
+  // App round-trips this as `type` when booking; we accept the id (or name).
+  code: String(t._id),
+  name: t.name,
+  description: t.description || "",
+  priceFrom: t.baseFare,
+  perKmRate: t.perKmRate,
+  icon: t.icon || "",
+  image: t.image || "",
+  maxRangeKm: t.maxRangeKm,
+  etaMinutes: null,
+});
+
+// Resolve the chosen type — the app may send a VehicleType _id or a name.
+const resolveVehicleType = async (type?: string) => {
+  if (!type) return null;
+  if (Types.ObjectId.isValid(type)) {
+    const byId = await VehicleType.findOne({ _id: type, isDeleted: { $ne: true } });
+    if (byId) return byId;
+  }
+  return VehicleType.findOne({
+    name: new RegExp(`^${String(type).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+    isDeleted: { $ne: true },
+  });
+};
+
+// Compute a real fare for a trip leg using the fare engine (distance-aware,
+// surge/GST included). Returns null if the type can't be resolved.
+const quoteFor = async (vt: any, pickup?: any, drop?: any) => {
+  const distanceKm = haversineKm(pickup, drop) ?? 0;
+  const durationMin = etaMinutesFromKm(distanceKm) ?? 0;
+  const breakdown = await calculateFare({
+    vehicleTypeId: vt._id,
+    distanceKm,
+    durationMin,
+    serviceType: "WITHIN_CITY",
+  });
+  return {
+    distanceKm,
+    durationMin,
+    amount: breakdown.finalFare,
+    breakdown,
+  };
+};
+
+router.get("/ambulance/types", async (_req, res) => {
+  const types = await VehicleType.find({ category: "ambulance", isActive: true, isDeleted: { $ne: true } })
+    .sort({ sortOrder: 1, name: 1 })
+    .lean();
+  res.json({ success: true, data: types.map(toAppType), message: "ok" });
+});
+
+// Per-type real fare estimates for a pickup→drop leg. Powers the
+// "Select Ambulance" list so each option shows a real, distance-based price.
+router.post("/ambulance/quotes", verifyUserToken, async (req, res) => {
+  const { pickup, drop } = req.body ?? {};
+  const types = await VehicleType.find({ category: "ambulance", isActive: true, isDeleted: { $ne: true } })
+    .sort({ sortOrder: 1, name: 1 })
+    .lean();
+  const items = await Promise.all(
+    types.map(async (t) => {
+      const q = await quoteFor(t, pickup, drop);
+      return { ...toAppType(t), amount: q.amount, distanceKm: q.distanceKm, etaMinutes: q.durationMin || null };
+    }),
+  );
+  ok(res, { items, currency: "INR" });
+});
+
+// Single real estimate for a chosen type (or the cheapest active type).
+router.post("/ambulance/estimate", verifyUserToken, async (req, res) => {
+  const { pickup, drop, type } = req.body ?? {};
+  let vt = await resolveVehicleType(type);
+  if (!vt) {
+    vt = await VehicleType.findOne({ category: "ambulance", isActive: true, isDeleted: { $ne: true } }).sort({ baseFare: 1 });
+  }
+  if (!vt) return res.status(404).json({ success: false, message: "No ambulance types configured" });
+  const q = await quoteFor(vt, pickup, drop);
+  ok(res, {
+    amount: q.amount,
+    currency: "INR",
+    distanceKm: q.distanceKm,
+    etaMinutes: q.durationMin || null,
+    vehicleTypeId: String(vt._id),
+    type: vt.name,
+    breakdown: q.breakdown,
+  });
+});
 
 // Real, persisted ambulance requests. The admin dispatch screen assigns an
 // ambulance + driver; on assignment the user is pushed (FCM) + socket-notified
@@ -417,7 +671,13 @@ const toApp = (r: any) => {
     // position; otherwise fall back to the admin's assignment estimate.
     etaMinutes: liveEta ?? r.etaMinutes ?? null,
     driverLocation: r.driverLocation || null,
-    distanceKm,
+    // Live straight-line distance to the ambulance (for tracking); falls back
+    // to the trip distance captured at booking time.
+    distanceKm: distanceKm ?? r.distanceKm ?? null,
+    // Real fare computed at booking time (drives the price breakup UI).
+    amount: r.amount ?? null,
+    fareBreakdown: r.fareBreakdown ?? null,
+    tripDistanceKm: r.distanceKm ?? null,
     lastLocationAt: r.lastLocationAt || null,
     createdAt: r.createdAt,
   };
@@ -430,12 +690,32 @@ const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
   // patientName so the existing admin/driver "who is this for" display works
   // without changes, and keep the structured recipient fields too.
   const recipientName = b.recipientName || b.patientName || undefined;
+  // Resolve the chosen ambulance type and compute the real fare up front so the
+  // patient sees a true price breakup on the tracking screen (no placeholders).
+  const vt = await resolveVehicleType(b.type);
+  let amount: number | undefined;
+  let fareBreakdown: any | undefined;
+  let distanceKm: number | undefined;
+  let etaMinutes: number | undefined;
+  if (vt) {
+    const q = await quoteFor(vt, b.pickup, b.drop);
+    amount = q.amount;
+    fareBreakdown = q.breakdown;
+    distanceKm = q.distanceKm;
+    etaMinutes = q.durationMin || undefined;
+  }
   const r = await AmbulanceRequest.create({
     userId: uid(req),
-    type: b.type,
+    // Persist the human-readable name for admin/driver display + the id for fares.
+    type: vt?.name || b.type,
+    vehicleTypeId: vt?._id,
     emergency,
     pickup: b.pickup || {},
     drop: b.drop,
+    distanceKm,
+    amount,
+    fareBreakdown,
+    etaMinutes,
     patientName: recipientName,
     notes: b.notes,
     contactId: b.contactId || undefined,

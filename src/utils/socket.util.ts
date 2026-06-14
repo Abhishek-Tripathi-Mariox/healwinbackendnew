@@ -45,8 +45,13 @@ export const initSocket = async (httpServer: HttpServer): Promise<Server> => {
   io.use((socket: AuthenticatedSocket, next) => {
     const token = socket.handshake.auth.token || socket.handshake.query.token;
 
+    // Public (anonymous) clients are allowed to connect WITHOUT a token — the
+    // marketing website uses this to watch live SOS status for the submission
+    // it just created. They get no user room and can only subscribe to
+    // `sos-submission:<id>` (a room we only push non-sensitive status to), and
+    // privileged events (driver:location, etc.) are gated by userType below.
     if (!token) {
-      return next(new Error("Authentication required"));
+      return next();
     }
 
     try {
@@ -90,6 +95,16 @@ export const initSocket = async (httpServer: HttpServer): Promise<Server> => {
     // Admin web clients explicitly opt into the "admin" broadcast room (their
     // JWT may not carry userType=ADMIN), so they receive sos/dispatch events.
     socket.on("join:admin", () => socket.join("admin"));
+
+    // Public website caller watches their own SOS submission's live status.
+    socket.on("sos:subscribe", (data) => {
+      const id = data?.id || data?.submissionId;
+      if (id) socket.join(`sos-submission:${id}`);
+    });
+    socket.on("sos:unsubscribe", (data) => {
+      const id = data?.id || data?.submissionId;
+      if (id) socket.leave(`sos-submission:${id}`);
+    });
 
     // Handle driver location updates
     socket.on("driver:location:update", async (data) => {
@@ -230,6 +245,25 @@ export const emitToUser = (userId: string, event: string, data: any): void => {
 export const emitToAdmin = (event: string, data: any): void => {
   if (io) {
     io.to("admin").emit(event, data);
+  }
+};
+
+/**
+ * Push live status to the public caller watching a SOS submission (website).
+ * Only non-sensitive lifecycle status is sent here.
+ */
+export const emitToSosSubmission = (
+  submissionId: string,
+  status: string,
+  data: any = {},
+): void => {
+  if (io && submissionId) {
+    io.to(`sos-submission:${submissionId}`).emit("sos:status", {
+      submissionId: String(submissionId),
+      status,
+      timestamp: new Date().toISOString(),
+      ...data,
+    });
   }
 };
 

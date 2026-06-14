@@ -7,6 +7,18 @@ import User from "../models/Users";
 import Driver from "../models/driver.model";
 import { DeviceToken } from "../models/device-token.model";
 import { cache } from "../utils/redis.util";
+import { emitToUser } from "../utils/socket.util";
+
+/** Shape a saved notification for the realtime `notification:new` payload. */
+const notificationPayload = (n: any) => ({
+  _id: String(n._id),
+  type: n.type,
+  title: n.title,
+  body: n.body,
+  data: n.data || {},
+  isRead: false,
+  createdAt: n.createdAt,
+});
 
 let firebaseApp: admin.app.App | null = null;
 
@@ -296,6 +308,10 @@ export const sendToUser = async (
     });
     await notification.save();
 
+    // Real-time: push the new notification to the user's app instantly (live
+    // list + badge) instead of waiting for the next manual refresh.
+    emitToUser(String(userId), "notification:new", notificationPayload(notification));
+
     // Get user's FCM token
     const user = await User.findById(userId).select(
       "fcmToken isNotificationEnabled",
@@ -341,6 +357,9 @@ export const sendToDriver = async (
       isRead: false,
     });
     await notification.save();
+
+    // Real-time: push to the driver app instantly (live list + badge).
+    emitToUser(String(driverId), "notification:new", notificationPayload(notification));
 
     // Get driver's FCM token
     const driver = await Driver.findById(driverId).select(

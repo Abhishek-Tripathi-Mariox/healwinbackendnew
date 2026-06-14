@@ -1,6 +1,9 @@
 import { Request, Response, NextFunction } from "express";
+import { Types } from "mongoose";
 import AmbulanceRequest from "../../models/ambulance-request.model";
 import AmbulanceStaff from "../../models/ambulance-staff.model";
+import Ambulance from "../../models/ambulance.model";
+import { getNearbyAmbulances } from "../../services/ambulance-dispatch.service";
 import { emitToUser } from "../../utils/socket.util";
 import { sendToUser, sendDispatchPush } from "../../services/notification.service";
 
@@ -46,6 +49,36 @@ export const detail = async (req: Request, _res: Response, next: NextFunction) =
   return next();
 };
 
+/**
+ * GET /:id/nearby-ambulances — geo-ranked list of available ambulances for this
+ * request's pickup, exactly like the SOS dashboard. Admin picks one and the
+ * `assign` endpoint reserves it + rings the crew.
+ */
+export const nearby = async (req: Request, _res: Response, next: NextFunction) => {
+  const reqDoc = await AmbulanceRequest.findById(req.params.id).lean();
+  if (!reqDoc) {
+    req.rCode = 5;
+    req.msg = "not_available";
+    req.rData = {};
+    return next();
+  }
+  const lat = reqDoc.pickup?.lat;
+  const lng = reqDoc.pickup?.lng;
+  if (lat == null || lng == null) {
+    req.rData = { ambulances: [], patient: { lat, lng, address: reqDoc.pickup?.address } };
+    req.msg = "no_pickup_location";
+    return next();
+  }
+  const radiusKm = req.query.radiusKm != null ? Number(req.query.radiusKm) : 0; // 0 = no cap
+  const ambulances = await getNearbyAmbulances(lat, lng, [], 15, radiusKm);
+  req.rData = {
+    ambulances,
+    patient: { lat, lng, address: reqDoc.pickup?.address || "" },
+  };
+  req.msg = "success";
+  return next();
+};
+
 /** POST /:id/assign — attach driver/ambulance, notify the user live + push. */
 export const assign = async (req: Request, _res: Response, next: NextFunction) => {
   const b = req.body || {};
@@ -57,34 +90,70 @@ export const assign = async (req: Request, _res: Response, next: NextFunction) =
     return next();
   }
 
-  reqDoc.driverName = b.driverName;
-  reqDoc.driverPhone = b.driverPhone;
-  reqDoc.vehicleNumber = b.vehicleNumber;
-  reqDoc.etaMinutes = b.etaMinutes != null ? Number(b.etaMinutes) : reqDoc.etaMinutes;
-  if (b.ambulanceId) reqDoc.ambulanceId = b.ambulanceId;
+  // ===== Path A (preferred — same as SOS dispatch): admin picked an ambulance
+  // from the geo-ranked nearby list. Atomically reserve it (status available →
+  // on_dispatch, lock currentDispatchId) and auto-fill crew + vehicle from the
+  // fleet record so the dispatch is consistent and double-assignment is
+  // impossible.
+  if (b.ambulanceId) {
+    const reserved: any = await Ambulance.findOneAndUpdate(
+      {
+        _id: b.ambulanceId,
+        status: "available",
+        isActive: true,
+        currentDispatchId: null,
+      },
+      { status: "on_dispatch", currentDispatchId: reqDoc._id },
+      { returnDocument: "after" },
+    );
+    if (!reserved) {
+      req.rCode = 0;
+      req.msg = "ambulance_not_available";
+      req.rData = {
+        hint: "That ambulance is no longer available — refresh the nearby list and pick another.",
+      };
+      return next();
+    }
+    reqDoc.ambulanceId = reserved._id;
+    reqDoc.vehicleNumber = reserved.registrationNumber || b.vehicleNumber || reqDoc.vehicleNumber;
+    const driver: any = reserved.assignedDriverId
+      ? await AmbulanceStaff.findById(reserved.assignedDriverId)
+          .select("fullName mobileNumber")
+          .lean()
+      : null;
+    if (driver) {
+      reqDoc.driverStaffId = driver._id;
+      reqDoc.driverName = driver.fullName || reqDoc.driverName;
+      reqDoc.driverPhone = driver.mobileNumber || reqDoc.driverPhone;
+    }
+    if (b.etaMinutes != null) reqDoc.etaMinutes = Number(b.etaMinutes);
+  } else {
+    // ===== Path B (manual fallback): admin typed driver details directly.
+    reqDoc.driverName = b.driverName;
+    reqDoc.driverPhone = b.driverPhone;
+    reqDoc.vehicleNumber = b.vehicleNumber;
+    reqDoc.etaMinutes = b.etaMinutes != null ? Number(b.etaMinutes) : reqDoc.etaMinutes;
 
-  // Resolve the ambulance crew member to notify. Preferred: the admin picked a
-  // real driver from the crew dropdown (driverStaffId). Fallback: the admin used
-  // "manual entry" and only typed a phone — match it against a registered
-  // driver/staff so the driver STILL gets a dispatch alert. We match on the last
-  // 10 digits so country-code/spacing differences ("+91 98765 43210" vs
-  // "9876543210") don't break the lookup.
-  if (b.driverStaffId) {
-    reqDoc.driverStaffId = b.driverStaffId;
-  } else if (b.driverPhone) {
-    const last10 = String(b.driverPhone).replace(/\D/g, "").slice(-10);
-    if (last10.length === 10) {
-      const match: any = await AmbulanceStaff.findOne({
-        mobileNumber: { $regex: `${last10}$` },
-        isDeleted: { $ne: true },
-      })
-        .select("_id fullName mobileNumber")
-        .lean();
-      if (match) {
-        reqDoc.driverStaffId = match._id;
-        // Backfill the display name from the matched crew record if the admin
-        // left it blank.
-        if (!reqDoc.driverName) reqDoc.driverName = match.fullName;
+    // Resolve the ambulance crew member to notify. Preferred: the admin picked a
+    // real driver from the crew dropdown (driverStaffId). Fallback: only a phone
+    // was typed — match it against a registered driver/staff so the driver STILL
+    // gets a dispatch alert. We match on the last 10 digits so country-code/
+    // spacing differences ("+91 98765 43210" vs "9876543210") don't break it.
+    if (b.driverStaffId) {
+      reqDoc.driverStaffId = b.driverStaffId;
+    } else if (b.driverPhone) {
+      const last10 = String(b.driverPhone).replace(/\D/g, "").slice(-10);
+      if (last10.length === 10) {
+        const match: any = await AmbulanceStaff.findOne({
+          mobileNumber: { $regex: `${last10}$` },
+          isDeleted: { $ne: true },
+        })
+          .select("_id fullName mobileNumber")
+          .lean();
+        if (match) {
+          reqDoc.driverStaffId = match._id;
+          if (!reqDoc.driverName) reqDoc.driverName = match.fullName;
+        }
       }
     }
   }
@@ -174,8 +243,22 @@ export const updateStatus = async (req: Request, _res: Response, next: NextFunct
     req.rData = {};
     return next();
   }
+  // Free the reserved ambulance once the trip ends or is cancelled.
+  if ((status === "COMPLETED" || status === "CANCELLED") && reqDoc.ambulanceId) {
+    await Ambulance.updateOne(
+      { _id: reqDoc.ambulanceId },
+      { status: "available", currentDispatchId: null },
+    ).catch(() => undefined);
+  }
   const userId = String(reqDoc.userId);
   emitToUser(userId, "booking:status", { requestId: String(reqDoc._id), status });
+  // If cancelled, also tell the crew app to drop the dispatch.
+  if (status === "CANCELLED" && reqDoc.driverStaffId) {
+    emitToUser(String(reqDoc.driverStaffId), "dispatch:cancelled", {
+      requestId: String(reqDoc._id),
+      kind: "request",
+    });
+  }
   req.rData = { item: reqDoc };
   req.msg = "success";
   return next();
