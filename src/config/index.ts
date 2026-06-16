@@ -29,6 +29,12 @@ const config = {
       minPoolSize: Number(process.env.DB_MIN_POOL_SIZE) || 10,
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
+      // Standalone MongoDB deployments (no replica set) reject retryable
+      // writes — the driver default of retryWrites=true makes every write
+      // fail with "This MongoDB deployment does not support retryable
+      // writes." Default to false so writes work on standalone; set
+      // DB_RETRY_WRITES=true once the deployment is a replica set.
+      retryWrites: process.env.DB_RETRY_WRITES === "true",
     },
   },
 

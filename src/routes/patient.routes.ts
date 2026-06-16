@@ -615,8 +615,16 @@ router.post("/ambulance/quotes", verifyUserToken, async (req, res) => {
     .lean();
   const items = await Promise.all(
     types.map(async (t) => {
-      const q = await quoteFor(t, pickup, drop);
-      return { ...toAppType(t), amount: q.amount, distanceKm: q.distanceKm, etaMinutes: q.durationMin || null };
+      // One type's fare failing (e.g. distance API hiccup) must NOT empty the
+      // whole list — fall back to the type's base/from price so the patient
+      // always sees every ambulance option.
+      try {
+        const q = await quoteFor(t, pickup, drop);
+        return { ...toAppType(t), amount: q.amount, distanceKm: q.distanceKm, etaMinutes: q.durationMin || null };
+      } catch {
+        const base = toAppType(t);
+        return { ...base, amount: base.priceFrom ?? t.baseFare ?? 0, distanceKm: null, etaMinutes: null };
+      }
     }),
   );
   ok(res, { items, currency: "INR" });

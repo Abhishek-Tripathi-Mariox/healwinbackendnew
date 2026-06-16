@@ -439,6 +439,7 @@ export const createDispatch = async (params: {
     if (
       msg.includes("Transaction numbers are only allowed on a replica set") ||
       msg.includes("transactions are not supported") ||
+      msg.includes("does not support retryable writes") ||
       err?.codeName === "IllegalOperation"
     ) {
       // Standalone MongoDB — fall back without transactions
