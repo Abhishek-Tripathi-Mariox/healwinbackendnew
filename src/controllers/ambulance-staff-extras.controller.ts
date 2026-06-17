@@ -1,10 +1,11 @@
 import { Request, Response, NextFunction } from "express";
 import {
   StaffLeave,
-  StaffPatient,
   StaffCaseNote,
   StaffStockRequest,
 } from "../models/ambulance-staff-extras.model";
+import HospitalPatient from "../models/hospital-patient.model";
+import { nextSequence } from "../models/counter.model";
 import { uploadFileToAws } from "../utils/s3";
 
 /** Leave / Patient / Case-notes / Stock for the ambulance-staff app. */
@@ -48,27 +49,56 @@ export const applyLeave = async (req: Request, _res: Response, next: NextFunctio
 };
 
 // ----- Patients -----
+// Patients added by an ambulance attendant in the field are real HOSPITAL
+// patients: they register straight into the HMS `HospitalPatient` registry
+// (so they show up on the admin Patients page) tagged with the attendant who
+// registered them (`registeredByStaffId`, `source: "ambulance_staff"`).
+
+const VALID_GENDERS = new Set(["male", "female", "other"]);
+
+/** Mints the next human-readable patient id, e.g. HWP-000123 (same as admin). */
+const mintPatientId = async (): Promise<string> => {
+  const seq = await nextSequence("hospital_patient");
+  return `HWP-${String(seq).padStart(6, "0")}`;
+};
+
 export const listPatients = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = await StaffPatient.find({ staffId: sid(req) }).sort({ createdAt: -1 }).lean();
+  const items = await HospitalPatient.find({
+    registeredByStaffId: sid(req),
+    isDeleted: false,
+  })
+    .sort({ createdAt: -1 })
+    .lean();
   req.rData = { items };
   req.msg = "success";
   return next();
 };
 export const addPatient = async (req: Request, _res: Response, next: NextFunction) => {
   const b = req.body || {};
-  if (!b.name) {
+  // A hospital record needs a name, a contact phone and gender.
+  if (!b.name || !b.mobile || !b.gender) {
     req.rCode = 0;
     req.msg = "validation_failed";
-    req.rData = { hint: "name is required" };
+    req.rData = { hint: "name, mobile and gender are required" };
     return next();
   }
-  const item = await StaffPatient.create({
-    staffId: sid(req),
-    name: b.name,
-    mobile: b.mobile,
-    dob: b.dob,
-    gender: b.gender,
-    pincode: b.pincode,
+  const gender = String(b.gender).toLowerCase();
+  if (!VALID_GENDERS.has(gender)) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "gender must be Male | Female | Other" };
+    return next();
+  }
+  const dob = b.dob ? new Date(b.dob) : undefined;
+  const item = await HospitalPatient.create({
+    patientId: await mintPatientId(),
+    fullName: b.name,
+    phone: b.mobile,
+    gender: gender as "male" | "female" | "other",
+    dateOfBirth: dob && !Number.isNaN(dob.getTime()) ? dob : undefined,
+    address: b.pincode ? { pincode: b.pincode } : undefined,
+    source: "ambulance_staff",
+    registeredByStaffId: sid(req),
   });
   req.rData = { item };
   req.msg = "success";

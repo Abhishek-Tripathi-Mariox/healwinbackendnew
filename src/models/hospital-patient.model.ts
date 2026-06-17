@@ -57,7 +57,11 @@ export interface IHospitalPatient {
   healthHistory: IHealthHistory;
   documents: IPatientDocument[];
   appUserId?: Types.ObjectId; // optional link to patient-app User
-  registeredByAdminId: Types.ObjectId;
+  registeredByAdminId?: Types.ObjectId;
+  // When a patient is registered from the field by an ambulance attendant
+  // (not the admin desk), we record who and flag the source.
+  registeredByStaffId?: Types.ObjectId;
+  source: "admin" | "ambulance_staff";
   isActive: boolean;
   isDeleted: boolean;
   createdAt: Date;
@@ -127,7 +131,18 @@ const HospitalPatientSchema = new Schema<IHospitalPatient>(
     registeredByAdminId: {
       type: Schema.Types.ObjectId,
       ref: "Admin",
-      required: true,
+      // Optional: field registrations by ambulance staff have no admin.
+    },
+    registeredByStaffId: {
+      type: Schema.Types.ObjectId,
+      ref: "AmbulanceStaff",
+      index: true,
+    },
+    source: {
+      type: String,
+      enum: ["admin", "ambulance_staff"],
+      default: "admin",
+      index: true,
     },
     isActive: { type: Boolean, default: true, index: true },
     isDeleted: { type: Boolean, default: false, index: true },
