@@ -379,13 +379,19 @@ export const activeDispatch = async (
   next: NextFunction,
 ) => {
   const staffId = (req as any).staffId;
-  const d = await EmergencyDispatch.findOne({
+  const d: any = await EmergencyDispatch.findOne({
     $or: [{ driverStaffId: staffId }, { attendantStaffId: staffId }],
     status: { $in: ["DISPATCHED", "ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE"] },
   })
     .populate("ambulanceId")
     .lean();
-  req.rData = { dispatch: d || null };
+  // Expose the denormalised patient name + pickup address so the driver app
+  // shows a real name + location (not an id / raw coordinates). `address` is
+  // the key the app's dispatch mapper reads.
+  const dispatch = d
+    ? { ...d, patientName: d.patientName || "Emergency patient", address: d.pickupAddress || "" }
+    : null;
+  req.rData = { dispatch };
   req.msg = "active_dispatch";
   next();
 };

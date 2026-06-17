@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { EmergencyDispatch } from "../../models/emergency-dispatch.model";
 import { SOSSubmission } from "../../models/sos-submission.model";
+import Ambulance from "../../models/ambulance.model";
 
 /**
  * Create new emergency dispatch for an SOS submission
@@ -213,6 +214,18 @@ export const updateDispatchStatus = async (req: Request, res: Response) => {
         success: false,
         message: "Dispatch not found",
       });
+    }
+
+    // When a dispatch ends (cancelled or completed), release its ambulance so
+    // it doesn't stay wedged in `on_dispatch` forever.
+    if (
+      (status === "CANCELLED" || status === "COMPLETED") &&
+      dispatch.ambulanceId
+    ) {
+      await Ambulance.updateOne(
+        { _id: dispatch.ambulanceId },
+        { status: "available", currentDispatchId: null },
+      );
     }
 
     // Emit socket event

@@ -2,7 +2,44 @@ import mongoose, { Types } from "mongoose";
 import Ambulance from "../models/ambulance.model";
 import AmbulanceStaff from "../models/ambulance-staff.model";
 import { SOSAlert } from "../models/sos.model";
+import { SOSSubmission } from "../models/sos-submission.model";
+import { AmbulanceRequest } from "../models/ambulance-request.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
+
+/**
+ * Resolve the patient behind an SOS id — works whether the id is a
+ * SOSSubmission, a SOSAlert, or an emergency AmbulanceRequest. Returns the
+ * app user (for notify + live tracking), plus a display name and pickup
+ * address to denormalise onto the dispatch (so the driver app shows a real
+ * name + location, not an id or raw coordinates).
+ */
+const resolveSosPatient = async (
+  sosId: Types.ObjectId,
+): Promise<{ patientUserId?: Types.ObjectId; patientName?: string; pickupAddress?: string }> => {
+  const sub: any = await SOSSubmission.findById(sosId)
+    .select("userId name address")
+    .lean();
+  if (sub) {
+    return { patientUserId: sub.userId, patientName: sub.name, pickupAddress: sub.address };
+  }
+  const alert: any = await SOSAlert.findById(sosId)
+    .select("userId address")
+    .lean();
+  if (alert) {
+    return { patientUserId: alert.userId, pickupAddress: alert.address };
+  }
+  const reqDoc: any = await AmbulanceRequest.findById(sosId)
+    .select("userId patientName pickup")
+    .lean();
+  if (reqDoc) {
+    return {
+      patientUserId: reqDoc.userId,
+      patientName: reqDoc.patientName,
+      pickupAddress: reqDoc.pickup?.address,
+    };
+  }
+  return {};
+};
 
 export interface NearbyAmbulance {
   ambulanceId: string;
@@ -450,6 +487,23 @@ export const createDispatch = async (params: {
   } finally {
     await session.endSession();
   }
+
+  // Link the SOS patient, denormalise their name + pickup address for the
+  // driver display, and mint the pickup-verification OTP — in ONE place so
+  // every dispatch path (admin SOS dashboard, sos-alerts, etc.) behaves
+  // identically: the patient app flips to live tracking and the crew can
+  // verify the patient at pickup.
+  const { patientUserId, patientName, pickupAddress } = await resolveSosPatient(params.sosId);
+  const otp = String(Math.floor(1000 + Math.random() * 9000));
+  await EmergencyDispatch.updateOne(
+    { _id: dispatchId },
+    {
+      patientUserId: patientUserId || undefined,
+      patientName: patientName || undefined,
+      pickupAddress: pickupAddress || undefined,
+      otp,
+    },
+  );
 
   return await EmergencyDispatch.findById(dispatchId!).lean();
 };

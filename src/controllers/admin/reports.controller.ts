@@ -2,7 +2,17 @@ import { Request, Response } from "express";
 import Booking from "../../models/booking.model";
 import User from "../../models/Users";
 import Driver from "../../models/driver.model";
+import AmbulanceStaff from "../../models/ambulance-staff.model";
 import { SupportTicket } from "../../models/support-ticket.model";
+
+/**
+ * The real ride business lives in `AmbulanceRequest` (collection
+ * `ambulancerequests`, revenue in `amount`, crew in `driverStaffId`), NOT the
+ * legacy `Booking` collection. Reports therefore $unionWith the ambulance
+ * requests so totals reflect actual activity. These helpers project an
+ * ambulance request into the same shape the Booking pipelines use.
+ */
+const AMB_COLL = "ambulancerequests";
 
 /**
  * Get dashboard stats
@@ -157,10 +167,19 @@ export const getBookingReports = async (req: Request, res: Response) => {
       dateFormat = "%Y-%m-%d";
   }
 
+  const dateMatch = { createdAt: { $gte: startDate, $lte: endDate } };
+
+  // Trend across BOTH legacy bookings and real ambulance requests.
   const bookingTrend = await Booking.aggregate([
+    { $match: dateMatch },
+    { $project: { createdAt: 1, status: 1, rev: "$finalFare" } },
     {
-      $match: {
-        createdAt: { $gte: startDate, $lte: endDate },
+      $unionWith: {
+        coll: AMB_COLL,
+        pipeline: [
+          { $match: dateMatch },
+          { $project: { createdAt: 1, status: 1, rev: "$amount" } },
+        ],
       },
     },
     {
@@ -170,16 +189,22 @@ export const getBookingReports = async (req: Request, res: Response) => {
           status: "$status",
         },
         count: { $sum: 1 },
-        revenue: { $sum: "$finalFare" },
+        revenue: { $sum: "$rev" },
       },
     },
     { $sort: { "_id.date": 1 } },
   ]);
 
   const vehicleTypeBreakdown = await Booking.aggregate([
+    { $match: dateMatch },
+    { $project: { vehicleTypeId: 1, rev: "$finalFare" } },
     {
-      $match: {
-        createdAt: { $gte: startDate, $lte: endDate },
+      $unionWith: {
+        coll: AMB_COLL,
+        pipeline: [
+          { $match: dateMatch },
+          { $project: { vehicleTypeId: 1, rev: "$amount" } },
+        ],
       },
     },
     {
@@ -194,7 +219,7 @@ export const getBookingReports = async (req: Request, res: Response) => {
       $group: {
         _id: { $arrayElemAt: ["$vehicleType.name", 0] },
         count: { $sum: 1 },
-        revenue: { $sum: "$finalFare" },
+        revenue: { $sum: "$rev" },
       },
     },
   ]);
@@ -217,38 +242,69 @@ export const getRevenueReports = async (req: Request, res: Response) => {
     : new Date(new Date().setDate(new Date().getDate() - 30));
   const endDate = dateTo ? new Date(dateTo as string) : new Date();
 
+  const completedMatch = {
+    status: "COMPLETED",
+    createdAt: { $gte: startDate, $lte: endDate },
+  };
+
   const revenueBreakdown = await Booking.aggregate([
+    { $match: completedMatch },
     {
-      $match: {
-        status: "COMPLETED",
-        createdAt: { $gte: startDate, $lte: endDate },
+      $project: {
+        createdAt: 1,
+        rev: "$finalFare",
+        gst: "$gstAmount",
+        disc: "$totalDiscount",
+      },
+    },
+    {
+      $unionWith: {
+        coll: AMB_COLL,
+        pipeline: [
+          { $match: completedMatch },
+          {
+            $project: {
+              createdAt: 1,
+              rev: "$amount",
+              // GST/discount live inside the ambulance fare breakdown.
+              gst: { $ifNull: ["$fareBreakdown.gstAmount", 0] },
+              disc: { $ifNull: ["$fareBreakdown.totalDiscount", 0] },
+            },
+          },
+        ],
       },
     },
     {
       $group: {
         _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-        totalRevenue: { $sum: "$finalFare" },
-        totalGST: { $sum: "$gstAmount" },
-        totalDiscount: { $sum: "$totalDiscount" },
+        totalRevenue: { $sum: "$rev" },
+        totalGST: { $sum: "$gst" },
+        totalDiscount: { $sum: "$disc" },
         bookingCount: { $sum: 1 },
-        avgFare: { $avg: "$finalFare" },
+        avgFare: { $avg: "$rev" },
       },
     },
     { $sort: { _id: 1 } },
   ]);
 
   const paymentMethodBreakdown = await Booking.aggregate([
+    { $match: completedMatch },
+    { $project: { pm: { $ifNull: ["$paymentMethod", "OTHER"] }, rev: "$finalFare" } },
     {
-      $match: {
-        status: "COMPLETED",
-        createdAt: { $gte: startDate, $lte: endDate },
+      $unionWith: {
+        coll: AMB_COLL,
+        pipeline: [
+          { $match: completedMatch },
+          // Ambulance requests have no payment method — bucket them as AMBULANCE.
+          { $project: { pm: "AMBULANCE", rev: "$amount" } },
+        ],
       },
     },
     {
       $group: {
-        _id: "$paymentMethod",
+        _id: "$pm",
         count: { $sum: 1 },
-        total: { $sum: "$finalFare" },
+        total: { $sum: "$rev" },
       },
     },
   ]);
@@ -286,18 +342,25 @@ export const getUserReports = async (req: Request, res: Response) => {
     { $sort: { _id: 1 } },
   ]);
 
-  // Top users by bookings
+  // Top users by spend across legacy bookings + real ambulance requests.
+  const userDateMatch = { createdAt: { $gte: startDate, $lte: endDate } };
   const topUsers = await Booking.aggregate([
+    { $match: userDateMatch },
+    { $project: { userId: 1, spent: "$finalFare" } },
     {
-      $match: {
-        createdAt: { $gte: startDate, $lte: endDate },
+      $unionWith: {
+        coll: AMB_COLL,
+        pipeline: [
+          { $match: userDateMatch },
+          { $project: { userId: 1, spent: "$amount" } },
+        ],
       },
     },
     {
       $group: {
         _id: "$userId",
         bookingCount: { $sum: 1 },
-        totalSpent: { $sum: "$finalFare" },
+        totalSpent: { $sum: "$spent" },
       },
     },
     { $sort: { totalSpent: -1 } },
@@ -336,53 +399,88 @@ export const getDriverReports = async (req: Request, res: Response) => {
     : new Date(new Date().setDate(new Date().getDate() - 30));
   const endDate = dateTo ? new Date(dateTo as string) : new Date();
 
-  // Top drivers by earnings
-  const topDrivers = await Booking.aggregate([
-    {
-      $match: {
-        status: "COMPLETED",
-        createdAt: { $gte: startDate, $lte: endDate },
-        driverId: { $exists: true },
+  // Top drivers by earnings — merge legacy ride drivers (Booking → Driver) with
+  // ambulance crew (AmbulanceRequest → AmbulanceStaff), since real trips run on
+  // the ambulance fleet. They're different collections, so rank both and merge.
+  const [legacyDrivers, ambulanceDrivers] = await Promise.all([
+    Booking.aggregate([
+      {
+        $match: {
+          status: "COMPLETED",
+          createdAt: { $gte: startDate, $lte: endDate },
+          driverId: { $exists: true },
+        },
       },
-    },
-    {
-      $group: {
-        _id: "$driverId",
-        tripCount: { $sum: 1 },
-        totalEarnings: { $sum: "$finalFare" },
-        avgRating: { $avg: "$rating" },
+      {
+        $group: {
+          _id: "$driverId",
+          tripCount: { $sum: 1 },
+          totalEarnings: { $sum: "$finalFare" },
+          avgRating: { $avg: "$rating" },
+        },
       },
-    },
-    { $sort: { totalEarnings: -1 } },
-    { $limit: 10 },
-    {
-      $lookup: {
-        from: "drivers",
-        localField: "_id",
-        foreignField: "_id",
-        as: "driver",
+      { $sort: { totalEarnings: -1 } },
+      { $limit: 10 },
+      { $lookup: { from: "drivers", localField: "_id", foreignField: "_id", as: "driver" } },
+      {
+        $project: {
+          driver: { $arrayElemAt: ["$driver", 0] },
+          tripCount: 1,
+          totalEarnings: 1,
+          avgRating: 1,
+          fleet: "DRIVER",
+        },
       },
-    },
-    {
-      $project: {
-        driver: { $arrayElemAt: ["$driver", 0] },
-        tripCount: 1,
-        totalEarnings: 1,
-        avgRating: 1,
+    ]),
+    Booking.db.collection(AMB_COLL).aggregate([
+      {
+        $match: {
+          status: "COMPLETED",
+          createdAt: { $gte: startDate, $lte: endDate },
+          driverStaffId: { $exists: true, $ne: null },
+        },
       },
-    },
+      {
+        $group: {
+          _id: "$driverStaffId",
+          tripCount: { $sum: 1 },
+          totalEarnings: { $sum: "$amount" },
+        },
+      },
+      { $sort: { totalEarnings: -1 } },
+      { $limit: 10 },
+      { $lookup: { from: "ambulancestaffs", localField: "_id", foreignField: "_id", as: "staff" } },
+      {
+        $project: {
+          driver: { $arrayElemAt: ["$staff", 0] },
+          tripCount: 1,
+          totalEarnings: 1,
+          avgRating: null,
+          fleet: "AMBULANCE",
+        },
+      },
+    ]).toArray(),
   ]);
 
-  // Driver status distribution
-  const statusDistribution = await Driver.aggregate([
-    { $match: { isDeleted: false } },
-    {
-      $group: {
-        _id: "$status",
-        count: { $sum: 1 },
-      },
-    },
+  const topDrivers = [...legacyDrivers, ...ambulanceDrivers]
+    .sort((a, b) => (b.totalEarnings || 0) - (a.totalEarnings || 0))
+    .slice(0, 10);
+
+  // Status distribution: legacy driver statuses + the ambulance fleet (active
+  // crew counted as "approved" so headcount/Approved reflect the real fleet).
+  const [driverStatuses, ambActive, ambInactive] = await Promise.all([
+    Driver.aggregate([
+      { $match: { isDeleted: false } },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]),
+    AmbulanceStaff.countDocuments({ isDeleted: false, isActive: true }),
+    AmbulanceStaff.countDocuments({ isDeleted: false, isActive: false }),
   ]);
+  const statusMap = new Map<string, number>();
+  for (const s of driverStatuses) statusMap.set(s._id || "unknown", s.count);
+  if (ambActive) statusMap.set("approved", (statusMap.get("approved") || 0) + ambActive);
+  if (ambInactive) statusMap.set("suspended", (statusMap.get("suspended") || 0) + ambInactive);
+  const statusDistribution = Array.from(statusMap, ([_id, count]) => ({ _id, count }));
 
   res.locals.data = {
     topDrivers,

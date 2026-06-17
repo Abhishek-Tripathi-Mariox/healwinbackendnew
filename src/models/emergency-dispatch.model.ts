@@ -32,6 +32,8 @@ export interface IEmergencyDispatch {
     | "COMPLETED"
     | "CANCELLED";
   patientUserId?: Types.ObjectId; // SOS patient (for notify + live tracking)
+  patientName?: string; // denormalised for driver display (avoids a populate)
+  pickupAddress?: string; // human-readable pickup, denormalised from the SOS
   otp?: string; // pickup verification code shown to the patient
   driverLocation?: { lat?: number; lng?: number };
   lastLocationAt?: Date;
@@ -132,6 +134,8 @@ const EmergencyDispatchSchema = new Schema<IEmergencyDispatch>(
       default: "DISPATCHED",
     },
     patientUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
+    patientName: String,
+    pickupAddress: String,
     otp: String,
     driverLocation: { lat: Number, lng: Number },
     lastLocationAt: Date,

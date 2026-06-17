@@ -72,4 +72,13 @@ router.get(
   ResponseMiddleware,
 );
 
+// Manually free a stuck ambulance (cancels its current dispatch + notifies).
+router.post(
+  "/ambulances/:ambulanceId/free",
+  auth.verifyAdminToken,
+  run([param("ambulanceId").isMongoId()]),
+  ErrorHandlerMiddleware(C.freeAmbulance),
+  ResponseMiddleware,
+);
+
 export default router;

@@ -13,16 +13,6 @@ import Ambulance from "../../models/ambulance.model";
 import { sendDispatchPush, sendToUser } from "../../services/notification.service";
 import { emitToUser, emitToSosSubmission } from "../../utils/socket.util";
 
-/** Find the app patient behind an SOS (submission or alert) for notify/track. */
-const resolvePatientUserId = async (
-  sosId: string,
-): Promise<Types.ObjectId | null> => {
-  const sub: any = await SOSSubmission.findById(sosId).select("userId").lean();
-  if (sub?.userId) return sub.userId;
-  const alert: any = await SOSAlert.findById(sosId).select("userId").lean();
-  return alert?.userId || null;
-};
-
 const STALE_LOCATION_MS = 5 * 60 * 1000;
 
 /**
@@ -276,16 +266,10 @@ export const dispatch = async (
     throw err;
   }
 
-  // Link the SOS patient + mint a pickup OTP, so the patient app can flip to
-  // live tracking and the crew can verify the patient at pickup.
-  const patientUserId = await resolvePatientUserId(req.params.sosId as string);
-  const otp = String(Math.floor(1000 + Math.random() * 9000));
-  await EmergencyDispatch.updateOne(
-    { _id: dispatchDoc._id },
-    { patientUserId: patientUserId || undefined, otp },
-  );
-  dispatchDoc.otp = otp;
-  dispatchDoc.patientUserId = patientUserId;
+  // The service already linked the SOS patient + minted the pickup OTP +
+  // denormalised the patient name/address onto the dispatch — read them back.
+  const patientUserId = (dispatchDoc.patientUserId as Types.ObjectId) || null;
+  const otp = dispatchDoc.otp as string;
 
   // Fetch driver & attendant for FCM tokens
   const [driver, attendant] = await Promise.all([
@@ -296,9 +280,10 @@ export const dispatch = async (
   const payload: Record<string, string | number | boolean> = {
     dispatchId: String(dispatchDoc._id),
     sosId: String((req.params.sosId as string)),
+    patientName: dispatchDoc.patientName || "Emergency patient",
     patientLat: lat,
     patientLng: lng,
-    address: sos.address || "",
+    address: dispatchDoc.pickupAddress || sos.address || "",
     roadDistanceKm: picked.roadDistanceKm,
     etaMinutes: picked.etaMinutes,
   };
@@ -555,7 +540,108 @@ export const cancelDispatch = async (
     dispatchId: String(dispatch._id),
   });
 
+  // Tell the patient app to stop tracking — their ride was cancelled.
+  await notifyPatientCancelled(dispatch);
+
   req.rData = { dispatch };
   req.msg = "dispatch_cancelled";
+  next();
+};
+
+const ACTIVE_DISPATCH_STATUSES = [
+  "DISPATCHED",
+  "ACKNOWLEDGED",
+  "EN_ROUTE",
+  "ON_SCENE",
+  "ON_TRIP",
+];
+
+/** Socket + FCM the patient that their dispatch was cancelled (best-effort). */
+const notifyPatientCancelled = async (dispatch: any) => {
+  if (!dispatch?.patientUserId) return;
+  emitToUser(String(dispatch.patientUserId), "booking:cancelled", {
+    dispatchId: String(dispatch._id),
+  });
+  await sendToUser(
+    dispatch.patientUserId,
+    "BOOKING",
+    "Dispatch cancelled",
+    "Your ambulance dispatch was cancelled. Please re-request if you still need help.",
+    { route: "Home", screen: "Home" },
+  ).catch(() => undefined);
+};
+
+/** FCM + socket the crew that their ringing/active dispatch was cancelled. */
+const notifyCrewCancelled = async (dispatch: any) => {
+  for (const staffId of [dispatch.driverStaffId, dispatch.attendantStaffId]) {
+    if (!staffId) continue;
+    emitToUser(String(staffId), "dispatch:cancelled", { dispatchId: String(dispatch._id) });
+    const staff: any = await AmbulanceStaff.findById(staffId).select("fcmToken").lean();
+    if (staff?.fcmToken) {
+      sendDispatchPush(
+        staff.fcmToken,
+        "Dispatch cancelled",
+        "This dispatch was cancelled by the control room.",
+        { action: "dispatch_cancelled", dispatchId: String(dispatch._id) },
+      ).catch((e) => console.error("FCM cancel send failed:", e));
+    }
+  }
+};
+
+/**
+ * Manually free an ambulance regardless of SOS state — cancels its current
+ * dispatch (if any), notifies the crew + patient, reverts the SOS, and flips
+ * the ambulance back to "available". Gives ops a direct unstick path from the
+ * fleet screen for vehicles wedged in `on_dispatch`.
+ * POST /admin/ambulances/:ambulanceId/free
+ */
+export const freeAmbulance = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const ambulanceId = req.params.ambulanceId as string;
+  const ambulance: any = await Ambulance.findById(ambulanceId);
+  if (!ambulance) {
+    req.rCode = 5;
+    req.msg = "item_not_found";
+    req.rData = {};
+    return next();
+  }
+
+  const dispatch: any = ambulance.currentDispatchId
+    ? await EmergencyDispatch.findById(ambulance.currentDispatchId)
+    : await EmergencyDispatch.findOne({
+        ambulanceId,
+        status: { $in: ACTIVE_DISPATCH_STATUSES as any },
+      }).sort({ dispatchedAt: -1 });
+
+  if (dispatch && !["COMPLETED", "CANCELLED"].includes(dispatch.status)) {
+    dispatch.status = "CANCELLED";
+    dispatch.cancelledAt = new Date();
+    dispatch.cancelReason = req.body?.reason || "admin_freed";
+    await dispatch.save();
+    await notifyCrewCancelled(dispatch);
+    await notifyPatientCancelled(dispatch);
+    // Revert the SOS so it returns to the actionable queue.
+    if (dispatch.sosSubmission) {
+      await SOSAlert.updateOne(
+        { _id: dispatch.sosSubmission, status: "RESPONDED" },
+        { status: "ACTIVE" },
+      );
+      await SOSSubmission.updateOne(
+        { _id: dispatch.sosSubmission, status: "IN_PROGRESS" },
+        { status: "PENDING" },
+      );
+    }
+  }
+
+  await Ambulance.updateOne(
+    { _id: ambulanceId },
+    { status: "available", currentDispatchId: null },
+  );
+
+  req.rData = { ambulanceId, freed: true, dispatchId: dispatch ? String(dispatch._id) : null };
+  req.msg = "success";
   next();
 };
