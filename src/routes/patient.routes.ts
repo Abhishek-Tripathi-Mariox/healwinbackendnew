@@ -18,6 +18,7 @@ import { PharmacyOrder, LabBooking, Consultation } from "../models/patient-comme
 import HomePromo from "../models/home-promo.model";
 import { MembershipPlan, UserMembership } from "../models/membership.model";
 import { calculateFare } from "../services/fare.service";
+import { reverseGeocode } from "../services/geocode.service";
 import { haversineKm, etaMinutesFromKm } from "../utils/geo.util";
 import { emitToAdmin } from "../utils/socket.util";
 import { Types } from "mongoose";
@@ -426,6 +427,20 @@ router.delete("/medical-records/:id", verifyUserToken, async (req, res) => {
   ok(res);
 });
 
+// Reverse geocode (coords → structured address) using the SERVER Google key.
+// The app's own key is restricted to the Maps SDK and can't call the Geocoding
+// web service, so this runs server-side to fill city/state/pincode.
+router.get("/geocode/reverse", verifyUserToken, async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ success: false, message: "lat and lng are required" });
+  }
+  const result = await reverseGeocode(lat, lng);
+  if (!result) return ok(res, null);
+  return ok(res, result);
+});
+
 // ================== Facilities ==================
 router.get("/facilities/hospitals", (_req, res) => emptyList(res));
 // Real pharmacy locator (approved, active). Supports ?state=&district=
@@ -727,6 +742,8 @@ const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
     patientName: recipientName,
     notes: b.notes,
     contactId: b.contactId || undefined,
+    // "Book for someone else" can target a saved contact OR a family member.
+    familyMemberId: b.familyMemberId || undefined,
     recipientName,
     recipientPhone: b.recipientPhone || undefined,
     status: "SEARCHING",

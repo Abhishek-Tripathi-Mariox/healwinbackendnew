@@ -41,6 +41,8 @@ export interface IAmbulanceRequest {
   // "Book for someone else" — the saved contact this ride is for (parcel-style).
   // patientName mirrors the recipient's name for existing admin/driver display.
   contactId?: Types.ObjectId;
+  // ...or a saved family member this ride is for (alternative to contactId).
+  familyMemberId?: Types.ObjectId;
   recipientName?: string;
   recipientPhone?: string;
   status: AmbulanceRequestStatus;
@@ -79,6 +81,7 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     patientName: String,
     notes: String,
     contactId: { type: Schema.Types.ObjectId, ref: "SavedContact" },
+    familyMemberId: { type: Schema.Types.ObjectId, ref: "PatientFamilyMember" },
     recipientName: String,
     recipientPhone: String,
     status: {
