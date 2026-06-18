@@ -5,6 +5,39 @@ import {
   PharmacyOrder,
 } from "../../models/patient-commerce.model";
 import { slotToDate, slotLabelFor } from "../../utils/slots.util";
+import { sendToUser } from "../../services/notification.service";
+
+// Friendly patient-facing message for each status, per order kind.
+const STATUS_MSG: Record<string, Record<string, { title: string; body: string }>> = {
+  consultation: {
+    CONFIRMED: { title: "Consultation confirmed", body: "Your doctor consultation is confirmed." },
+    COMPLETED: { title: "Consultation completed", body: "Your consultation is marked complete." },
+    CANCELLED: { title: "Consultation cancelled", body: "Your consultation was cancelled." },
+  },
+  lab: {
+    SAMPLE_COLLECTED: { title: "Sample collected", body: "Your lab sample has been collected." },
+    PROCESSING: { title: "Tests in progress", body: "Your lab tests are being processed." },
+    REPORT_READY: { title: "Report ready", body: "Your lab report is ready to view." },
+    CANCELLED: { title: "Lab booking cancelled", body: "Your lab booking was cancelled." },
+  },
+  pharmacy: {
+    CONFIRMED: { title: "Order confirmed", body: "Your pharmacy order is confirmed." },
+    PACKED: { title: "Order packed", body: "Your medicines are packed." },
+    OUT_FOR_DELIVERY: { title: "Out for delivery", body: "Your medicines are out for delivery." },
+    DELIVERED: { title: "Order delivered", body: "Your pharmacy order was delivered." },
+    CANCELLED: { title: "Order cancelled", body: "Your pharmacy order was cancelled." },
+  },
+};
+
+/** Notify the patient (in-app + push) about a status change — best-effort. */
+const notifyStatus = (kind: "consultation" | "lab" | "pharmacy", item: any, status: string) => {
+  const m = STATUS_MSG[kind]?.[status];
+  if (!m || !item?.userId) return;
+  void sendToUser(item.userId, "BOOKING", m.title, m.body, {
+    route: "MyOrders",
+    screen: "MyOrders",
+  }).catch(() => undefined);
+};
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const fullSlotLabel = (dateStr: string, time: string): string => {
@@ -23,11 +56,18 @@ const reschedule = (model: any) => async (req: Request, _res: Response, next: Ne
     req.rData = { hint: "date (YYYY-MM-DD) and slot (HH:mm) are required" };
     return next();
   }
+  const label = fullSlotLabel(String(date), String(slot));
   const item = await model.findByIdAndUpdate(
     req.params.id as string,
-    { scheduledAt: when, slotTime: String(slot), slotLabel: fullSlotLabel(String(date), String(slot)) },
+    { scheduledAt: when, slotTime: String(slot), slotLabel: label },
     { new: true },
   ).lean();
+  if (item?.userId) {
+    void sendToUser(item.userId, "BOOKING", "Appointment rescheduled", `Your appointment is now ${label}.`, {
+      route: "MyOrders",
+      screen: "MyOrders",
+    }).catch(() => undefined);
+  }
   req.rData = { item };
   req.msg = "success";
   return next();
@@ -85,6 +125,7 @@ export const updateConsultationStatus = async (req: Request, _res: Response, nex
     { status },
     { new: true },
   ).lean();
+  notifyStatus("consultation", item, status);
   req.rData = { item };
   req.msg = "success";
   return next();
@@ -114,6 +155,7 @@ export const updateLabBookingStatus = async (req: Request, _res: Response, next:
     { status },
     { new: true },
   ).lean();
+  notifyStatus("lab", item, status);
   req.rData = { item };
   req.msg = "success";
   return next();
@@ -143,6 +185,7 @@ export const updatePharmacyOrderStatus = async (req: Request, _res: Response, ne
     { status },
     { new: true },
   ).lean();
+  notifyStatus("pharmacy", item, status);
   req.rData = { item };
   req.msg = "success";
   return next();

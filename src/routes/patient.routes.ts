@@ -353,6 +353,31 @@ router.post("/consultations/:id/cancel", verifyUserToken, async (req, res) => {
   emitToAdmin("consultation:updated", { id: String(c._id), status: "CANCELLED" });
   ok(res, c.toObject());
 });
+// Patient reschedule — pick a new date + slot (re-checks the doctor isn't double-booked).
+router.post("/consultations/:id/reschedule", verifyUserToken, async (req, res) => {
+  const c: any = await Consultation.findOne({ _id: req.params.id as string, userId: uid(req) });
+  if (!c) return res.status(404).json({ success: false, message: "Consultation not found" });
+  if (["COMPLETED", "CANCELLED"].includes(c.status)) {
+    return res.status(400).json({ success: false, message: "This consultation can't be rescheduled" });
+  }
+  const when = slotToDate(String(req.body?.date || ""), String(req.body?.slot || ""));
+  if (!when || when.getTime() <= Date.now()) {
+    return res.status(400).json({ success: false, message: "Please pick a valid future slot" });
+  }
+  const clash = await Consultation.findOne({
+    doctorId: c.doctorId,
+    status: { $ne: "CANCELLED" },
+    scheduledAt: when,
+    _id: { $ne: c._id },
+  }).lean();
+  if (clash) return res.status(409).json({ success: false, message: "That slot was just taken — pick another" });
+  c.scheduledAt = when;
+  c.slotTime = String(req.body.slot);
+  c.slotLabel = fullSlotLabel(String(req.body.date), String(req.body.slot));
+  await c.save();
+  emitToAdmin("consultation:updated", { id: String(c._id), status: c.status });
+  ok(res, c.toObject());
+});
 
 // ================== Pharmacy (from DB) ==================
 router.get("/pharmacy/categories", async (_req, res) => {
@@ -501,6 +526,25 @@ router.post("/lab/bookings/:id/cancel", verifyUserToken, async (req, res) => {
   bk.status = "CANCELLED";
   await bk.save();
   emitToAdmin("lab-booking:updated", { id: String(bk._id), status: "CANCELLED" });
+  ok(res, bk.toObject());
+});
+// Patient reschedule — pick a new sample-collection date + slot.
+router.post("/lab/bookings/:id/reschedule", verifyUserToken, async (req, res) => {
+  const bk: any = await LabBooking.findOne({ _id: req.params.id as string, userId: uid(req) });
+  if (!bk) return res.status(404).json({ success: false, message: "Lab booking not found" });
+  if (["REPORT_READY", "CANCELLED"].includes(bk.status)) {
+    return res.status(400).json({ success: false, message: "This booking can't be rescheduled" });
+  }
+  const when = slotToDate(String(req.body?.date || ""), String(req.body?.slot || ""));
+  if (!when || when.getTime() <= Date.now()) {
+    return res.status(400).json({ success: false, message: "Please pick a valid future slot" });
+  }
+  bk.scheduledAt = when;
+  bk.slotTime = String(req.body.slot);
+  bk.slotLabel = fullSlotLabel(String(req.body.date), String(req.body.slot));
+  bk.slot = bk.slotLabel;
+  await bk.save();
+  emitToAdmin("lab-booking:updated", { id: String(bk._id), status: bk.status });
   ok(res, bk.toObject());
 });
 
