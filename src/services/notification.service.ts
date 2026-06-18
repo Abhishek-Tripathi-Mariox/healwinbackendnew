@@ -251,11 +251,22 @@ export const sendMulticastNotification = async (
       }
     });
     if (response.failureCount > 0) {
+      // Only delete tokens that are genuinely dead. Config/transient errors
+      // (e.g. mismatched-credential, server-unavailable) must NOT remove a
+      // perfectly valid token — that wrongly wipes the device and the user
+      // then gets no notifications until they reopen the app.
+      const DEAD_TOKEN_CODES = new Set([
+        "messaging/registration-token-not-registered",
+        "messaging/invalid-registration-token",
+        "messaging/invalid-argument",
+      ]);
       const failed: string[] = [];
       response.responses.forEach((r, i) => {
-        if (!r.success) failed.push(fcmTokens[i]);
+        if (!r.success && r.error?.code && DEAD_TOKEN_CODES.has(r.error.code)) {
+          failed.push(fcmTokens[i]);
+        }
       });
-      await Promise.all(failed.map((t) => removeInvalidToken(t)));
+      if (failed.length) await Promise.all(failed.map((t) => removeInvalidToken(t)));
     }
     return {
       successCount: response.successCount,
@@ -312,17 +323,34 @@ export const sendToUser = async (
     // list + badge) instead of waiting for the next manual refresh.
     emitToUser(String(userId), "notification:new", notificationPayload(notification));
 
-    // Get user's FCM token
-    const user = await User.findById(userId).select(
-      "fcmToken isNotificationEnabled",
+    // Push to EVERY active device the user registered, not just the single
+    // `User.fcmToken` field (which can be empty if the device registered before
+    // login). DeviceToken rows are linked to the user on authenticated
+    // register, so this is the reliable source; we also include the legacy
+    // User.fcmToken and de-dupe.
+    const user = await User.findById(userId).select("fcmToken isNotificationEnabled");
+    if (user?.isNotificationEnabled === false) return true;
+
+    const deviceTokens = await DeviceToken.find({ userId, isActive: true })
+      .select("fcmToken")
+      .lean();
+    const tokens = Array.from(
+      new Set(
+        [
+          ...deviceTokens.map((d: any) => d.fcmToken),
+          user?.fcmToken,
+        ].filter(Boolean) as string[],
+      ),
     );
 
-    if (user?.fcmToken && user.isNotificationEnabled !== false) {
-      await sendPushNotification(user.fcmToken, title, body, {
+    if (tokens.length > 0) {
+      await sendMulticastNotification(tokens, title, body, {
         ...data,
         notificationId: notification._id.toString(),
         type,
       });
+    } else {
+      console.log("[FCM] No device tokens for user", String(userId));
     }
 
     return true;
