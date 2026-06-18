@@ -18,9 +18,12 @@ import { PharmacyOrder, LabBooking, Consultation } from "../models/patient-comme
 import HomePromo from "../models/home-promo.model";
 import { MembershipPlan, UserMembership } from "../models/membership.model";
 import { calculateFare } from "../services/fare.service";
-import { reverseGeocode } from "../services/geocode.service";
+import { reverseGeocode, searchPlaces, resolvePlace } from "../services/geocode.service";
 import { haversineKm, etaMinutesFromKm } from "../utils/geo.util";
-import { emitToAdmin } from "../utils/socket.util";
+import { generateSlots, slotToDate, slotLabelFor } from "../utils/slots.util";
+import { emitToAdmin, emitToUser } from "../utils/socket.util";
+import Ambulance from "../models/ambulance.model";
+import config from "../config";
 import { Types } from "mongoose";
 
 const router = Router();
@@ -229,7 +232,56 @@ router.get("/doctors/:id", async (req, res) => {
   if (!a) return res.status(404).json({ success: false, message: "Doctor not found" });
   ok(res, toAppDoctor(a));
 });
-router.get("/doctors/:id/slots", (_req, res) => emptyList(res));
+// Short date label from a YYYY-MM-DD string (e.g. "18 Jun"), TZ-independent.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const shortDate = (dateStr: string): string => {
+  const [, m, d] = dateStr.split("-").map(Number);
+  return m && d ? `${d} ${MONTHS[m - 1]}` : dateStr;
+};
+const fullSlotLabel = (dateStr: string, time: string): string =>
+  `${slotLabelFor(time)}, ${shortDate(dateStr)}`;
+
+// Real appointment slots for a doctor on a given date. Past + already-booked
+// times are returned as unavailable so the patient can only pick an open slot.
+router.get("/doctors/:id/slots", verifyUserToken, async (req, res) => {
+  const dateStr = String(req.query.date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return res.status(400).json({ success: false, message: "date (YYYY-MM-DD) is required" });
+  }
+  const slots = generateSlots(dateStr);
+  const dayStart = new Date(`${dateStr}T00:00:00+05:30`);
+  const dayEnd = new Date(`${dateStr}T23:59:59+05:30`);
+  const booked = await Consultation.find({
+    doctorId: req.params.id,
+    status: { $ne: "CANCELLED" },
+    scheduledAt: { $gte: dayStart, $lte: dayEnd },
+  })
+    .select("scheduledAt")
+    .lean();
+  const bookedSet = new Set(booked.map((c: any) => new Date(c.scheduledAt).getTime()));
+  const now = Date.now();
+  const items = slots.map((s) => ({
+    time: s.time,
+    label: s.label,
+    available: s.startsAt.getTime() > now && !bookedSet.has(s.startsAt.getTime()),
+  }));
+  res.json({ success: true, data: items, message: "ok" });
+});
+
+// Lab sample-collection slots for a date (generic; no per-resource limit yet).
+router.get("/lab/slots", verifyUserToken, async (req, res) => {
+  const dateStr = String(req.query.date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return res.status(400).json({ success: false, message: "date (YYYY-MM-DD) is required" });
+  }
+  const now = Date.now();
+  const items = generateSlots(dateStr).map((s) => ({
+    time: s.time,
+    label: s.label,
+    available: s.startsAt.getTime() > now,
+  }));
+  res.json({ success: true, data: items, message: "ok" });
+});
 
 // Real, persisted doctor consultations (booked from the app, fulfilled by the
 // Doctor-role admin). Captures the doctor's fee + speciality at booking time.
@@ -240,6 +292,31 @@ router.post("/consultations", verifyUserToken, async (req, res) => {
   }
   const doc = await Admin.findOne({ _id: b.doctorId, roleName: "Doctor", isDeleted: false }).lean();
   if (!doc) return res.status(404).json({ success: false, message: "Doctor not found" });
+
+  // Schedule the appointment when a date + slot are provided. Validate it's in
+  // the future and not already taken (the slots endpoint hides taken times, but
+  // re-check to avoid a race).
+  let scheduledAt: Date | undefined;
+  let slotTime: string | undefined;
+  let slotLabel: string | undefined;
+  if (b.date && b.slot) {
+    const when = slotToDate(String(b.date), String(b.slot));
+    if (!when || when.getTime() <= Date.now()) {
+      return res.status(400).json({ success: false, message: "Please pick a valid future slot" });
+    }
+    const clash = await Consultation.findOne({
+      doctorId: doc._id,
+      status: { $ne: "CANCELLED" },
+      scheduledAt: when,
+    }).lean();
+    if (clash) {
+      return res.status(409).json({ success: false, message: "That slot was just taken — pick another" });
+    }
+    scheduledAt = when;
+    slotTime = String(b.slot);
+    slotLabel = fullSlotLabel(String(b.date), String(b.slot));
+  }
+
   const c = await Consultation.create({
     userId: uid(req),
     doctorId: doc._id,
@@ -247,10 +324,15 @@ router.post("/consultations", verifyUserToken, async (req, res) => {
     speciality: (doc as any).doctorProfile?.speciality,
     familyMemberId: b.familyMemberId || undefined,
     slotId: b.slotId || undefined,
+    scheduledAt,
+    slotTime,
+    slotLabel,
     symptoms: b.symptoms || undefined,
     teleconsult: b.teleconsult !== false,
     fee: (doc as any).doctorProfile?.consultationFee ?? 0,
   });
+  // Real-time: light up the admin Patient Orders inbox the instant it's placed.
+  emitToAdmin("consultation:new", { id: String(c._id), doctorName: doc.fullName });
   ok(res, c);
 });
 router.get("/consultations", verifyUserToken, async (req, res) => {
@@ -261,6 +343,15 @@ router.get("/consultations/:id", verifyUserToken, async (req, res) => {
   const c = await Consultation.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
   if (!c) return res.status(404).json({ success: false, message: "Consultation not found" });
   ok(res, c);
+});
+router.post("/consultations/:id/cancel", verifyUserToken, async (req, res) => {
+  const c: any = await Consultation.findOne({ _id: req.params.id as string, userId: uid(req) });
+  if (!c) return res.status(404).json({ success: false, message: "Consultation not found" });
+  if (["COMPLETED", "CANCELLED"].includes(c.status)) return ok(res, c.toObject());
+  c.status = "CANCELLED";
+  await c.save();
+  emitToAdmin("consultation:updated", { id: String(c._id), status: "CANCELLED" });
+  ok(res, c.toObject());
 });
 
 // ================== Pharmacy (from DB) ==================
@@ -316,6 +407,7 @@ router.post("/pharmacy/orders", verifyUserToken, async (req, res) => {
     prescriptionUrl: b.prescriptionUrl || undefined,
     totalAmount,
   });
+  emitToAdmin("pharmacy-order:new", { id: String(order._id), totalAmount });
   ok(res, order);
 });
 router.get("/pharmacy/orders", verifyUserToken, async (req, res) => {
@@ -326,6 +418,15 @@ router.get("/pharmacy/orders/:id", verifyUserToken, async (req, res) => {
   const o = await PharmacyOrder.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
   if (!o) return res.status(404).json({ success: false, message: "Order not found" });
   ok(res, o);
+});
+router.post("/pharmacy/orders/:id/cancel", verifyUserToken, async (req, res) => {
+  const o: any = await PharmacyOrder.findOne({ _id: req.params.id as string, userId: uid(req) });
+  if (!o) return res.status(404).json({ success: false, message: "Order not found" });
+  if (["DELIVERED", "CANCELLED"].includes(o.status)) return ok(res, o.toObject());
+  o.status = "CANCELLED";
+  await o.save();
+  emitToAdmin("pharmacy-order:updated", { id: String(o._id), status: "CANCELLED" });
+  ok(res, o.toObject());
 });
 
 // ================== Lab tests (from DB) ==================
@@ -355,14 +456,33 @@ router.post("/lab/bookings", verifyUserToken, async (req, res) => {
   }
   const tests = found.map((t: any) => ({ testId: t._id, name: t.name, price: t.price ?? 0 }));
   const totalAmount = tests.reduce((s, t) => s + t.price, 0);
+
+  // Scheduled sample-collection time (date + slot).
+  let scheduledAt: Date | undefined;
+  let slotTime: string | undefined;
+  let slotLabel: string | undefined;
+  if (b.date && b.slot) {
+    const when = slotToDate(String(b.date), String(b.slot));
+    if (!when || when.getTime() <= Date.now()) {
+      return res.status(400).json({ success: false, message: "Please pick a valid future slot" });
+    }
+    scheduledAt = when;
+    slotTime = String(b.slot);
+    slotLabel = fullSlotLabel(String(b.date), String(b.slot));
+  }
+
   const booking = await LabBooking.create({
     userId: uid(req),
     tests,
     addressId: b.addressId || undefined,
     familyMemberId: b.familyMemberId || undefined,
-    slot: b.slot || undefined,
+    slot: slotLabel || b.slot || undefined,
+    scheduledAt,
+    slotTime,
+    slotLabel,
     totalAmount,
   });
+  emitToAdmin("lab-booking:new", { id: String(booking._id), totalAmount });
   ok(res, booking);
 });
 router.get("/lab/bookings", verifyUserToken, async (req, res) => {
@@ -373,6 +493,15 @@ router.get("/lab/bookings/:id", verifyUserToken, async (req, res) => {
   const bk = await LabBooking.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
   if (!bk) return res.status(404).json({ success: false, message: "Lab booking not found" });
   ok(res, bk);
+});
+router.post("/lab/bookings/:id/cancel", verifyUserToken, async (req, res) => {
+  const bk: any = await LabBooking.findOne({ _id: req.params.id as string, userId: uid(req) });
+  if (!bk) return res.status(404).json({ success: false, message: "Lab booking not found" });
+  if (["REPORT_READY", "CANCELLED"].includes(bk.status)) return ok(res, bk.toObject());
+  bk.status = "CANCELLED";
+  await bk.save();
+  emitToAdmin("lab-booking:updated", { id: String(bk._id), status: "CANCELLED" });
+  ok(res, bk.toObject());
 });
 
 // ================== Medical records ==================
@@ -439,6 +568,20 @@ router.get("/geocode/reverse", verifyUserToken, async (req, res) => {
   const result = await reverseGeocode(lat, lng);
   if (!result) return ok(res, null);
   return ok(res, result);
+});
+
+// Forward address search (type-to-find) — server key, so it actually returns
+// results. Powers the pickup/drop "Search address" boxes.
+router.get("/geocode/search", verifyUserToken, async (req, res) => {
+  const q = String(req.query.q || "");
+  return ok(res, await searchPlaces(q));
+});
+
+// Resolve a chosen suggestion (placeId or description) to coords + address.
+router.get("/geocode/resolve", verifyUserToken, async (req, res) => {
+  const placeId = req.query.placeId ? String(req.query.placeId) : undefined;
+  const description = req.query.description ? String(req.query.description) : undefined;
+  return ok(res, await resolvePlace({ placeId, description }));
 });
 
 // ================== Facilities ==================
@@ -670,6 +813,23 @@ router.post("/ambulance/estimate", verifyUserToken, async (req, res) => {
 // and the app flips to live tracking. `toApp` shapes the record for the app.
 const ACTIVE_STATUSES = ["SEARCHING", "ASSIGNED", "ARRIVED", "ON_TRIP"];
 
+// Patient cancellation is FREE while still "Searching" (no ambulance committed
+// yet); once an ambulance is assigned (ASSIGNED/ARRIVED/ON_TRIP), a charge
+// applies. The fee comes from the chosen VehicleType (admin-configurable),
+// falling back to the global default.
+const CHARGEABLE_CANCEL_STATUSES = ["ASSIGNED", "ARRIVED", "ON_TRIP"];
+
+const cancellationFeeFor = async (r: any): Promise<number> => {
+  if (!CHARGEABLE_CANCEL_STATUSES.includes(String(r.status))) return 0;
+  let fee = 0;
+  if (r.vehicleTypeId) {
+    const vt: any = await VehicleType.findById(r.vehicleTypeId).select("cancellationFee").lean();
+    fee = Number(vt?.cancellationFee) || 0;
+  }
+  if (!fee) fee = config.fare.defaultCancellationCharge || 0;
+  return fee;
+};
+
 const toApp = (r: any) => {
   // Live straight-line distance from the patient pickup to the ambulance's
   // last reported position (null until both coordinates exist).
@@ -702,6 +862,22 @@ const toApp = (r: any) => {
     fareBreakdown: r.fareBreakdown ?? null,
     tripDistanceKm: r.distanceKm ?? null,
     lastLocationAt: r.lastLocationAt || null,
+    // Cancellation details (for the "what happened" booking detail).
+    cancelledBy: r.cancelledBy || null,
+    cancelReason: r.cancelReason || null,
+    cancelledAt: r.cancelledAt || null,
+    cancellationCharge: r.cancellationCharge ?? 0,
+    // Lifecycle timeline.
+    statusHistory: Array.isArray(r.statusHistory)
+      ? r.statusHistory.map((h: any) => ({
+          status: String(h.status || "").toLowerCase(),
+          at: h.at,
+          by: h.by || null,
+          note: h.note || null,
+        }))
+      : [],
+    assignedAt: r.assignedAt || null,
+    completedAt: r.completedAt || null,
     createdAt: r.createdAt,
   };
 };
@@ -747,6 +923,7 @@ const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
     recipientName,
     recipientPhone: b.recipientPhone || undefined,
     status: "SEARCHING",
+    statusHistory: [{ status: "SEARCHING", at: new Date(), by: "patient", note: "Request placed" }],
   });
   // Real-time: light up the admin dispatch dashboard the instant a request
   // (or SOS) comes in — no waiting for the 15s poll.
@@ -780,6 +957,16 @@ router.get("/ambulance/active", verifyUserToken, async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
   ok(res, r ? toApp(r) : null);
+});
+
+// Full booking history for "My Bookings" — every ambulance request the user
+// made (any status). MUST be declared before "/ambulance/:id" so "history"
+// isn't captured as an id.
+router.get("/ambulance/history", verifyUserToken, async (req, res) => {
+  const list = await AmbulanceRequest.find({ userId: uid(req) })
+    .sort({ createdAt: -1 })
+    .lean();
+  ok(res, { items: list.map(toApp) });
 });
 
 // Active SOS dispatch (admin-dispatched EmergencyDispatch) for live tracking.
@@ -828,13 +1015,55 @@ router.get("/ambulance/:id", verifyUserToken, async (req, res) => {
 });
 
 router.post("/ambulance/:id/cancel", verifyUserToken, async (req, res) => {
-  const r = await AmbulanceRequest.findOneAndUpdate(
-    { _id: (req.params.id as string), userId: uid(req) },
-    { $set: { status: "CANCELLED", notes: req.body?.reason } },
-    { new: true },
-  ).lean();
-  if (!r) return res.status(404).json({ success: false, message: "Request not found" });
-  ok(res, toApp(r));
+  const reqDoc: any = await AmbulanceRequest.findOne({
+    _id: req.params.id as string,
+    userId: uid(req),
+  });
+  if (!reqDoc) return res.status(404).json({ success: false, message: "Request not found" });
+  if (reqDoc.status === "COMPLETED" || reqDoc.status === "CANCELLED") {
+    return ok(res, toApp(reqDoc.toObject()));
+  }
+
+  // Charge applies only once an ambulance has been assigned (free while
+  // Searching). Fee comes from the chosen VehicleType, else the global default.
+  const charge = await cancellationFeeFor(reqDoc);
+  const reason = req.body?.reason || "Cancelled by patient";
+
+  reqDoc.status = "CANCELLED";
+  reqDoc.cancelledBy = "patient";
+  reqDoc.cancelReason = reason;
+  reqDoc.cancelledAt = new Date();
+  reqDoc.cancellationCharge = charge;
+  reqDoc.statusHistory = [
+    ...(reqDoc.statusHistory || []),
+    {
+      status: "CANCELLED",
+      at: new Date(),
+      by: "patient",
+      note: charge > 0 ? `Cancelled by patient · charge ₹${charge}` : "Cancelled by patient",
+    },
+  ];
+  await reqDoc.save();
+
+  // Free the reserved ambulance + tell the crew app to drop the dispatch.
+  if (reqDoc.ambulanceId) {
+    await Ambulance.updateOne(
+      { _id: reqDoc.ambulanceId },
+      { status: "available", currentDispatchId: null },
+    );
+  }
+  if (reqDoc.driverStaffId) {
+    emitToUser(String(reqDoc.driverStaffId), "dispatch:cancelled", {
+      requestId: String(reqDoc._id),
+    });
+  }
+  emitToAdmin("ambulance-request:cancelled", {
+    requestId: String(reqDoc._id),
+    cancelledBy: "patient",
+    cancellationCharge: charge,
+  });
+
+  ok(res, toApp(reqDoc.toObject()));
 });
 
 // ================== Geography (patient-app naming) ==================

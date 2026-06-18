@@ -55,6 +55,20 @@ export interface IAmbulanceRequest {
   etaMinutes?: number;
   otp?: string;
   assignedAt?: Date;
+  completedAt?: Date;
+  // Cancellation details — who cancelled, why, when, and any charge levied.
+  cancelledBy?: "patient" | "admin" | "driver" | "system";
+  cancelReason?: string;
+  cancelledAt?: Date;
+  cancellationCharge?: number;
+  // Lifecycle timeline (Searching → Assigned → … → Completed/Cancelled), so the
+  // booking detail can show "what happened" with who/when for each step.
+  statusHistory?: {
+    status: AmbulanceRequestStatus;
+    at: Date;
+    by?: "patient" | "admin" | "driver" | "system";
+    note?: string;
+  }[];
   // Live ambulance position (pushed by the assigned driver/staff app).
   driverLocation?: Loc;
   lastLocationAt?: Date;
@@ -98,6 +112,28 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     etaMinutes: Number,
     otp: String,
     assignedAt: Date,
+    completedAt: Date,
+    cancelledBy: {
+      type: String,
+      enum: ["patient", "admin", "driver", "system"],
+    },
+    cancelReason: String,
+    cancelledAt: Date,
+    cancellationCharge: { type: Number, default: 0 },
+    statusHistory: {
+      type: [
+        new Schema(
+          {
+            status: String,
+            at: { type: Date, default: Date.now },
+            by: String,
+            note: String,
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     driverLocation: { type: LocSchema },
     lastLocationAt: Date,
   },

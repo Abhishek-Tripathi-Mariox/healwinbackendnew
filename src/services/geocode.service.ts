@@ -57,3 +57,114 @@ export const reverseGeocode = async (
     return null;
   }
 };
+
+export interface PlaceSuggestion {
+  description: string;
+  placeId?: string;
+  lat?: number;
+  lng?: number;
+}
+
+/**
+ * Forward address search (type-to-find) via the SERVER key. Tries Places
+ * Autocomplete first, falling back to a forward geocode. Server-side so the
+ * app's restricted key isn't the one calling these web services. Returns [].
+ */
+export const searchPlaces = async (query: string): Promise<PlaceSuggestion[]> => {
+  const apiKey = config.googleMaps?.apiKey;
+  const q = query.trim();
+  if (!apiKey || q.length < 3) return [];
+
+  try {
+    const url = new URL("https://maps.googleapis.com/maps/api/place/autocomplete/json");
+    url.searchParams.set("input", q);
+    url.searchParams.set("components", "country:in");
+    url.searchParams.set("key", apiKey);
+    const res = await fetch(url.toString());
+    const json: any = await res.json();
+    if (json.status === "OK" && Array.isArray(json.predictions)) {
+      return json.predictions.map((p: any) => ({
+        description: p.description,
+        placeId: p.place_id,
+      }));
+    }
+  } catch {
+    /* fall through */
+  }
+
+  try {
+    const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+    url.searchParams.set("address", q);
+    url.searchParams.set("components", "country:IN");
+    url.searchParams.set("key", apiKey);
+    const res = await fetch(url.toString());
+    const json: any = await res.json();
+    if (json.status === "OK" && Array.isArray(json.results)) {
+      return json.results.slice(0, 5).map((r: any) => ({
+        description: r.formatted_address,
+        lat: r.geometry?.location?.lat,
+        lng: r.geometry?.location?.lng,
+      }));
+    }
+  } catch {
+    /* ignore */
+  }
+  return [];
+};
+
+export interface ResolvedPlace {
+  lat: number;
+  lng: number;
+  address: string;
+}
+
+/** Resolve a chosen suggestion (placeId or description) to coords + address. */
+export const resolvePlace = async (opts: {
+  placeId?: string;
+  description?: string;
+}): Promise<ResolvedPlace | null> => {
+  const apiKey = config.googleMaps?.apiKey;
+  if (!apiKey) return null;
+
+  if (opts.placeId) {
+    try {
+      const url = new URL("https://maps.googleapis.com/maps/api/place/details/json");
+      url.searchParams.set("place_id", opts.placeId);
+      url.searchParams.set("fields", "formatted_address,geometry");
+      url.searchParams.set("key", apiKey);
+      const res = await fetch(url.toString());
+      const json: any = await res.json();
+      const loc = json?.result?.geometry?.location;
+      if (loc) {
+        return {
+          lat: loc.lat,
+          lng: loc.lng,
+          address: json.result.formatted_address || opts.description || "",
+        };
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (opts.description) {
+    try {
+      const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+      url.searchParams.set("address", opts.description);
+      url.searchParams.set("key", apiKey);
+      const res = await fetch(url.toString());
+      const json: any = await res.json();
+      const r = json?.results?.[0];
+      if (r?.geometry?.location) {
+        return {
+          lat: r.geometry.location.lat,
+          lng: r.geometry.location.lng,
+          address: r.formatted_address,
+        };
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+};

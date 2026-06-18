@@ -69,6 +69,10 @@ export interface ILabBooking {
   addressId?: Types.ObjectId;
   familyMemberId?: Types.ObjectId;
   slot?: string;
+  // Scheduled sample-collection appointment.
+  scheduledAt?: Date;
+  slotTime?: string; // "09:30" (IST 24h)
+  slotLabel?: string; // "9:30 AM, 18 Jun"
   totalAmount: number;
   status: "BOOKED" | "SAMPLE_COLLECTED" | "PROCESSING" | "REPORT_READY" | "CANCELLED";
   createdAt: Date;
@@ -89,6 +93,9 @@ const LabBookingSchema = new Schema<ILabBooking>(
     addressId: { type: Schema.Types.ObjectId, ref: "UserAddress" },
     familyMemberId: { type: Schema.Types.ObjectId, ref: "PatientFamilyMember" },
     slot: String,
+    scheduledAt: Date,
+    slotTime: String,
+    slotLabel: String,
     totalAmount: { type: Number, default: 0 },
     status: {
       type: String,
@@ -111,6 +118,10 @@ export interface IConsultation {
   speciality?: string;
   familyMemberId?: Types.ObjectId;
   slotId?: string;
+  // Scheduled appointment time.
+  scheduledAt?: Date;
+  slotTime?: string; // "09:30" (IST 24h)
+  slotLabel?: string; // "9:30 AM, 18 Jun"
   symptoms?: string;
   teleconsult: boolean;
   fee: number;
@@ -127,6 +138,9 @@ const ConsultationSchema = new Schema<IConsultation>(
     speciality: String,
     familyMemberId: { type: Schema.Types.ObjectId, ref: "PatientFamilyMember" },
     slotId: String,
+    scheduledAt: Date,
+    slotTime: String,
+    slotLabel: String,
     symptoms: String,
     teleconsult: { type: Boolean, default: true },
     fee: { type: Number, default: 0 },

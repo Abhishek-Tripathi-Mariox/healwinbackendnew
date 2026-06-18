@@ -161,6 +161,15 @@ export const assign = async (req: Request, _res: Response, next: NextFunction) =
   reqDoc.status = "ASSIGNED";
   reqDoc.assignedAt = new Date();
   if (!reqDoc.otp) reqDoc.otp = String(Math.floor(1000 + Math.random() * 9000));
+  reqDoc.statusHistory = [
+    ...((reqDoc as any).statusHistory || []),
+    {
+      status: "ASSIGNED",
+      at: new Date(),
+      by: "admin",
+      note: reqDoc.driverName ? `Assigned to ${reqDoc.driverName}` : "Ambulance assigned",
+    },
+  ] as any;
   await reqDoc.save();
 
   const userId = String(reqDoc.userId);
@@ -232,17 +241,33 @@ export const updateStatus = async (req: Request, _res: Response, next: NextFunct
     req.rData = { hint: `status must be one of ${allowed.join(", ")}` };
     return next();
   }
-  const reqDoc = await AmbulanceRequest.findByIdAndUpdate(
-    (req.params.id as string),
-    { $set: { status } },
-    { new: true },
-  );
+  const reqDoc = await AmbulanceRequest.findById(req.params.id as string);
   if (!reqDoc) {
     req.rCode = 5;
     req.msg = "not_available";
     req.rData = {};
     return next();
   }
+  reqDoc.status = status as any;
+  if (status === "COMPLETED") reqDoc.completedAt = new Date();
+  if (status === "CANCELLED") {
+    // Admin/system cancellation (e.g. no ambulance available) is FREE.
+    reqDoc.cancelledBy = "admin";
+    reqDoc.cancelReason = req.body?.reason || req.body?.cancelReason || "Cancelled by control room";
+    reqDoc.cancelledAt = new Date();
+    reqDoc.cancellationCharge = 0;
+  }
+  (reqDoc as any).statusHistory = [
+    ...((reqDoc as any).statusHistory || []),
+    {
+      status,
+      at: new Date(),
+      by: "admin",
+      note: status === "CANCELLED" ? reqDoc.cancelReason : undefined,
+    },
+  ];
+  await reqDoc.save();
+
   // Free the reserved ambulance once the trip ends or is cancelled.
   if ((status === "COMPLETED" || status === "CANCELLED") && reqDoc.ambulanceId) {
     await Ambulance.updateOne(

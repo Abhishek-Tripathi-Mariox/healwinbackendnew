@@ -85,6 +85,17 @@ const config = {
     maxSurgeMultiplier: Number(process.env.MAX_SURGE_MULTIPLIER) || 2.5,
     waitingChargePerMinute: Number(process.env.WAITING_CHARGE_PER_MINUTE) || 3,
     freeWaitingMinutes: Number(process.env.FREE_WAITING_MINUTES) || 5,
+    // Fallback patient-cancellation charge when a VehicleType has no
+    // `cancellationFee` set. Only applied once an ambulance is assigned.
+    defaultCancellationCharge: Number(process.env.DEFAULT_CANCELLATION_CHARGE) || 150,
+  },
+
+  // Appointment scheduling — working hours used to generate consultation / lab
+  // time slots (IST). Per-doctor overrides can come later from doctorProfile.
+  clinic: {
+    workStartHour: Number(process.env.CLINIC_START_HOUR) || 9,
+    workEndHour: Number(process.env.CLINIC_END_HOUR) || 18,
+    slotMinutes: Number(process.env.CLINIC_SLOT_MINUTES) || 30,
   },
 
   // Driver/attendant payout per completed dispatch (earnings).
