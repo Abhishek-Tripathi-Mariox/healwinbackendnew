@@ -65,6 +65,12 @@ const config = {
     origin: optional("CORS_ORIGIN", "*"),
   },
 
+  // Help & Support contact — surfaced to the apps so Call/Email buttons work.
+  support: {
+    helplineNumber: optional("call_helpline_number"),
+    email: optional("support_email"),
+  },
+
   // Coin system configuration
   coins: {
     earnRate: Number(process.env.COIN_EARN_RATE) || 2, // Coins per 100 rupees spent

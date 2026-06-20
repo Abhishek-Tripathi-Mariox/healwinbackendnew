@@ -1,0 +1,16 @@
+import { Router } from "express";
+import * as C from "../controllers/admin/faq.controller";
+import AdminAuthMiddleware from "../middlewares/admin-auth.middleware";
+import ErrorHandlerMiddleware from "../middlewares/error-handler.middleware";
+import ResponseMiddleware from "../middlewares/response.middleware";
+
+/** Admin CRUD for Help & Support FAQs. Mounted at /admin/faqs. */
+const router = Router();
+const auth = AdminAuthMiddleware();
+
+router.get("/", auth.verifyAdminToken, ErrorHandlerMiddleware(C.list), ResponseMiddleware);
+router.post("/", auth.verifyAdminToken, ErrorHandlerMiddleware(C.create), ResponseMiddleware);
+router.patch("/:id", auth.verifyAdminToken, ErrorHandlerMiddleware(C.update), ResponseMiddleware);
+router.delete("/:id", auth.verifyAdminToken, ErrorHandlerMiddleware(C.remove), ResponseMiddleware);
+
+export default router;

@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { SupportTicket, SupportMessage } from "../models/support-ticket.model";
 import { FAQ } from "../models/content.model";
 import { cache } from "../utils/redis.util";
+import config from "../config";
 
 /**
  * Create a support ticket
@@ -245,6 +246,20 @@ export const closeTicket = async (req: Request, res: Response) => {
 /**
  * Get FAQs
  */
+/**
+ * Help & Support contact info (helpline number + email) from env config, so the
+ * app's Call / Email buttons dial / compose the right destination.
+ */
+export const getContactInfo = async (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    data: {
+      helplineNumber: config.support.helplineNumber || "",
+      email: config.support.email || "",
+    },
+  });
+};
+
 export const getFAQs = async (req: Request, res: Response) => {
   try {
     const { category } = req.query;

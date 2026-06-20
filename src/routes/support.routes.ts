@@ -24,6 +24,9 @@ router.post("/tickets/:ticketId/messages", supportController.addMessage);
 // Close ticket
 router.post("/tickets/:ticketId/close", supportController.closeTicket);
 
+// Help & Support contact (helpline number + email from env config)
+router.get("/contact-info", supportController.getContactInfo);
+
 // Get FAQs
 router.get("/faqs", supportController.getFAQs);
 

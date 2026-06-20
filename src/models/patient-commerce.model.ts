@@ -73,6 +73,10 @@ export interface ILabBooking {
   scheduledAt?: Date;
   slotTime?: string; // "09:30" (IST 24h)
   slotLabel?: string; // "9:30 AM, 18 Jun"
+  // Result, filled when the lab completes the test: an uploaded report file
+  // and/or manually-typed findings ("what problem was found").
+  reportUrl?: string;
+  reportNotes?: string;
   totalAmount: number;
   status: "BOOKED" | "SAMPLE_COLLECTED" | "PROCESSING" | "REPORT_READY" | "CANCELLED";
   createdAt: Date;
@@ -96,6 +100,8 @@ const LabBookingSchema = new Schema<ILabBooking>(
     scheduledAt: Date,
     slotTime: String,
     slotLabel: String,
+    reportUrl: String,
+    reportNotes: String,
     totalAmount: { type: Number, default: 0 },
     status: {
       type: String,
@@ -125,6 +131,9 @@ export interface IConsultation {
   symptoms?: string;
   teleconsult: boolean;
   fee: number;
+  // Doctor's consultation summary, filled when marked completed — what was
+  // discussed / advised / prescribed to the patient.
+  summary?: string;
   status: "REQUESTED" | "CONFIRMED" | "COMPLETED" | "CANCELLED";
   createdAt: Date;
   updatedAt: Date;
@@ -142,6 +151,7 @@ const ConsultationSchema = new Schema<IConsultation>(
     slotTime: String,
     slotLabel: String,
     symptoms: String,
+    summary: String,
     teleconsult: { type: Boolean, default: true },
     fee: { type: Number, default: 0 },
     status: {

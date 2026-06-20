@@ -554,13 +554,40 @@ export const dispatchHistory = async (
     100,
     Math.max(1, parseInt((req.query.limit as string) || "30", 10)),
   );
-  const items = await EmergencyDispatch.find({
+  const raw = await EmergencyDispatch.find({
     $or: [{ driverStaffId: staffId }, { attendantStaffId: staffId }],
     status: { $in: ["COMPLETED", "CANCELLED"] },
   })
     .sort({ updatedAt: -1 })
     .limit(limit)
+    .populate("sosSubmission", "name address phone")
+    .populate("ambulanceId", "registrationNumber")
     .lean();
+
+  // Clean, display-ready shape: real names + addresses (not raw coordinates),
+  // distance, status and timestamps — so the app's Trip History reads nicely.
+  const items = raw.map((d: any) => {
+    const sub = d.sosSubmission || {};
+    const c = d.patientLocation?.coordinates;
+    const coords = c && c.length === 2 ? { lat: c[1], lng: c[0] } : null;
+    return {
+      _id: d._id,
+      ref: String(d._id).slice(-6).toUpperCase(),
+      status: d.status,
+      patientName: d.patientName || sub.name || "Emergency patient",
+      patientPhone: d.servicePhone || sub.phone || null,
+      address: d.pickupAddress || sub.address || "",
+      vehicle: d.ambulanceId?.registrationNumber || d.serviceName || null,
+      distanceKm: d.roadDistanceKm ?? 0,
+      etaMinutes: d.etaMinutes ?? null,
+      otp: d.otp || null,
+      coords,
+      dispatchedAt: d.dispatchedAt || d.createdAt,
+      completedAt: d.completedAt || null,
+      cancelledAt: d.cancelledAt || null,
+      createdAt: d.createdAt,
+    };
+  });
   req.rData = { items, total: items.length };
   req.msg = "dispatch_history";
   next();
