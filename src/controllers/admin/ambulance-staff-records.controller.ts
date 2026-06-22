@@ -4,6 +4,7 @@ import {
   StaffCaseNote,
   StaffStockRequest,
 } from "../../models/ambulance-staff-extras.model";
+import { sendToStaff } from "../../services/notification.service";
 
 /**
  * Admin read/management endpoints for the records the ambulance-staff app
@@ -14,6 +15,10 @@ import {
  */
 
 const STAFF_FIELDS = "fullName mobileNumber";
+
+/** Short, human date for notification copy, e.g. "5 Jun". */
+const fmtDate = (d: Date | string): string =>
+  new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 
 const optionalStaffFilter = (req: Request) => {
   const { staffId } = req.query as { staffId?: string };
@@ -69,6 +74,24 @@ export const updateStockRequestStatus = async (req: Request, _res: Response, nex
     req.msg = "item_not_found";
     return next();
   }
+
+  // Notify the staff member their stock request was actioned.
+  const stockStaffId = (item.staffId as any)?._id || item.staffId;
+  if (stockStaffId && status !== "Pending") {
+    const itemNames = (item.items || []).map((i: any) => i.name).join(", ");
+    sendToStaff(
+      stockStaffId,
+      "SYSTEM",
+      status === "Fulfilled" ? "Stock Request Fulfilled" : "Stock Request Rejected",
+      status === "Fulfilled"
+        ? `Your stock request${itemNames ? ` (${itemNames})` : ""} has been fulfilled.`
+        : `Your stock request${itemNames ? ` (${itemNames})` : ""} was rejected.`,
+      { stockRequestId: String(item._id), status, route: "StockRequests" },
+      item._id,
+      "StaffStockRequest",
+    ).catch(() => undefined);
+  }
+
   req.rData = { item };
   req.msg = "success";
   return next();
@@ -108,6 +131,25 @@ export const updateLeaveStatus = async (req: Request, _res: Response, next: Next
     req.msg = "item_not_found";
     return next();
   }
+
+  // Notify the staff member that their leave was approved/rejected, so the
+  // decision lands as a push + an entry in their app's notification bell.
+  const leaveStaffId = (item.staffId as any)?._id || item.staffId;
+  if (leaveStaffId && status !== "Pending") {
+    const range = `${fmtDate(item.fromDate)}–${fmtDate(item.toDate)}`;
+    sendToStaff(
+      leaveStaffId,
+      "SYSTEM",
+      status === "Approved" ? "Leave Approved" : "Leave Rejected",
+      status === "Approved"
+        ? `Your ${item.type} leave (${range}) has been approved.`
+        : `Your ${item.type} leave (${range}) was rejected.`,
+      { leaveId: String(item._id), status, route: "Leave" },
+      item._id,
+      "StaffLeave",
+    ).catch(() => undefined);
+  }
+
   req.rData = { item };
   req.msg = "success";
   return next();

@@ -1,13 +1,20 @@
-import { Request, Response } from "express";
+import { Request, Response, NextFunction } from "express";
 import PromoCode from "../../models/promo-code.model";
 import * as PromoService from "../../services/promo.service";
 import { Types } from "mongoose";
 
 /**
- * Get all promo codes
+ * Admin CRUD for promo codes (logistics + ambulance). Mounted at /admin/promos.
+ * Follows the req.rData / req.msg + ResponseMiddleware convention.
  */
-export const getAllPromos = async (req: Request, res: Response) => {
-  const { status, search, page = 0, limit = 20 } = req.query;
+
+/** GET /admin/promos — paginated list with status + text search. */
+export const getAllPromos = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const { status, search, serviceCategory, page = 0, limit = 20 } = req.query;
 
   const query: any = { isDeleted: false };
 
@@ -20,6 +27,8 @@ export const getAllPromos = async (req: Request, res: Response) => {
     query.isActive = false;
   }
 
+  if (serviceCategory) query.serviceCategory = serviceCategory;
+
   if (search) {
     query.$or = [
       { code: { $regex: search, $options: "i" } },
@@ -27,47 +36,54 @@ export const getAllPromos = async (req: Request, res: Response) => {
     ];
   }
 
-  const promos = await PromoCode.find(query)
-    .sort({ createdAt: -1 })
-    .skip(Number(page) * Number(limit))
-    .limit(Number(limit));
+  const [promos, total] = await Promise.all([
+    PromoCode.find(query)
+      .sort({ createdAt: -1 })
+      .skip(Number(page) * Number(limit))
+      .limit(Number(limit))
+      .lean(),
+    PromoCode.countDocuments(query),
+  ]);
 
-  const total = await PromoCode.countDocuments(query);
-
-  res.locals.data = {
+  req.rData = {
     promos,
     total,
     page: Number(page),
     limit: Number(limit),
     totalPages: Math.ceil(total / Number(limit)),
   };
+  req.msg = "success";
+  return next();
 };
 
-/**
- * Get promo by ID
- */
-export const getPromoById = async (req: Request, res: Response) => {
+/** GET /admin/promos/:id */
+export const getPromoById = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
   const { id } = req.params as Record<string, string>;
-
   const promo = await PromoCode.findById(id).populate(
     "applicableVehicleTypes",
     "name",
   );
-
   if (!promo) {
-    return res.status(404).json({
-      success: false,
-      message: "Promo code not found",
-    });
+    req.rCode = 5;
+    req.msg = "not_found";
+    req.rData = {};
+    return next();
   }
-
-  res.locals.data = { promo };
+  req.rData = { promo };
+  req.msg = "success";
+  return next();
 };
 
-/**
- * Create promo code
- */
-export const createPromo = async (req: Request, res: Response) => {
+/** POST /admin/promos */
+export const createPromo = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
   const {
     code,
     description,
@@ -81,23 +97,31 @@ export const createPromo = async (req: Request, res: Response) => {
     validTo,
     applicableVehicleTypes,
     applicableServiceTypes,
-  } = req.body;
+    serviceCategory,
+  } = req.body || {};
 
-  // Check if code already exists
+  if (!code || !description || !discountType || discountValue == null || !validFrom || !validTo) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = {
+      hint: "code, description, discountType, discountValue, validFrom and validTo are required",
+    };
+    return next();
+  }
+
   const existing = await PromoCode.findOne({
-    code: code.toUpperCase(),
+    code: String(code).toUpperCase(),
     isDeleted: false,
   });
-
   if (existing) {
-    return res.status(400).json({
-      success: false,
-      message: "Promo code already exists",
-    });
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "Promo code already exists" };
+    return next();
   }
 
   const promo = await PromoService.createPromoCode({
-    code: code.toUpperCase(),
+    code: String(code).toUpperCase(),
     description,
     discountType,
     discountValue,
@@ -109,94 +133,91 @@ export const createPromo = async (req: Request, res: Response) => {
     validTo: new Date(validTo),
     applicableVehicleTypes,
     applicableServiceTypes,
-    createdBy: new Types.ObjectId(req.adminId),
+    serviceCategory: serviceCategory || "LOGISTICS",
+    createdBy: new Types.ObjectId((req as any).adminId),
   });
 
-  res.locals.data = {
-    message: "Promo code created successfully",
-    promo,
-  };
+  req.rData = { promo };
+  req.msg = "success";
+  return next();
 };
 
-/**
- * Update promo code
- */
-export const updatePromo = async (req: Request, res: Response) => {
+/** PUT /admin/promos/:id */
+export const updatePromo = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
   const { id } = req.params as Record<string, string>;
-  const updateData = req.body;
+  const updateData = { ...req.body };
 
-  // Don't allow code change
+  // The code itself is immutable once created (it's been shared/printed).
   delete updateData.code;
 
   const promo = await PromoService.updatePromoCode(
     new Types.ObjectId(id),
     updateData,
   );
-
   if (!promo) {
-    return res.status(404).json({
-      success: false,
-      message: "Promo code not found",
-    });
+    req.rCode = 5;
+    req.msg = "not_found";
+    req.rData = {};
+    return next();
   }
-
-  res.locals.data = {
-    message: "Promo code updated successfully",
-    promo,
-  };
+  req.rData = { promo };
+  req.msg = "success";
+  return next();
 };
 
-/**
- * Delete promo code (soft delete)
- */
-export const deletePromo = async (req: Request, res: Response) => {
+/** DELETE /admin/promos/:id — soft delete. */
+export const deletePromo = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
   const { id } = req.params as Record<string, string>;
-
   const promo = await PromoService.deletePromoCode(new Types.ObjectId(id));
-
   if (!promo) {
-    return res.status(404).json({
-      success: false,
-      message: "Promo code not found",
-    });
+    req.rCode = 5;
+    req.msg = "not_found";
+    req.rData = {};
+    return next();
   }
-
-  res.locals.data = {
-    message: "Promo code deleted successfully",
-  };
+  req.rData = {};
+  req.msg = "success";
+  return next();
 };
 
-/**
- * Get promo code usage stats
- */
-export const getPromoStats = async (req: Request, res: Response) => {
+/** GET /admin/promos/:id/stats */
+export const getPromoStats = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
   const { id } = req.params as Record<string, string>;
-
   const stats = await PromoService.getPromoCodeStats(new Types.ObjectId(id));
-
-  res.locals.data = stats;
+  req.rData = stats;
+  req.msg = "success";
+  return next();
 };
 
-/**
- * Toggle promo code status
- */
-export const togglePromoStatus = async (req: Request, res: Response) => {
+/** PATCH /admin/promos/:id/toggle */
+export const togglePromoStatus = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
   const { id } = req.params as Record<string, string>;
-
   const promo = await PromoCode.findById(id);
-
   if (!promo) {
-    return res.status(404).json({
-      success: false,
-      message: "Promo code not found",
-    });
+    req.rCode = 5;
+    req.msg = "not_found";
+    req.rData = {};
+    return next();
   }
-
   promo.isActive = !promo.isActive;
   await promo.save();
-
-  res.locals.data = {
-    message: `Promo code ${promo.isActive ? "activated" : "deactivated"}`,
-    promo,
-  };
+  req.rData = { promo };
+  req.msg = "success";
+  return next();
 };

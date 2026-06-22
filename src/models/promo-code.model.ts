@@ -15,6 +15,10 @@ export interface IPromoCode {
   validTo: Date;
   applicableVehicleTypes?: Types.ObjectId[];
   applicableServiceTypes?: ("WITHIN_CITY" | "OUTSTATION")[];
+  // Which product the code is valid on. LOGISTICS = legacy goods bookings,
+  // AMBULANCE = patient-app ambulance rides, ALL = both. Defaults to LOGISTICS
+  // so every pre-existing code keeps its original (logistics-only) behaviour.
+  serviceCategory: "LOGISTICS" | "AMBULANCE" | "ALL";
   isActive: boolean;
   isDeleted: boolean;
   createdBy: Types.ObjectId;
@@ -87,6 +91,12 @@ const PromoCodeSchema = new Schema<IPromoCode>(
         enum: ["WITHIN_CITY", "OUTSTATION"],
       },
     ],
+    serviceCategory: {
+      type: String,
+      enum: ["LOGISTICS", "AMBULANCE", "ALL"],
+      default: "LOGISTICS",
+      index: true,
+    },
     isActive: {
       type: Boolean,
       default: true,

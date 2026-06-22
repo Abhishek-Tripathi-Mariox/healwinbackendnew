@@ -87,6 +87,7 @@ import adminCatalogRoutes from "./admin-catalog.routes";
 import adminAmbulanceRequestsRoutes from "./admin-ambulance-requests.routes";
 import adminMembershipRoutes from "./admin-membership.routes";
 import adminHomePromoRoutes from "./admin-home-promo.routes";
+import adminPromoRoutes from "./admin-promo.routes";
 
 const router = Router();
 
@@ -176,6 +177,7 @@ router.use("/admin/catalog", adminCatalogRoutes);
 router.use("/admin/ambulance-requests", adminAmbulanceRequestsRoutes);
 router.use("/admin/membership-plans", adminMembershipRoutes);
 router.use("/admin/home-promos", adminHomePromoRoutes);
+router.use("/admin/promos", adminPromoRoutes);
 
 router.use("/admin", ambulanceDispatchRoutes);
 router.use("/admin", adminRoutes);

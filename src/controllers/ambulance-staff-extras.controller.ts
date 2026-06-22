@@ -7,10 +7,18 @@ import {
 import HospitalPatient from "../models/hospital-patient.model";
 import { nextSequence } from "../models/counter.model";
 import { uploadFileToAws } from "../utils/s3";
+import { emitToAdmin } from "../utils/socket.util";
+import AmbulanceStaff from "../models/ambulance-staff.model";
 
 /** Leave / Patient / Case-notes / Stock for the ambulance-staff app. */
 
 const sid = (req: Request) => (req as any).staffId;
+
+/** Resolve the staff member's display name for admin-facing realtime alerts. */
+const staffName = async (staffId: any): Promise<string> => {
+  const s = await AmbulanceStaff.findById(staffId).select("fullName").lean();
+  return (s as any)?.fullName || "A staff member";
+};
 
 // ----- Leave -----
 export const listLeaves = async (req: Request, _res: Response, next: NextFunction) => {
@@ -43,6 +51,18 @@ export const applyLeave = async (req: Request, _res: Response, next: NextFunctio
     reason: b.reason,
     attachmentUrl,
   });
+
+  // Real-time alert to the admin dashboard so a new leave request is seen
+  // without refreshing the HR Leave page.
+  emitToAdmin("leave:new", {
+    leaveId: String(item._id),
+    staffName: await staffName(sid(req)),
+    type: item.type,
+    from: item.fromDate,
+    to: item.toDate,
+    day: item.day,
+  });
+
   req.rData = { item };
   req.msg = "success";
   return next();
@@ -130,6 +150,13 @@ export const createStockRequest = async (req: Request, _res: Response, next: Nex
     return next();
   }
   const item = await StaffStockRequest.create({ staffId: sid(req), items });
+
+  emitToAdmin("stock:new", {
+    stockRequestId: String(item._id),
+    staffName: await staffName(sid(req)),
+    items: item.items,
+  });
+
   req.rData = { item };
   req.msg = "success";
   return next();

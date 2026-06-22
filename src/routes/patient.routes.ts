@@ -18,6 +18,7 @@ import { PharmacyOrder, LabBooking, Consultation } from "../models/patient-comme
 import HomePromo from "../models/home-promo.model";
 import { MembershipPlan, UserMembership } from "../models/membership.model";
 import { calculateFare } from "../services/fare.service";
+import * as PromoService from "../services/promo.service";
 import { reverseGeocode, searchPlaces, resolvePlace } from "../services/geocode.service";
 import { haversineKm, etaMinutesFromKm } from "../utils/geo.util";
 import { generateSlots, slotToDate, slotLabelFor } from "../utils/slots.util";
@@ -434,6 +435,15 @@ router.post("/pharmacy/orders", verifyUserToken, async (req, res) => {
   });
   emitToAdmin("pharmacy-order:new", { id: String(order._id), totalAmount });
   ok(res, order);
+});
+// Upload a prescription image/PDF for a pharmacy order → returns a URL the
+// client passes back as `prescriptionUrl` when placing the order.
+router.post("/pharmacy/prescription", verifyUserToken, recordsUpload.single("file"), async (req, res) => {
+  const file = (req as any).file as Express.Multer.File | undefined;
+  if (!file) return res.status(400).json({ success: false, message: "file is required" });
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  const url = `${baseUrl}/uploads/medical-records/${path.basename(file.path)}`;
+  ok(res, { url });
 });
 router.get("/pharmacy/orders", verifyUserToken, async (req, res) => {
   const list = await PharmacyOrder.find({ userId: uid(req) }).sort({ createdAt: -1 }).lean();
@@ -852,6 +862,37 @@ router.post("/ambulance/estimate", verifyUserToken, async (req, res) => {
   });
 });
 
+// Validate an ambulance promo code against a quoted fare, BEFORE booking. The
+// app calls this when the patient taps "Apply" so it can show the discount and
+// the new payable amount up front. This only previews — actual redemption (the
+// usage record + counter bump) happens at /ambulance/book time so abandoned
+// checkouts never burn a code.
+router.post("/ambulance/apply-promo", verifyUserToken, async (req, res) => {
+  const { code, amount, type } = req.body ?? {};
+  if (!code || typeof amount !== "number") {
+    return res.status(400).json({ success: false, message: "code and amount are required" });
+  }
+  const vt = await resolveVehicleType(type);
+  const result = await PromoService.validatePromoCode(
+    String(code),
+    new Types.ObjectId(uid(req)),
+    amount,
+    vt?._id,
+    undefined,
+    "AMBULANCE",
+  );
+  if (!result.valid) {
+    return res.status(400).json({ success: false, message: result.error });
+  }
+  ok(res, {
+    valid: true,
+    code: String(code).toUpperCase(),
+    discountAmount: result.discountAmount,
+    finalAmount: Math.max(0, Math.round((amount - (result.discountAmount || 0)) * 100) / 100),
+    description: result.promo?.description,
+  });
+});
+
 // Real, persisted ambulance requests. The admin dispatch screen assigns an
 // ambulance + driver; on assignment the user is pushed (FCM) + socket-notified
 // and the app flips to live tracking. `toApp` shapes the record for the app.
@@ -904,6 +945,11 @@ const toApp = (r: any) => {
     // Real fare computed at booking time (drives the price breakup UI).
     amount: r.amount ?? null,
     fareBreakdown: r.fareBreakdown ?? null,
+    // Promo applied at booking: gross (pre-discount) fare + the savings, so the
+    // breakup can show "Fare ₹X − Promo ₹Y = ₹Z".
+    grossAmount: r.grossAmount ?? r.amount ?? null,
+    discountAmount: r.discountAmount ?? 0,
+    promoCode: r.promoCode ?? null,
     tripDistanceKm: r.distanceKm ?? null,
     lastLocationAt: r.lastLocationAt || null,
     // Cancellation details (for the "what happened" booking detail).
@@ -911,6 +957,8 @@ const toApp = (r: any) => {
     cancelReason: r.cancelReason || null,
     cancelledAt: r.cancelledAt || null,
     cancellationCharge: r.cancellationCharge ?? 0,
+    rating: r.rating ?? null,
+    review: r.review || null,
     // Lifecycle timeline.
     statusHistory: Array.isArray(r.statusHistory)
       ? r.statusHistory.map((h: any) => ({
@@ -947,6 +995,36 @@ const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
     distanceKm = q.distanceKm;
     etaMinutes = q.durationMin || undefined;
   }
+
+  // Apply a promo code if the patient entered one. We re-validate server-side
+  // (never trust a client-sent discount) against the freshly computed fare, then
+  // keep both the gross fare and the net payable so the price breakup is honest.
+  let grossAmount: number | undefined = amount;
+  let discountAmount = 0;
+  let promoCodeId: Types.ObjectId | undefined;
+  let promoCode: string | undefined;
+  let appliedPromo: any = null;
+  if (b.promoCode && typeof amount === "number") {
+    const v = await PromoService.validatePromoCode(
+      String(b.promoCode),
+      new Types.ObjectId(uid(req)),
+      amount,
+      vt?._id,
+      undefined,
+      "AMBULANCE",
+    );
+    if (v.valid && v.promo) {
+      discountAmount = v.discountAmount || 0;
+      amount = Math.max(0, Math.round((amount - discountAmount) * 100) / 100);
+      promoCodeId = v.promo._id;
+      promoCode = v.promo.code;
+      appliedPromo = v.promo;
+    }
+    // Invalid/expired codes are silently ignored at book time — the patient
+    // already saw validity via /ambulance/apply-promo; we never block a booking
+    // (especially an emergency) over a bad coupon.
+  }
+
   const r = await AmbulanceRequest.create({
     userId: uid(req),
     // Persist the human-readable name for admin/driver display + the id for fares.
@@ -958,6 +1036,10 @@ const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
     distanceKm,
     amount,
     fareBreakdown,
+    grossAmount,
+    discountAmount,
+    promoCodeId,
+    promoCode,
     etaMinutes,
     patientName: recipientName,
     notes: b.notes,
@@ -969,6 +1051,18 @@ const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
     status: "SEARCHING",
     statusHistory: [{ status: "SEARCHING", at: new Date(), by: "patient", note: "Request placed" }],
   });
+  // Record the promo redemption now that we have a request id to bind it to
+  // (per-user limit + global usage counter). Best-effort: a failure here must
+  // not fail an already-created booking.
+  if (promoCodeId && appliedPromo) {
+    PromoService.applyPromoToAmbulance(
+      promoCodeId,
+      new Types.ObjectId(uid(req)),
+      r._id,
+      discountAmount,
+    ).catch((e) => console.error("[promo] ambulance redemption failed:", e));
+  }
+
   // Real-time: light up the admin dispatch dashboard the instant a request
   // (or SOS) comes in — no waiting for the 15s poll.
   emitToAdmin(emergency ? "sos:new" : "ambulance-request:new", {
@@ -1056,6 +1150,24 @@ router.get("/ambulance/:id", verifyUserToken, async (req, res) => {
   const r = await AmbulanceRequest.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
   if (!r) return res.status(404).json({ success: false, message: "Request not found" });
   ok(res, toApp(r));
+});
+
+// Rate a completed ride (1–5 + optional review).
+router.post("/ambulance/:id/rate", verifyUserToken, async (req, res) => {
+  const rating = Number(req.body?.rating);
+  if (!rating || rating < 1 || rating > 5) {
+    return res.status(400).json({ success: false, message: "rating must be 1–5" });
+  }
+  const r: any = await AmbulanceRequest.findOne({ _id: req.params.id as string, userId: uid(req) });
+  if (!r) return res.status(404).json({ success: false, message: "Request not found" });
+  if (r.status !== "COMPLETED") {
+    return res.status(400).json({ success: false, message: "You can rate only after the trip is completed" });
+  }
+  r.rating = rating;
+  r.review = String(req.body?.review || "").trim() || undefined;
+  r.ratedAt = new Date();
+  await r.save();
+  ok(res, toApp(r.toObject()));
 });
 
 router.post("/ambulance/:id/cancel", verifyUserToken, async (req, res) => {

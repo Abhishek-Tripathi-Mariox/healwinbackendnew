@@ -5,6 +5,7 @@ import * as admin from "firebase-admin";
 import { Notification, PushTemplate } from "../models/notification.model";
 import User from "../models/Users";
 import Driver from "../models/driver.model";
+import AmbulanceStaff from "../models/ambulance-staff.model";
 import { DeviceToken } from "../models/device-token.model";
 import { cache } from "../utils/redis.util";
 import { emitToUser } from "../utils/socket.util";
@@ -405,6 +406,55 @@ export const sendToDriver = async (
     return true;
   } catch (error) {
     console.error("Failed to send notification to driver:", error);
+    return false;
+  }
+};
+
+/**
+ * Send notification to an ambulance-staff member (driver/attendant).
+ *
+ * Mirrors sendToDriver but targets the AmbulanceStaff inbox + push token.
+ * Persists a Notification row (so it shows in the staff app's bell), pushes
+ * it live over the socket room keyed by staffId, and fires an FCM push to the
+ * single fcmToken the staff device registered at login.
+ */
+export const sendToStaff = async (
+  staffId: Types.ObjectId | string,
+  type: "BOOKING" | "PAYMENT" | "PROMO" | "SYSTEM" | "CHAT" | "REWARD",
+  title: string,
+  body: string,
+  data?: Record<string, string>,
+  referenceId?: Types.ObjectId,
+  referenceType?: string,
+): Promise<boolean> => {
+  try {
+    const notification = new Notification({
+      staffId,
+      type,
+      title,
+      body,
+      data,
+      referenceId,
+      referenceType,
+      isRead: false,
+    });
+    await notification.save();
+
+    // Real-time: push to the staff app instantly (live list + badge).
+    emitToUser(String(staffId), "notification:new", notificationPayload(notification));
+
+    const staff = await AmbulanceStaff.findById(staffId).select("fcmToken");
+    if (staff?.fcmToken) {
+      await sendPushNotification(staff.fcmToken, title, body, {
+        ...data,
+        notificationId: notification._id.toString(),
+        type,
+      });
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Failed to send notification to staff:", error);
     return false;
   }
 };

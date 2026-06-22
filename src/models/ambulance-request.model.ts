@@ -34,8 +34,14 @@ export interface IAmbulanceRequest {
   drop?: Loc;
   // Real fare, computed at booking time from the VehicleType + trip distance.
   distanceKm?: number;
-  amount?: number;
+  amount?: number; // FINAL payable, i.e. grossAmount − discountAmount
   fareBreakdown?: Record<string, any>;
+  // Promo applied at booking. grossAmount is the pre-discount fare; amount is
+  // what the patient actually pays.
+  grossAmount?: number;
+  promoCodeId?: Types.ObjectId;
+  promoCode?: string;
+  discountAmount?: number;
   patientName?: string;
   notes?: string;
   // "Book for someone else" — the saved contact this ride is for (parcel-style).
@@ -56,6 +62,10 @@ export interface IAmbulanceRequest {
   otp?: string;
   assignedAt?: Date;
   completedAt?: Date;
+  // Patient rating of the completed ride.
+  rating?: number;
+  review?: string;
+  ratedAt?: Date;
   // Cancellation details — who cancelled, why, when, and any charge levied.
   cancelledBy?: "patient" | "admin" | "driver" | "system";
   cancelReason?: string;
@@ -92,6 +102,10 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     distanceKm: Number,
     amount: Number,
     fareBreakdown: { type: Schema.Types.Mixed },
+    grossAmount: Number,
+    promoCodeId: { type: Schema.Types.ObjectId, ref: "PromoCode" },
+    promoCode: String,
+    discountAmount: { type: Number, default: 0 },
     patientName: String,
     notes: String,
     contactId: { type: Schema.Types.ObjectId, ref: "SavedContact" },
@@ -113,6 +127,9 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     otp: String,
     assignedAt: Date,
     completedAt: Date,
+    rating: { type: Number, min: 1, max: 5 },
+    review: String,
+    ratedAt: Date,
     cancelledBy: {
       type: String,
       enum: ["patient", "admin", "driver", "system"],

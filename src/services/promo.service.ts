@@ -25,6 +25,7 @@ export const validatePromoCode = async (
   orderValue: number,
   vehicleTypeId?: Types.ObjectId,
   serviceType?: string,
+  serviceCategory?: "LOGISTICS" | "AMBULANCE",
 ) => {
   const now = new Date();
 
@@ -38,6 +39,24 @@ export const validatePromoCode = async (
 
   if (!promo) {
     return { valid: false, error: "Invalid or expired promo code" };
+  }
+
+  // Product applicability: a LOGISTICS-only code can't be used on an ambulance
+  // ride and vice-versa. Codes marked ALL work everywhere. Codes created before
+  // this field existed default to LOGISTICS.
+  if (
+    serviceCategory &&
+    promo.serviceCategory &&
+    promo.serviceCategory !== "ALL" &&
+    promo.serviceCategory !== serviceCategory
+  ) {
+    return {
+      valid: false,
+      error:
+        serviceCategory === "AMBULANCE"
+          ? "This promo code is not valid for ambulance rides"
+          : "Promo code not applicable here",
+    };
   }
 
   // Check max usage
@@ -141,6 +160,31 @@ export const applyPromoCode = async (
 };
 
 /**
+ * Apply a promo code to an ambulance ride.
+ *
+ * Mirrors applyPromoCode but records the redemption against the
+ * AmbulanceRequest (not a logistics Booking) so per-user limits and usage
+ * stats stay accurate across both products.
+ */
+export const applyPromoToAmbulance = async (
+  promoCodeId: Types.ObjectId,
+  userId: Types.ObjectId,
+  ambulanceRequestId: Types.ObjectId,
+  discountAmount: number,
+) => {
+  await PromoUsage.create({
+    userId,
+    promoCodeId,
+    ambulanceRequestId,
+    discountAmount,
+  });
+
+  await PromoCode.findByIdAndUpdate(promoCodeId, {
+    $inc: { usedCount: 1 },
+  });
+};
+
+/**
  * Create promo code (Admin)
  */
 export const createPromoCode = async (data: Partial<IPromoCode>) => {
@@ -171,6 +215,7 @@ export const getPromoCodeStats = async (promoCodeId: Types.ObjectId) => {
   const usages = await PromoUsage.find({ promoCodeId })
     .populate("userId", "fullName mobileNumber")
     .populate("bookingId", "bookingNumber finalFare")
+    .populate("ambulanceRequestId", "type amount status")
     .sort({ createdAt: -1 })
     .limit(100);
 

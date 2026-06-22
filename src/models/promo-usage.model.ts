@@ -4,7 +4,11 @@ export interface IPromoUsage {
   _id: Types.ObjectId;
   userId: Types.ObjectId;
   promoCodeId: Types.ObjectId;
-  bookingId: Types.ObjectId;
+  // Exactly one of these is set depending on what the code was redeemed on:
+  //   bookingId          → legacy logistics Booking
+  //   ambulanceRequestId → patient-app ambulance ride
+  bookingId?: Types.ObjectId;
+  ambulanceRequestId?: Types.ObjectId;
   discountAmount: number;
   usedAt: Date;
 }
@@ -26,7 +30,10 @@ const PromoUsageSchema = new Schema<IPromoUsage>(
     bookingId: {
       type: Schema.Types.ObjectId,
       ref: "Booking",
-      required: true,
+    },
+    ambulanceRequestId: {
+      type: Schema.Types.ObjectId,
+      ref: "AmbulanceRequest",
     },
     discountAmount: {
       type: Number,
