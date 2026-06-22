@@ -89,8 +89,9 @@ export const getNearbyAmbulances = async (
         // status:"available" already excludes on_dispatch / offline / maintenance.
         status: "available",
         isActive: true,
+        // A driver is required (someone must drive); the attendant is OPTIONAL
+        // (BLS / driver-only vehicles are dispatchable too).
         assignedDriverId: { $ne: null },
-        assignedAttendantId: { $ne: null },
         ...(excludeAmbulanceIds.length > 0
           ? { _id: { $nin: excludeAmbulanceIds } }
           : {}),
@@ -113,13 +114,12 @@ export const getNearbyAmbulances = async (
         as: "attendant",
       },
     },
-    { $unwind: "$attendant" },
+    // Attendant is optional — keep ambulances that have only a driver.
+    { $unwind: { path: "$attendant", preserveNullAndEmptyArrays: true } },
     {
       $match: {
         "driver.isActive": true,
-        "driver.isDeleted": false,
-        "attendant.isActive": true,
-        "attendant.isDeleted": false,
+        "driver.isDeleted": { $ne: true },
       },
     },
     {
@@ -130,7 +130,8 @@ export const getNearbyAmbulances = async (
         as: "provider",
       },
     },
-    { $unwind: "$provider" },
+    // Provider is optional — hospital-owned ambulances have no service provider.
+    { $unwind: { path: "$provider", preserveNullAndEmptyArrays: true } },
     { $limit: limit * 3 },
   ];
 
@@ -154,15 +155,15 @@ export const getNearbyAmbulances = async (
       : 0;
     return {
       ambulanceId: String(a._id),
-      providerId: String(a.provider._id),
-      providerName: a.provider.name,
+      providerId: a.provider?._id ? String(a.provider._id) : "",
+      providerName: a.provider?.name || "Hospital fleet",
       registrationNumber: a.registrationNumber,
       ambulanceType: a.ambulanceType,
       driverId: String(a.driver._id),
       driverName: a.driver.fullName,
       driverPhone: a.driver.mobileNumber,
-      attendantId: String(a.attendant._id),
-      attendantName: a.attendant.fullName,
+      attendantId: a.attendant?._id ? String(a.attendant._id) : "",
+      attendantName: a.attendant?.fullName || "",
       // Ambulance position = assigned driver's last reported position.
       ambulanceLocation: { lat: hasLoc ? lat : 0, lng: hasLoc ? lng : 0 },
       straightLineKm: Math.round(straightKm * 100) / 100,

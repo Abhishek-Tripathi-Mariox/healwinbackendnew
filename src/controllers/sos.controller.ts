@@ -168,11 +168,11 @@ export const triggerSOS = async (req: Request, res: Response) => {
     // already succeeded, so a failure here must never turn the request into a
     // 500 (the patient must always get "SOS sent").
     let submission: any = null;
+    const patient: any = userId
+      ? await User.findById(userId).select("fullName mobileNumber countryCode").lean().catch(() => null)
+      : null;
+    const hasCoords = coords.lat !== 0 || coords.lng !== 0;
     try {
-      const patient: any = userId
-        ? await User.findById(userId).select("fullName mobileNumber countryCode").lean()
-        : null;
-      const hasCoords = coords.lat !== 0 || coords.lng !== 0;
       // Map the app's free-text type to the SOSSubmission emergencyType enum.
       const ET: Record<string, string> = {
         "medical emergency": "MEDICAL",
@@ -200,20 +200,21 @@ export const triggerSOS = async (req: Request, res: Response) => {
           ? { location: { type: "Point", coordinates: [coords.lng, coords.lat] } }
           : {}),
       });
-      // Single realtime alert → admin alarm modal. (This is the ONLY sos:new
-      // emit for an app SOS — SOSService no longer emits, and the SOS screen
-      // doesn't create an AmbulanceRequest, so there's no duplicate.)
-      emitToAdmin("sos:new", {
-        sosId: String(submission._id),
-        emergency: true,
-        patientName: req.body.name || patient?.fullName || "A patient",
-        address: fullAddress || address || "Location unavailable",
-        lat: hasCoords ? coords.lat : undefined,
-        lng: hasCoords ? coords.lng : undefined,
-      });
     } catch (e: any) {
       console.error("SOS dashboard/submission step failed (non-fatal):", e?.message);
     }
+
+    // ALWAYS alert the admin in real time — even if the submission save above
+    // failed — so an SOS is never silently dropped from the dashboard alarm.
+    // Falls back to the SOSAlert id when there's no submission.
+    emitToAdmin("sos:new", {
+      sosId: String(submission?._id || sosAlert._id),
+      emergency: true,
+      patientName: req.body.name || patient?.fullName || "A patient",
+      address: fullAddress || address || "Location unavailable",
+      lat: hasCoords ? coords.lat : undefined,
+      lng: hasCoords ? coords.lng : undefined,
+    });
 
     res.status(201).json({
       success: true,

@@ -273,8 +273,8 @@ export const dispatch = async (
 
   // Fetch driver & attendant for FCM tokens
   const [driver, attendant] = await Promise.all([
-    AmbulanceStaff.findById(picked.driverId).select("fcmToken").lean(),
-    AmbulanceStaff.findById(picked.attendantId).select("fcmToken").lean(),
+    picked.driverId ? AmbulanceStaff.findById(picked.driverId).select("fcmToken").lean() : null,
+    picked.attendantId ? AmbulanceStaff.findById(picked.attendantId).select("fcmToken").lean() : null,
   ]);
 
   const payload: Record<string, string | number | boolean> = {
