@@ -5,6 +5,8 @@ import {
   ISupportMessage,
 } from "../models/support-ticket.model";
 import { Types } from "mongoose";
+import { emitToUser, emitToAdmin } from "../utils/socket.util";
+import { sendToUser } from "./notification.service";
 
 /**
  * Generate unique ticket ID
@@ -211,6 +213,40 @@ export const addMessage = async (data: {
     await SupportTicket.findByIdAndUpdate(data.ticketId, {
       status: "WAITING_FOR_USER",
     });
+  }
+
+  // Real-time: push the new message to the OTHER party so the chat updates live.
+  try {
+    const ticket = await SupportTicket.findById(data.ticketId)
+      .select("ticketId userId subject")
+      .lean();
+    if (ticket) {
+      const payload = {
+        ticketId: ticket.ticketId,
+        _id: String(message._id),
+        senderType: data.senderType,
+        message: data.message,
+        createdAt: (message as any).createdAt,
+      };
+      if (data.senderType === "ADMIN" || data.senderType === "SYSTEM") {
+        // Support → patient: live socket + a push notification.
+        if (ticket.userId) {
+          emitToUser(String(ticket.userId), "support:message", payload);
+          void sendToUser(
+            ticket.userId as any,
+            "SYSTEM",
+            `Support replied · ${ticket.subject || ticket.ticketId}`,
+            data.message,
+            { ticketId: ticket.ticketId, route: "TicketDetail" },
+          ).catch(() => undefined);
+        }
+      } else {
+        // Patient → support: let the admin panel update live.
+        emitToAdmin("support:message", payload);
+      }
+    }
+  } catch {
+    /* realtime is best-effort */
   }
 
   return message;
