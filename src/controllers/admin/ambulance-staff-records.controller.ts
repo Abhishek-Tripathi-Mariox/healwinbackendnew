@@ -4,6 +4,7 @@ import {
   StaffCaseNote,
   StaffStockRequest,
 } from "../../models/ambulance-staff-extras.model";
+import { HospitalPatient } from "../../models/hospital-patient.model";
 import { sendToStaff } from "../../services/notification.service";
 
 /**
@@ -23,6 +24,19 @@ const fmtDate = (d: Date | string): string =>
 const optionalStaffFilter = (req: Request) => {
   const { staffId } = req.query as { staffId?: string };
   return staffId ? { staffId } : {};
+};
+
+// ----- Patients registered by ambulance staff -----
+export const listStaffPatients = async (req: Request, _res: Response, next: NextFunction) => {
+  const q: Record<string, unknown> = { source: "ambulance_staff", isDeleted: false };
+  if ((req.query as any).staffId) q.registeredByStaffId = (req.query as any).staffId;
+  const items = await HospitalPatient.find(q)
+    .populate("registeredByStaffId", STAFF_FIELDS)
+    .sort({ createdAt: -1 })
+    .lean();
+  req.rData = { items };
+  req.msg = "success";
+  return next();
 };
 
 // ----- Case notes -----

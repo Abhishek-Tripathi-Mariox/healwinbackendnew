@@ -5,6 +5,7 @@ import Wallet from "../../models/wallet.model";
 import { CoinWallet } from "../../models/coin.model";
 import UserAddress from "../../models/UserAddress";
 import WalletTransaction from "../../models/wallet-transaction.model";
+import { EmergencyContact } from "../../models/sos.model";
 
 /**
  * Get all users with filters
@@ -208,10 +209,11 @@ export const getUserById = async (req: Request, res: Response) => {
   }
 
   // Get additional data
-  const [wallet, coinWallet, addresses, bookingStats] = await Promise.all([
+  const [wallet, coinWallet, addresses, emergencyContacts, bookingStats] = await Promise.all([
     Wallet.findOne({ userId: id }),
     CoinWallet.findOne({ userId: id }),
     UserAddress.find({ userId: id, isActive: true }),
+    EmergencyContact.find({ userId: id, isActive: true }).sort({ createdAt: -1 }).lean(),
     Booking.aggregate([
       { $match: { userId: user._id } },
       {
@@ -229,6 +231,7 @@ export const getUserById = async (req: Request, res: Response) => {
     wallet: wallet || { balance: 0, lockedBalance: 0 },
     coinWallet: coinWallet || { balance: 0, totalEarned: 0, totalRedeemed: 0 },
     addresses,
+    emergencyContacts,
     bookingStats,
   };
 };

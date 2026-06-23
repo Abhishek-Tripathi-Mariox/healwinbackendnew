@@ -876,12 +876,16 @@ export const updateLocation = async (
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { latitude, longitude, heading, speed } = req.body;
+    // The driver app posts { lat, lng }; the older clients send
+    // { latitude, longitude }. Accept both so the coordinates aren't undefined.
+    const lat = req.body.lat ?? req.body.latitude;
+    const lng = req.body.lng ?? req.body.longitude;
+    const { heading, speed } = req.body;
 
     await DriverLocationService.updateDriverLocation(
       new Types.ObjectId(driverId),
-      latitude,
-      longitude,
+      lat,
+      lng,
       heading,
       speed,
     );

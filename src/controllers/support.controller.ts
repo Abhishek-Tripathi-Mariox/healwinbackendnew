@@ -19,16 +19,22 @@ export const createTicket = async (req: Request, res: Response) => {
       });
     }
 
-    // Generate ticket number
+    // Generate the human-readable ticket id. The model field is `ticketId`
+    // (required + unique) — NOT `ticketNumber`. Setting the wrong field made
+    // ticket.save() throw "Path `ticketId` is required", which surfaced to the
+    // app as a confusing error on every ticket.
     const ticketCount = await SupportTicket.countDocuments();
-    const ticketNumber = `TKT${(ticketCount + 1).toString().padStart(6, "0")}`;
+    const ticketId = `TKT${(ticketCount + 1).toString().padStart(6, "0")}`;
 
     const ticket = new SupportTicket({
-      ticketNumber,
+      ticketId,
       userId,
       bookingId,
       category,
       subject,
+      // `description` is also required on the model — seed it from the first
+      // message (otherwise save() throws "Path `description` is required").
+      description: message,
       priority: priority || "MEDIUM",
       status: "OPEN",
     });

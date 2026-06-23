@@ -146,18 +146,32 @@ export const getTicketById = async (ticketId: string) => {
 export const updateTicketStatus = async (
   ticketId: string,
   status: ISupportTicket["status"],
-  resolution?: string,
+  note?: string,
 ) => {
   const update: any = { status };
+  const unset: any = {};
 
   if (status === "RESOLVED") {
     update.resolvedAt = new Date();
-    if (resolution) update.resolution = resolution;
+    if (note) update.resolution = note;
   } else if (status === "CLOSED") {
     update.closedAt = new Date();
+    if (note) update.resolution = note;
+  } else if (status === "OPEN" || status === "IN_PROGRESS") {
+    // Re-opening a previously resolved/closed ticket: record why, and clear the
+    // resolution timestamps so it counts as active again.
+    if (note) {
+      update.reopenReason = note;
+      update.reopenedAt = new Date();
+    }
+    unset.resolvedAt = "";
+    unset.closedAt = "";
   }
 
-  return await SupportTicket.findOneAndUpdate({ ticketId }, update, {
+  const mod: any = { $set: update };
+  if (Object.keys(unset).length) mod.$unset = unset;
+
+  return await SupportTicket.findOneAndUpdate({ ticketId }, mod, {
     returnDocument: "after",
   });
 };

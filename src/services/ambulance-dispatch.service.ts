@@ -5,6 +5,7 @@ import { SOSAlert } from "../models/sos.model";
 import { SOSSubmission } from "../models/sos-submission.model";
 import { AmbulanceRequest } from "../models/ambulance-request.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
+import User from "../models/Users";
 
 /**
  * Resolve the patient behind an SOS id — works whether the id is a
@@ -23,10 +24,17 @@ const resolveSosPatient = async (
     return { patientUserId: sub.userId, patientName: sub.name, pickupAddress: sub.address };
   }
   const alert: any = await SOSAlert.findById(sosId)
-    .select("userId address")
+    .select("userId name address")
     .lean();
   if (alert) {
-    return { patientUserId: alert.userId, pickupAddress: alert.address };
+    // Older SOSAlerts may not carry a name — fall back to the linked User so
+    // the dispatch shows the patient's name, never a bare id.
+    let patientName: string | undefined = alert.name;
+    if (!patientName && alert.userId) {
+      const u: any = await User.findById(alert.userId).select("fullName").lean();
+      patientName = u?.fullName;
+    }
+    return { patientUserId: alert.userId, patientName, pickupAddress: alert.address };
   }
   const reqDoc: any = await AmbulanceRequest.findById(sosId)
     .select("userId patientName pickup")

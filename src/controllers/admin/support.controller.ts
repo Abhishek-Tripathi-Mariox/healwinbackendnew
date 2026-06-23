@@ -71,19 +71,43 @@ export const assignTicket = async (req: Request, res: Response) => {
  */
 export const updateTicketStatus = async (req: Request, res: Response) => {
   const { ticketId } = req.params as Record<string, string>;
-  const { status, resolution } = req.body;
+  const { status, resolution, reason } = req.body;
+  const note: string | undefined = resolution || reason;
 
-  const ticket = await SupportService.updateTicketStatus(
-    ticketId,
-    status,
-    resolution,
-  );
+  const reopening = status === "OPEN" || status === "IN_PROGRESS";
+  // A resolution/close MUST carry a reason; a reopen SHOULD.
+  if ((status === "RESOLVED" || status === "CLOSED") && !note) {
+    return res.status(400).json({
+      success: false,
+      message: "A resolution note is required to resolve/close a ticket.",
+    });
+  }
+
+  const ticket = await SupportService.updateTicketStatus(ticketId, status, note);
 
   if (!ticket) {
     return res.status(404).json({
       success: false,
       message: "Ticket not found",
     });
+  }
+
+  // Record the status change in the thread so the reason is visible to the
+  // user and on the conversation history.
+  if (note) {
+    const label = reopening
+      ? "Ticket reopened"
+      : status === "RESOLVED"
+        ? "Ticket marked resolved"
+        : status === "CLOSED"
+          ? "Ticket closed"
+          : `Status: ${status}`;
+    await SupportService.addMessage({
+      ticketId: ticket._id,
+      senderId: new Types.ObjectId(req.adminId),
+      senderType: "SYSTEM",
+      message: `${label} — ${note}`,
+    }).catch(() => undefined);
   }
 
   res.locals.data = {

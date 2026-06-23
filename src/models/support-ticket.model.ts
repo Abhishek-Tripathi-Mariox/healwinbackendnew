@@ -18,6 +18,8 @@ export interface ISupportTicket {
   resolvedAt?: Date;
   closedAt?: Date;
   closedBy?: Types.ObjectId;
+  reopenReason?: string;
+  reopenedAt?: Date;
   lastMessageAt?: Date;
   rating?: number;
   feedback?: string;
@@ -90,6 +92,8 @@ const SupportTicketSchema = new Schema<ISupportTicket>(
     resolution: String,
     resolvedAt: Date,
     closedAt: Date,
+    reopenReason: String,
+    reopenedAt: Date,
   },
   { timestamps: true },
 );

@@ -33,6 +33,7 @@ import * as EmailTemplateController from "../controllers/admin/email-template.co
 import * as SmsSettingsController from "../controllers/admin/sms-settings.controller";
 import * as AdminNotificationController from "../controllers/admin/notification.controller";
 import * as AdminUserController from "../controllers/admin/user.controller";
+import * as AdminSupportController from "../controllers/admin/support.controller";
 import AdminAuthMiddleware from "../middlewares/admin-auth.middleware";
 import activityLogMiddleware from "../middlewares/activity-log.middleware";
 import ErrorHandlerMiddleware from "../middlewares/error-handler.middleware";
@@ -1068,6 +1069,44 @@ adminRouter.delete(
   verifyAdminToken,
   requirePermission(PERMISSIONS.SUBMISSIONS_DELETE),
   ErrorHandlerMiddleware(ArticleSubmissionAdminController.deleteSubmission),
+  ResponseMiddleware,
+);
+
+// ============ SUPPORT TICKETS (from patient/driver apps) ============
+adminRouter.get(
+  "/support/stats",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminSupportController.getStats),
+  ResponseMiddleware,
+);
+adminRouter.get(
+  "/support/tickets",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminSupportController.getAllTickets),
+  ResponseMiddleware,
+);
+adminRouter.get(
+  "/support/tickets/:ticketId",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminSupportController.getTicket),
+  ResponseMiddleware,
+);
+adminRouter.post(
+  "/support/tickets/:ticketId/assign",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminSupportController.assignTicket),
+  ResponseMiddleware,
+);
+adminRouter.put(
+  "/support/tickets/:ticketId/status",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminSupportController.updateTicketStatus),
+  ResponseMiddleware,
+);
+adminRouter.post(
+  "/support/tickets/:ticketId/reply",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminSupportController.replyToTicket),
   ResponseMiddleware,
 );
 

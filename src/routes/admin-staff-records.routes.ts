@@ -12,6 +12,8 @@ import ResponseMiddleware from "../middlewares/response.middleware";
 const router = Router();
 const auth = AdminAuthMiddleware();
 
+router.get("/patients", auth.verifyAdminToken, ErrorHandlerMiddleware(C.listStaffPatients), ResponseMiddleware);
+
 router.get("/case-notes", auth.verifyAdminToken, ErrorHandlerMiddleware(C.listCaseNotes), ResponseMiddleware);
 
 router.get("/stock-requests", auth.verifyAdminToken, ErrorHandlerMiddleware(C.listStockRequests), ResponseMiddleware);
