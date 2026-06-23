@@ -223,7 +223,8 @@ export const addMessage = async (data: {
     if (ticket) {
       const payload = {
         ticketId: ticket.ticketId,
-        _id: String(message._id),
+        ticketObjId: String(ticket._id),
+        messageId: String(message._id),
         senderType: data.senderType,
         message: data.message,
         createdAt: (message as any).createdAt,

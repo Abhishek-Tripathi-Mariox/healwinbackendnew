@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { SupportTicket, SupportMessage } from "../models/support-ticket.model";
+import * as SupportService from "../services/support.service";
 import { FAQ } from "../models/content.model";
 import { cache } from "../utils/redis.util";
 import config from "../config";
@@ -162,39 +163,32 @@ export const addMessage = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user._id;
     const { ticketId } = req.params as Record<string, string>;
-    const { message, messageType, attachments } = req.body;
+    const { message, attachments } = req.body;
 
-    // Verify ticket belongs to user and is not closed
-    const ticket = await SupportTicket.findOne({
-      _id: ticketId,
-      userId,
-      status: { $ne: "CLOSED" },
-    });
+    // Verify ticket belongs to the user (any status — a reply to a RESOLVED or
+    // CLOSED ticket re-opens it).
+    const ticket = await SupportTicket.findOne({ _id: ticketId, userId });
 
     if (!ticket) {
       return res.status(404).json({
         success: false,
-        message: "Ticket not found or is closed",
+        message: "Ticket not found",
       });
     }
 
-    const ticketMessage = new SupportMessage({
-      ticketId,
+    ticket.lastMessageAt = new Date();
+    await ticket.save();
+
+    // Route through the service so it (a) flips the ticket back to OPEN
+    // [re-opening RESOLVED/CLOSED], and (b) emits the realtime `support:message`
+    // event to the admin panel.
+    const ticketMessage = await SupportService.addMessage({
+      ticketId: ticket._id,
       senderId: userId,
       senderType: "USER",
       message,
-      messageType: messageType || "TEXT",
       attachments,
     });
-
-    await ticketMessage.save();
-
-    // Update ticket's last activity
-    ticket.lastMessageAt = new Date();
-    if (ticket.status === "RESOLVED") {
-      ticket.status = "OPEN"; // Reopen if user replies after resolution
-    }
-    await ticket.save();
 
     res.status(201).json({
       success: true,

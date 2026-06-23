@@ -1130,6 +1130,31 @@ router.get("/sos/active", verifyUserToken, async (req, res) => {
   const pc = d.patientLocation?.coordinates;
   const pickup = pc ? { lat: pc[1], lng: pc[0] } : null;
   const distanceKm = haversineKm(pickup, driverLocation);
+
+  // DUMMY SOS FARE (placeholder until the real SOS fare engine is wired). An
+  // emergency dispatch has no booked VehicleType, so we estimate a stable fare
+  // from a flat base + a nominal trip distance + GST, and surface it as
+  // amount + fareBreakdown so the patient sees a price breakup on the tracking
+  // screen. tripKm is fixed per-dispatch (not the shrinking approach distance)
+  // so the amount doesn't fluctuate as the ambulance nears.
+  const SOS_BASE_FARE = 500;
+  const SOS_PER_KM = 20;
+  const SOS_GST_PCT = 5;
+  const tripKm = Math.max(Math.round(d.estimatedDistanceKm || 10), 1);
+  const distanceCharge = tripKm * SOS_PER_KM;
+  const subtotal = SOS_BASE_FARE + distanceCharge;
+  const gstAmount = Math.round((subtotal * SOS_GST_PCT) / 100);
+  const finalFare = subtotal + gstAmount;
+  const fareBreakdown = {
+    baseFare: SOS_BASE_FARE,
+    distanceCharge,
+    distanceKm: tripKm,
+    gstPercentage: SOS_GST_PCT,
+    gstAmount,
+    finalFare,
+    estimated: true,
+  };
+
   ok(res, {
     _id: d._id,
     kind: "sos",
@@ -1143,6 +1168,9 @@ router.get("/sos/active", verifyUserToken, async (req, res) => {
     driverLocation,
     distanceKm,
     etaMinutes: etaMinutesFromKm(distanceKm) ?? d.etaMinutes ?? null,
+    // Dummy payment so the patient sees an estimated fare for the SOS trip.
+    amount: finalFare,
+    fareBreakdown,
   });
 });
 
