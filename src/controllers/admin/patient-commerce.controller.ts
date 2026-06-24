@@ -6,7 +6,7 @@ import {
 } from "../../models/patient-commerce.model";
 import { slotToDate, slotLabelFor } from "../../utils/slots.util";
 import { sendToUser } from "../../services/notification.service";
-import { uploadFileToAws } from "../../utils/s3";
+import { uploadMultipleFilesToAws } from "../../utils/s3";
 
 // Friendly patient-facing message for each status, per order kind.
 const STATUS_MSG: Record<string, Record<string, { title: string; body: string }>> = {
@@ -124,19 +124,28 @@ export const setConsultationSummary = async (req: Request, _res: Response, next:
 export const setLabReport = async (req: Request, _res: Response, next: NextFunction) => {
   const reportNotes = String(req.body?.reportNotes || "").trim();
   const files = req.files as Express.Multer.File[] | undefined;
-  let reportUrl: string | undefined;
+  let reportFiles: { url: string; label: string; uploadedAt: Date }[] | undefined;
   if (Array.isArray(files) && files.length > 0) {
-    const { images } = await uploadFileToAws(files);
-    reportUrl = images;
+    const { images } = await uploadMultipleFilesToAws(files);
+    const urls = Array.isArray(images) ? images : [images];
+    const now = new Date();
+    reportFiles = urls.map((url, i) => ({
+      url,
+      label: files[i]?.originalname || `Page ${i + 1}`,
+      uploadedAt: now,
+    }));
   }
-  if (!reportUrl && !reportNotes) {
+  if (!reportFiles && !reportNotes) {
     req.rCode = 0;
     req.msg = "validation_failed";
     req.rData = { hint: "upload a report file or enter findings" };
     return next();
   }
   const update: any = { status: "REPORT_READY" };
-  if (reportUrl) update.reportUrl = reportUrl;
+  if (reportFiles) {
+    update.reportFiles = reportFiles;
+    update.reportUrl = reportFiles[0].url; // backward compat (single-file clients)
+  }
   if (reportNotes) update.reportNotes = reportNotes;
   const item = await LabBooking.findByIdAndUpdate(req.params.id as string, update, { new: true }).lean();
   if (item?.userId) {

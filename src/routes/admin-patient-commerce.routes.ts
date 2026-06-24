@@ -20,7 +20,7 @@ router.patch("/consultations/:id/summary", auth.verifyAdminToken, ErrorHandlerMi
 router.get("/lab-bookings", auth.verifyAdminToken, ErrorHandlerMiddleware(C.listLabBookings), ResponseMiddleware);
 router.patch("/lab-bookings/:id", auth.verifyAdminToken, ErrorHandlerMiddleware(C.updateLabBookingStatus), ResponseMiddleware);
 router.patch("/lab-bookings/:id/reschedule", auth.verifyAdminToken, ErrorHandlerMiddleware(C.rescheduleLabBooking), ResponseMiddleware);
-router.post("/lab-bookings/:id/report", auth.verifyAdminToken, upload.array("file", 1), ErrorHandlerMiddleware(C.setLabReport), ResponseMiddleware);
+router.post("/lab-bookings/:id/report", auth.verifyAdminToken, upload.array("file", 20), ErrorHandlerMiddleware(C.setLabReport), ResponseMiddleware);
 
 router.get("/pharmacy-orders", auth.verifyAdminToken, ErrorHandlerMiddleware(C.listPharmacyOrders), ResponseMiddleware);
 router.patch("/pharmacy-orders/:id", auth.verifyAdminToken, ErrorHandlerMiddleware(C.updatePharmacyOrderStatus), ResponseMiddleware);

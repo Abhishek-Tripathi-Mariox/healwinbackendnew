@@ -73,9 +73,12 @@ export interface ILabBooking {
   scheduledAt?: Date;
   slotTime?: string; // "09:30" (IST 24h)
   slotLabel?: string; // "9:30 AM, 18 Jun"
-  // Result, filled when the lab completes the test: an uploaded report file
-  // and/or manually-typed findings ("what problem was found").
+  // Result, filled when the lab completes the test: uploaded report files
+  // (a report may span multiple pages/files) and/or manually-typed findings
+  // ("what problem was found"). `reportUrl` is kept for backward compatibility
+  // (mirrors the first file) — new code should read `reportFiles`.
   reportUrl?: string;
+  reportFiles?: { url: string; label: string; uploadedAt: Date }[];
   reportNotes?: string;
   totalAmount: number;
   status: "BOOKED" | "SAMPLE_COLLECTED" | "PROCESSING" | "REPORT_READY" | "CANCELLED";
@@ -101,6 +104,17 @@ const LabBookingSchema = new Schema<ILabBooking>(
     slotTime: String,
     slotLabel: String,
     reportUrl: String,
+    reportFiles: {
+      type: [
+        {
+          _id: false,
+          url: { type: String, required: true },
+          label: { type: String, default: "" },
+          uploadedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
     reportNotes: String,
     totalAmount: { type: Number, default: 0 },
     status: {
