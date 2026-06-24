@@ -3,13 +3,26 @@ import { SOSSubmission } from "../models/sos-submission.model";
 import { emitToAdmin } from "../utils/socket.util";
 
 /** Raise the admin alarm modal for a website/public SOS submission. */
-const alertAdmin = (submission: any) =>
+const alertAdmin = (submission: any) => {
+  // location.coordinates is GeoJSON [lng, lat]. The website SOS Call sends
+  // coords but no address text, so surface the coords (and a readable label)
+  // — otherwise the admin popup showed "Location unavailable" despite having
+  // a real position, and dispatch had nothing to work with.
+  const coords = submission.location?.coordinates;
+  const lat = Array.isArray(coords) ? coords[1] : undefined;
+  const lng = Array.isArray(coords) ? coords[0] : undefined;
+  const hasCoords = typeof lat === "number" && typeof lng === "number";
   emitToAdmin("sos:new", {
     sosId: String(submission._id),
     emergency: true,
     patientName: submission.name || "A caller",
-    address: submission.address || "Location unavailable",
+    address:
+      submission.address ||
+      (hasCoords ? `Pinned location (${lat.toFixed(5)}, ${lng.toFixed(5)})` : "Location unavailable"),
+    lat: hasCoords ? lat : undefined,
+    lng: hasCoords ? lng : undefined,
   });
+};
 
 /**
  * Submit SOS Call record (public - no auth required)
