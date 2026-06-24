@@ -3,9 +3,11 @@ import DriverAuthMiddleware from "../middlewares/driver-auth.middleware";
 import ErrorHandlerMiddleware from "../middlewares/error-handler.middleware";
 import ResponseMiddleware from "../middlewares/response.middleware";
 import * as DriverController from "../controllers/driver.controller";
+import { makeSupportHandlers } from "../controllers/app-support.controller";
 import upload from "../middlewares/upload.middleware";
 
 const driverRouter = Router();
+const DriverSupport = makeSupportHandlers("DRIVER");
 
 // Apply driver auth middleware to all routes
 driverRouter.use(DriverAuthMiddleware().verifyDriverToken);
@@ -489,5 +491,14 @@ driverRouter.post(
   ErrorHandlerMiddleware(DriverController.updateFcmToken),
   ResponseMiddleware,
 );
+
+// =====================
+// SUPPORT TICKETS
+// =====================
+driverRouter.get("/tickets", ErrorHandlerMiddleware(DriverSupport.getMyTickets), ResponseMiddleware);
+driverRouter.post("/tickets", ErrorHandlerMiddleware(DriverSupport.createTicket), ResponseMiddleware);
+driverRouter.get("/tickets/:ticketId", ErrorHandlerMiddleware(DriverSupport.getTicket), ResponseMiddleware);
+driverRouter.post("/tickets/:ticketId/messages", ErrorHandlerMiddleware(DriverSupport.addMessage), ResponseMiddleware);
+driverRouter.post("/tickets/:ticketId/close", ErrorHandlerMiddleware(DriverSupport.closeTicket), ResponseMiddleware);
 
 export default driverRouter;

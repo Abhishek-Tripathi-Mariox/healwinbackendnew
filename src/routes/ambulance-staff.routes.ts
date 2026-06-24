@@ -7,10 +7,12 @@ import StaffAuthMiddleware from "../middlewares/ambulance-staff-auth.middleware"
 import ErrorHandlerMiddleware from "../middlewares/error-handler.middleware";
 import ResponseMiddleware from "../middlewares/response.middleware";
 import upload from "../middlewares/upload.middleware";
+import { makeSupportHandlers } from "../controllers/app-support.controller";
 
 const router = Router();
 const V = Validator();
 const auth = StaffAuthMiddleware();
+const StaffSupport = makeSupportHandlers("STAFF");
 
 router.get(
   "/me",
@@ -144,5 +146,12 @@ router.post("/requests/:id/arrived", auth.verifyStaffToken, ErrorHandlerMiddlewa
 router.post("/requests/:id/start", auth.verifyStaffToken, ErrorHandlerMiddleware(R.startTrip), ResponseMiddleware);
 router.post("/requests/:id/complete", auth.verifyStaffToken, ErrorHandlerMiddleware(R.complete), ResponseMiddleware);
 router.post("/requests/:id/destination", auth.verifyStaffToken, ErrorHandlerMiddleware(R.setDestination), ResponseMiddleware);
+
+// ===== Support tickets (staff app) =====
+router.get("/tickets", auth.verifyStaffToken, ErrorHandlerMiddleware(StaffSupport.getMyTickets), ResponseMiddleware);
+router.post("/tickets", auth.verifyStaffToken, ErrorHandlerMiddleware(StaffSupport.createTicket), ResponseMiddleware);
+router.get("/tickets/:ticketId", auth.verifyStaffToken, ErrorHandlerMiddleware(StaffSupport.getTicket), ResponseMiddleware);
+router.post("/tickets/:ticketId/messages", auth.verifyStaffToken, ErrorHandlerMiddleware(StaffSupport.addMessage), ResponseMiddleware);
+router.post("/tickets/:ticketId/close", auth.verifyStaffToken, ErrorHandlerMiddleware(StaffSupport.closeTicket), ResponseMiddleware);
 
 export default router;

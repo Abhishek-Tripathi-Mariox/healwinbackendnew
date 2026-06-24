@@ -6,7 +6,7 @@ import {
 } from "../models/support-ticket.model";
 import { Types } from "mongoose";
 import { emitToUser, emitToAdmin } from "../utils/socket.util";
-import { sendToUser } from "./notification.service";
+import { sendToUser, sendToDriver, sendToStaff } from "./notification.service";
 
 /**
  * Generate unique ticket ID
@@ -32,6 +32,7 @@ const generateTicketId = async (): Promise<string> => {
 export const createTicket = async (data: {
   userId?: Types.ObjectId;
   driverId?: Types.ObjectId;
+  staffId?: Types.ObjectId;
   bookingId?: Types.ObjectId;
   category: string;
   subcategory?: string;
@@ -91,6 +92,25 @@ export const getDriverTickets = async (
 };
 
 /**
+ * Get tickets for ambulance staff
+ */
+export const getStaffTickets = async (
+  staffId: Types.ObjectId,
+  status?: ISupportTicket["status"],
+  page = 0,
+  limit = 10,
+) => {
+  const query: any = { staffId };
+  if (status) query.status = status;
+
+  return await SupportTicket.find(query)
+    .populate("bookingId", "bookingNumber status")
+    .sort({ createdAt: -1 })
+    .skip(page * limit)
+    .limit(limit);
+};
+
+/**
  * Get all tickets (Admin)
  */
 export const getAllTickets = async (
@@ -120,6 +140,7 @@ export const getAllTickets = async (
   const tickets = await SupportTicket.find(query)
     .populate("userId", "fullName mobileNumber")
     .populate("driverId", "fullName mobileNumber")
+    .populate("staffId", "fullName mobileNumber role")
     .populate("bookingId", "bookingNumber status")
     .populate("assignedTo", "fullName")
     .sort({ priority: -1, createdAt: -1 })
@@ -138,6 +159,7 @@ export const getTicketById = async (ticketId: string) => {
   return await SupportTicket.findOne({ ticketId })
     .populate("userId", "fullName mobileNumber email")
     .populate("driverId", "fullName mobileNumber email")
+    .populate("staffId", "fullName mobileNumber email role")
     .populate("bookingId")
     .populate("assignedTo", "fullName email");
 };
@@ -204,8 +226,12 @@ export const addMessage = async (data: {
 }) => {
   const message = await SupportMessage.create(data);
 
-  // Update ticket status if user replied
-  if (data.senderType === "USER" || data.senderType === "DRIVER") {
+  // Update ticket status if the requester (patient / driver / staff) replied
+  if (
+    data.senderType === "USER" ||
+    data.senderType === "DRIVER" ||
+    data.senderType === "STAFF"
+  ) {
     await SupportTicket.findByIdAndUpdate(data.ticketId, {
       status: "OPEN",
     });
@@ -218,7 +244,7 @@ export const addMessage = async (data: {
   // Real-time: push the new message to the OTHER party so the chat updates live.
   try {
     const ticket = await SupportTicket.findById(data.ticketId)
-      .select("ticketId userId subject")
+      .select("ticketId userId driverId staffId subject")
       .lean();
     if (ticket) {
       const payload = {
@@ -230,19 +256,37 @@ export const addMessage = async (data: {
         createdAt: (message as any).createdAt,
       };
       if (data.senderType === "ADMIN" || data.senderType === "SYSTEM") {
-        // Support → patient: live socket + a push notification.
+        // Support → requester (patient / driver / staff): live socket + push.
+        // Tapping the notification deep-links straight to the ticket thread.
+        // `screen` is read by the patient app, `route` by the driver/staff app;
+        // both pass `id` (the ticket's _id) to the TicketDetail screen.
+        const title = `Support replied · ${ticket.subject || ticket.ticketId}`;
+        const pushData = {
+          screen: "TicketDetail",
+          route: "TicketDetail",
+          id: String(ticket._id),
+          ticketId: ticket.ticketId,
+        };
         if (ticket.userId) {
           emitToUser(String(ticket.userId), "support:message", payload);
-          void sendToUser(
-            ticket.userId as any,
-            "SYSTEM",
-            `Support replied · ${ticket.subject || ticket.ticketId}`,
-            data.message,
-            { ticketId: ticket.ticketId, route: "TicketDetail" },
-          ).catch(() => undefined);
+          void sendToUser(ticket.userId as any, "SYSTEM", title, data.message, pushData).catch(
+            () => undefined,
+          );
+        }
+        if (ticket.driverId) {
+          emitToUser(String(ticket.driverId), "support:message", payload);
+          void sendToDriver(ticket.driverId as any, "SYSTEM", title, data.message, pushData).catch(
+            () => undefined,
+          );
+        }
+        if (ticket.staffId) {
+          emitToUser(String(ticket.staffId), "support:message", payload);
+          void sendToStaff(ticket.staffId as any, "SYSTEM", title, data.message, pushData).catch(
+            () => undefined,
+          );
         }
       } else {
-        // Patient → support: let the admin panel update live.
+        // Requester → support: let the admin panel update live.
         emitToAdmin("support:message", payload);
       }
     }

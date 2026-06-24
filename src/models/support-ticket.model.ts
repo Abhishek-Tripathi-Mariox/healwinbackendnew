@@ -3,8 +3,9 @@ import mongoose, { Schema, Types } from "mongoose";
 export interface ISupportTicket {
   _id: Types.ObjectId;
   ticketId: string;
-  userId?: Types.ObjectId;
-  driverId?: Types.ObjectId;
+  userId?: Types.ObjectId; // patient app (User)
+  driverId?: Types.ObjectId; // driver app (Driver)
+  staffId?: Types.ObjectId; // staff app (AmbulanceStaff)
   bookingId?: Types.ObjectId;
   category: string;
   subcategory?: string;
@@ -29,7 +30,7 @@ export interface ISupportMessage {
   _id: Types.ObjectId;
   ticketId: Types.ObjectId;
   senderId: Types.ObjectId;
-  senderType: "USER" | "DRIVER" | "ADMIN" | "SYSTEM";
+  senderType: "USER" | "DRIVER" | "STAFF" | "ADMIN" | "SYSTEM";
   message: string;
   attachments: string[];
   isRead: boolean;
@@ -52,6 +53,11 @@ const SupportTicketSchema = new Schema<ISupportTicket>(
     driverId: {
       type: Schema.Types.ObjectId,
       ref: "Driver",
+      index: true,
+    },
+    staffId: {
+      type: Schema.Types.ObjectId,
+      ref: "AmbulanceStaff",
       index: true,
     },
     bookingId: {
@@ -92,8 +98,15 @@ const SupportTicketSchema = new Schema<ISupportTicket>(
     resolution: String,
     resolvedAt: Date,
     closedAt: Date,
+    closedBy: { type: Schema.Types.ObjectId },
     reopenReason: String,
     reopenedAt: Date,
+    // Newest activity timestamp (for inbox sorting) + the requester's closing
+    // rating/feedback. Previously declared on the interface only, so they were
+    // silently dropped on save — now persisted.
+    lastMessageAt: Date,
+    rating: { type: Number, min: 1, max: 5 },
+    feedback: { type: String, trim: true },
   },
   { timestamps: true },
 );
@@ -113,7 +126,7 @@ const SupportMessageSchema = new Schema<ISupportMessage>(
     },
     senderType: {
       type: String,
-      enum: ["USER", "DRIVER", "ADMIN", "SYSTEM"],
+      enum: ["USER", "DRIVER", "STAFF", "ADMIN", "SYSTEM"],
       required: true,
     },
     message: {
@@ -132,6 +145,7 @@ const SupportMessageSchema = new Schema<ISupportMessage>(
 // Compound indexes
 SupportTicketSchema.index({ userId: 1, status: 1, createdAt: -1 });
 SupportTicketSchema.index({ driverId: 1, status: 1, createdAt: -1 });
+SupportTicketSchema.index({ staffId: 1, status: 1, createdAt: -1 });
 SupportTicketSchema.index({ status: 1, priority: 1, createdAt: -1 });
 SupportMessageSchema.index({ ticketId: 1, createdAt: 1 });
 
