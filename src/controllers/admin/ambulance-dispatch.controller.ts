@@ -271,10 +271,11 @@ export const dispatch = async (
   const patientUserId = (dispatchDoc.patientUserId as Types.ObjectId) || null;
   const otp = dispatchDoc.otp as string;
 
-  // Fetch driver & attendant for FCM tokens
+  // Fetch driver & attendant for FCM tokens + duty state. Off-duty crew are
+  // never rung (no FCM, no socket) — an off-duty member is unavailable.
   const [driver, attendant] = await Promise.all([
-    picked.driverId ? AmbulanceStaff.findById(picked.driverId).select("fcmToken").lean() : null,
-    picked.attendantId ? AmbulanceStaff.findById(picked.attendantId).select("fcmToken").lean() : null,
+    picked.driverId ? AmbulanceStaff.findById(picked.driverId).select("fcmToken isOnline").lean() : null,
+    picked.attendantId ? AmbulanceStaff.findById(picked.attendantId).select("fcmToken isOnline").lean() : null,
   ]);
 
   const payload: Record<string, string | number | boolean> = {
@@ -298,7 +299,7 @@ export const dispatch = async (
   // recipients differ only in `action` — the app routes that to either
   // the Accept/Reject modal (driver) or the "Patient inbound" modal
   // (attendant).
-  if (driver?.fcmToken) {
+  if (driver?.isOnline && driver?.fcmToken) {
     sendDispatchPush(
       driver.fcmToken,
       "Emergency Dispatch",
@@ -306,7 +307,7 @@ export const dispatch = async (
       { ...dataForFcm, action: "incoming_dispatch" },
     ).catch((e) => console.error("FCM driver send failed:", e));
   }
-  if (attendant?.fcmToken) {
+  if (attendant?.isOnline && attendant?.fcmToken) {
     sendDispatchPush(
       attendant.fcmToken,
       "Patient Inbound",
@@ -329,8 +330,9 @@ export const dispatch = async (
     );
   }
 
-  emitToUser(picked.driverId, "dispatch:incoming", payload);
-  emitToUser(picked.attendantId, "dispatch:incoming_info", payload);
+  // Socket ring only to on-duty crew (mirrors the FCM guard above).
+  if (driver?.isOnline) emitToUser(picked.driverId, "dispatch:incoming", payload);
+  if (attendant?.isOnline) emitToUser(picked.attendantId, "dispatch:incoming_info", payload);
   emitToUser(String(adminId), "sos:dispatched", {
     sosId: String((req.params.sosId as string)),
     dispatchId: String(dispatchDoc._id),

@@ -128,6 +128,11 @@ export const getNearbyAmbulances = async (
       $match: {
         "driver.isActive": true,
         "driver.isDeleted": { $ne: true },
+        // The assigned DRIVER must be on duty — an ambulance with an off-duty
+        // driver can't actually roll, so it must not be offered for dispatch
+        // (and the off-duty driver must not be rung). The attendant seat stays
+        // optional.
+        "driver.isOnline": true,
       },
     },
     {

@@ -42,6 +42,21 @@ export interface IAmbulanceRequest {
   promoCodeId?: Types.ObjectId;
   promoCode?: string;
   discountAmount?: number;
+  // In-transit medical expenses (oxygen, medicines, procedures) logged by the
+  // control room/admin during the ride. Billed to the patient ON TOP of the
+  // ambulance fare and shown as a separate "In-Transit Medical Expense" section.
+  inTransitExpenses?: {
+    inventoryItemId?: Types.ObjectId; // source HMS inventory item (if picked)
+    item: string;
+    qty: number;
+    rate: number;
+    amount: number;
+  }[];
+  inTransitTotal?: number; // sum of inTransitExpenses[].amount
+  grandTotal?: number; // (amount ?? 0) + inTransitTotal — the final payable
+  paymentStatus?: "PENDING" | "PAID";
+  paidAt?: Date;
+  paymentMethod?: string; // ONLINE | CASH | UPI | ...
   patientName?: string;
   notes?: string;
   // "Book for someone else" — the saved contact this ride is for (parcel-style).
@@ -106,6 +121,26 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     promoCodeId: { type: Schema.Types.ObjectId, ref: "PromoCode" },
     promoCode: String,
     discountAmount: { type: Number, default: 0 },
+    inTransitExpenses: {
+      type: [
+        new Schema(
+          {
+            inventoryItemId: { type: Schema.Types.ObjectId, ref: "InventoryItem" },
+            item: { type: String, required: true, trim: true },
+            qty: { type: Number, required: true, min: 0 },
+            rate: { type: Number, required: true, min: 0 },
+            amount: { type: Number, required: true, min: 0 },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    inTransitTotal: { type: Number, default: 0 },
+    grandTotal: { type: Number },
+    paymentStatus: { type: String, enum: ["PENDING", "PAID"], default: "PENDING", index: true },
+    paidAt: Date,
+    paymentMethod: String,
     patientName: String,
     notes: String,
     contactId: { type: Schema.Types.ObjectId, ref: "SavedContact" },

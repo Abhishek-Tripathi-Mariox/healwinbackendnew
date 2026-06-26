@@ -21,7 +21,8 @@ export interface IInventoryItem {
   unit: string; // e.g. "box", "strip", "piece", "ml"
   currentStock: number;
   reorderThreshold: number;
-  unitCost?: number;
+  unitCost?: number; // purchase cost (what the hospital pays)
+  sellingPrice?: number; // patient-billing price (used for in-transit charges)
   // Consumables / medicines: expiry tracking.
   expiryDate?: Date;
   batchNo?: string;
@@ -52,6 +53,7 @@ const InventoryItemSchema = new Schema<IInventoryItem>(
     currentStock: { type: Number, default: 0 },
     reorderThreshold: { type: Number, default: 0 },
     unitCost: Number,
+    sellingPrice: Number,
     expiryDate: { type: Date, index: true },
     batchNo: { type: String, trim: true },
     maintenanceStatus: {

@@ -111,34 +111,19 @@ export const setDuty = async (
     at: new Date(),
   });
 
-  // Vehicle availability reflects EITHER crew member being on duty —
-  // previously required both, but that hid vehicles from dispatch even
-  // when one crew member was clearly reachable. The dispatch FCM fans
-  // out to both anyway; the off-duty crew gets the ringing alert and
-  // can join. Vehicle flips back to offline only when ALL on-duty crew
-  // toggle off.
-  const amb =
-    staff.role === "driver"
-      ? await Ambulance.findOne({ assignedDriverId: staff._id })
-      : await Ambulance.findOne({ assignedAttendantId: staff._id });
-  if (amb && amb.status !== "on_dispatch" && amb.status !== "maintenance") {
-    if (isDutyOn) {
-      if (amb.status !== "available") {
-        amb.status = "available";
-        await amb.save();
-      }
-    } else {
-      // Check if the OTHER crew slot is still on duty before flipping
-      // back to offline — they may still be in the cab.
-      const otherId =
-        staff.role === "driver"
-          ? amb.assignedAttendantId
-          : amb.assignedDriverId;
-      const other = otherId
-        ? await AmbulanceStaff.findById(otherId).select("isOnline")
-        : null;
-      if (!other?.isOnline && amb.status === "available") {
-        amb.status = "offline";
+  // Vehicle availability is driven by the assigned DRIVER's duty alone — an
+  // ambulance can't roll without an on-duty driver, so an attendant being on
+  // duty must NOT keep it "available". When the driver goes off duty the
+  // vehicle flips to "offline" (and so disappears from the dispatch list);
+  // when they come on duty it flips back to "available". An attendant toggling
+  // duty never changes the vehicle status. (Dispatch also only rings on-duty
+  // crew and getNearbyAmbulances requires driver.isOnline — all consistent.)
+  if (staff.role === "driver") {
+    const amb = await Ambulance.findOne({ assignedDriverId: staff._id });
+    if (amb && amb.status !== "on_dispatch" && amb.status !== "maintenance") {
+      const next = isDutyOn ? "available" : "offline";
+      if (amb.status !== next) {
+        amb.status = next;
         await amb.save();
       }
     }

@@ -11,6 +11,36 @@ import { PERMISSIONS } from "../models/role.model";
 const router = Router();
 const auth = AdminAuthMiddleware();
 
+// ---- Wards (bed-master picklist) ----
+router.get(
+  "/wards",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.BEDS_VIEW),
+  ErrorHandlerMiddleware(C.listWards),
+  ResponseMiddleware,
+);
+router.post(
+  "/wards",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.BEDS_MANAGE),
+  ErrorHandlerMiddleware(C.createWard),
+  ResponseMiddleware,
+);
+router.put(
+  "/wards/:id",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.BEDS_MANAGE),
+  ErrorHandlerMiddleware(C.updateWard),
+  ResponseMiddleware,
+);
+router.delete(
+  "/wards/:id",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.BEDS_MANAGE),
+  ErrorHandlerMiddleware(C.deleteWard),
+  ResponseMiddleware,
+);
+
 // ---- Beds ----
 router.get(
   "/beds",

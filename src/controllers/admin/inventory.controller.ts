@@ -108,6 +108,7 @@ export const create = async (
     currentStock: Number(b.currentStock) || 0,
     reorderThreshold: Number(b.reorderThreshold) || 0,
     unitCost: b.unitCost != null && b.unitCost !== "" ? Number(b.unitCost) : undefined,
+    sellingPrice: b.sellingPrice != null && b.sellingPrice !== "" ? Number(b.sellingPrice) : undefined,
     expiryDate: b.expiryDate ? new Date(b.expiryDate) : undefined,
     batchNo: b.batchNo || undefined,
     maintenanceStatus:
@@ -163,6 +164,7 @@ export const update = async (
     "unit",
     "reorderThreshold",
     "unitCost",
+    "sellingPrice",
     "batchNo",
     "maintenanceStatus",
     "location",

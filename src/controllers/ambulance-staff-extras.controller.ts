@@ -9,6 +9,7 @@ import { nextSequence } from "../models/counter.model";
 import { uploadFileToAws } from "../utils/s3";
 import { emitToAdmin } from "../utils/socket.util";
 import AmbulanceStaff from "../models/ambulance-staff.model";
+import User from "../models/Users";
 
 /** Leave / Patient / Case-notes / Stock for the ambulance-staff app. */
 
@@ -110,17 +111,29 @@ export const addPatient = async (req: Request, _res: Response, next: NextFunctio
     return next();
   }
   const dob = b.dob ? new Date(b.dob) : undefined;
+  // Bind this hospital record to the patient-app User that owns this phone
+  // number, if one exists. Patient `mobileNumber` is stored as the bare
+  // 10-digit number (see auth.controller), matching what staff type here.
+  // The link lets the patient see this field-registered record + vitals in
+  // their own app, and lets us trace which app user a patient belongs to.
+  const phone = String(b.mobile).trim();
+  const linkedUser = await User.findOne({ mobileNumber: phone, isDeleted: false })
+    .select("_id")
+    .lean();
   const item = await HospitalPatient.create({
     patientId: await mintPatientId(),
     fullName: b.name,
-    phone: b.mobile,
+    phone,
     gender: gender as "male" | "female" | "other",
     dateOfBirth: dob && !Number.isNaN(dob.getTime()) ? dob : undefined,
     address: b.pincode ? { pincode: b.pincode } : undefined,
+    appUserId: (linkedUser as any)?._id ?? undefined,
     source: "ambulance_staff",
     registeredByStaffId: sid(req),
   });
-  req.rData = { item };
+  // `linkedToApp` lets the staff app confirm the patient was matched to an
+  // existing app account (vs a brand-new walk-in with no app).
+  req.rData = { item, linkedToApp: Boolean(linkedUser) };
   req.msg = "success";
   return next();
 };

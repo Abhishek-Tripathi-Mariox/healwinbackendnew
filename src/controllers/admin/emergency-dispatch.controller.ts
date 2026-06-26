@@ -186,6 +186,25 @@ export const updateDispatchStatus = async (req: Request, res: Response) => {
       });
     }
 
+    // A dispatch the crew hasn't accepted yet (still DISPATCHED) must NOT be
+    // advanced from the admin panel — the driver has to accept it first, which
+    // moves it to ACKNOWLEDGED via the crew app. Until then the only allowed
+    // action is cancellation/reassignment. Without this, an admin could mark a
+    // never-accepted ride EN_ROUTE / ON_SCENE / COMPLETED.
+    const existing = await EmergencyDispatch.findById(dispatchId)
+      .select("status")
+      .lean();
+    if (!existing) {
+      return res.status(404).json({ success: false, message: "Dispatch not found" });
+    }
+    if (existing.status === "DISPATCHED" && status !== "CANCELLED") {
+      return res.status(409).json({
+        success: false,
+        message:
+          "The driver hasn't accepted this dispatch yet — you can only cancel / reassign it until the crew accepts.",
+      });
+    }
+
     const updateData: any = { status };
     if (status === "ACKNOWLEDGED") updateData.acknowledgedAt = new Date();
     if (status === "EN_ROUTE" || status === "ON_SCENE")

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import Admission from "../../models/admission.model";
 import Bed from "../../models/bed.model";
+import Ward from "../../models/ward.model";
 import HospitalPatient from "../../models/hospital-patient.model";
 import { nextSequence } from "../../models/counter.model";
 
@@ -12,6 +13,97 @@ import { nextSequence } from "../../models/counter.model";
 const mintAdmissionNo = async (): Promise<string> => {
   const seq = await nextSequence("admission");
   return `IPD-${String(seq).padStart(6, "0")}`;
+};
+
+// ============================ WARDS ===========================
+// Managed picklist for the bed form. Beds store the ward NAME (Bed.ward), so
+// these are the named wards an admin can create beds under.
+
+export const listWards = async (req: Request, _res: Response, next: NextFunction) => {
+  // Default to active wards; ?all=true returns soft-deleted ones too.
+  const query: any = req.query.all === "true" ? {} : { isActive: true };
+  const wards = await Ward.find(query).sort({ name: 1 }).lean();
+  // Live bed count per ward so the admin sees usage at a glance.
+  const counts = await Bed.aggregate([
+    { $match: { isActive: true } },
+    { $group: { _id: "$ward", count: { $sum: 1 } } },
+  ]);
+  const countMap = new Map(counts.map((c: any) => [c._id, c.count]));
+  req.rData = {
+    wards: wards.map((w: any) => ({ ...w, bedCount: countMap.get(w.name) ?? 0 })),
+  };
+  req.msg = "ward_list";
+  return next();
+};
+
+export const createWard = async (req: Request, _res: Response, next: NextFunction) => {
+  const adminId = (req as any).adminId;
+  const b = req.body || {};
+  const name = String(b.name || "").trim();
+  if (!name) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "ward name is required" };
+    return next();
+  }
+  const exists = await Ward.findOne({ name: new RegExp(`^${name}$`, "i") });
+  if (exists) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "a ward with this name already exists" };
+    return next();
+  }
+  const ward = await Ward.create({
+    name,
+    description: b.description ? String(b.description).trim() : undefined,
+    createdByAdminId: adminId,
+  });
+  req.rData = { ward };
+  req.msg = "ward_created";
+  return next();
+};
+
+export const updateWard = async (req: Request, _res: Response, next: NextFunction) => {
+  const b = req.body || {};
+  const ward = await Ward.findById(req.params.id as string);
+  if (!ward) {
+    req.rCode = 5;
+    req.msg = "ward_not_found";
+    req.rData = {};
+    return next();
+  }
+  if (b.name !== undefined && String(b.name).trim()) ward.name = String(b.name).trim();
+  if (b.description !== undefined) ward.description = String(b.description).trim() || undefined;
+  if (b.isActive !== undefined) ward.isActive = !!b.isActive;
+  await ward.save();
+  req.rData = { ward };
+  req.msg = "ward_updated";
+  return next();
+};
+
+export const deleteWard = async (req: Request, _res: Response, next: NextFunction) => {
+  const ward = await Ward.findById(req.params.id as string);
+  if (!ward) {
+    req.rCode = 5;
+    req.msg = "ward_not_found";
+    req.rData = {};
+    return next();
+  }
+  // Block deletion while active beds still belong to this ward — they'd be
+  // orphaned. The admin must move/remove those beds first.
+  const bedsInWard = await Bed.countDocuments({ ward: ward.name, isActive: true });
+  if (bedsInWard > 0) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: `Can't delete — ${bedsInWard} active bed(s) still in this ward.` };
+    return next();
+  }
+  // Soft delete so any historical (inactive) beds keep a valid label.
+  ward.isActive = false;
+  await ward.save();
+  req.rData = {};
+  req.msg = "ward_deleted";
+  return next();
 };
 
 // ============================ BEDS ============================

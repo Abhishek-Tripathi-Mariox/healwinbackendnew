@@ -6,8 +6,11 @@ import fs from "fs";
 import AuthMiddleware from "../middlewares/auth.middleware";
 import Pharmacy from "../models/pharmacy.model";
 import PatientFamilyMember from "../models/patient-family-member.model";
+import User from "../models/Users";
 import SavedContact from "../models/saved-contact.model";
 import PatientMedicalRecord from "../models/patient-medical-record.model";
+import HospitalPatient from "../models/hospital-patient.model";
+import { StaffCaseNote } from "../models/ambulance-staff-extras.model";
 import { Admin } from "../models/admin.model";
 import LabTest from "../models/lab-test.model";
 import PharmacyProduct from "../models/pharmacy-product.model";
@@ -88,6 +91,31 @@ const emptyList = (res: Response) =>
   res.json({ success: true, data: [], message: "ok" });
 
 const uid = (req: Request) => String((req as any).userId ?? "anon");
+
+/**
+ * Family-member records that represent THIS logged-in user under someone else's
+ * account — matched by phone (the user's own mobileNumber vs the family-member
+ * `phone`). Lets e.g. a father, added as a family member by his son and logging
+ * in with his own number, see the bookings / records that were made FOR him.
+ * Matched on the last 10 digits so +91 / spacing variations still line up.
+ */
+const familyMemberIdsFor = async (req: Request): Promise<Types.ObjectId[]> => {
+  const me: any = await User.findById(uid(req)).select("mobileNumber").lean();
+  const last10 = String(me?.mobileNumber || "").replace(/\D/g, "").slice(-10);
+  if (last10.length !== 10) return [];
+  const members = await PatientFamilyMember.find({
+    phone: { $regex: `${last10}$` },
+  })
+    .select("_id")
+    .lean();
+  return members.map((m: any) => m._id);
+};
+
+/** Mongo filter for "mine OR made for me as a family member". */
+const ownOrFamilyFilter = (req: Request, famIds: Types.ObjectId[]) =>
+  famIds.length
+    ? { $or: [{ userId: uid(req) }, { familyMemberId: { $in: famIds } }] }
+    : { userId: uid(req) };
 
 // ================== Family members (persisted) ==================
 router.get("/family-members", verifyUserToken, async (req, res) => {
@@ -337,11 +365,13 @@ router.post("/consultations", verifyUserToken, async (req, res) => {
   ok(res, c);
 });
 router.get("/consultations", verifyUserToken, async (req, res) => {
-  const list = await Consultation.find({ userId: uid(req) }).sort({ createdAt: -1 }).lean();
+  const famIds = await familyMemberIdsFor(req);
+  const list = await Consultation.find(ownOrFamilyFilter(req, famIds)).sort({ createdAt: -1 }).lean();
   res.json({ success: true, data: list, message: "ok" });
 });
 router.get("/consultations/:id", verifyUserToken, async (req, res) => {
-  const c = await Consultation.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
+  const famIds = await familyMemberIdsFor(req);
+  const c = await Consultation.findOne({ _id: (req.params.id as string), ...ownOrFamilyFilter(req, famIds) }).lean();
   if (!c) return res.status(404).json({ success: false, message: "Consultation not found" });
   ok(res, c);
 });
@@ -521,11 +551,13 @@ router.post("/lab/bookings", verifyUserToken, async (req, res) => {
   ok(res, booking);
 });
 router.get("/lab/bookings", verifyUserToken, async (req, res) => {
-  const list = await LabBooking.find({ userId: uid(req) }).sort({ createdAt: -1 }).lean();
+  const famIds = await familyMemberIdsFor(req);
+  const list = await LabBooking.find(ownOrFamilyFilter(req, famIds)).sort({ createdAt: -1 }).lean();
   res.json({ success: true, data: list, message: "ok" });
 });
 router.get("/lab/bookings/:id", verifyUserToken, async (req, res) => {
-  const bk = await LabBooking.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
+  const famIds = await familyMemberIdsFor(req);
+  const bk = await LabBooking.findOne({ _id: (req.params.id as string), ...ownOrFamilyFilter(req, famIds) }).lean();
   if (!bk) return res.status(404).json({ success: false, message: "Lab booking not found" });
   ok(res, bk);
 });
@@ -561,8 +593,12 @@ router.post("/lab/bookings/:id/reschedule", verifyUserToken, async (req, res) =>
 // ================== Medical records ==================
 router.get("/medical-records", verifyUserToken, async (req, res) => {
   const { familyMemberId } = req.query as { familyMemberId?: string };
-  const query: any = { userId: uid(req) };
-  if (familyMemberId) query.familyMemberId = familyMemberId;
+  // Explicit member filter → that member under my account. Otherwise show mine
+  // PLUS anything recorded for me as a family member (e.g. my son uploaded it).
+  const famIds = await familyMemberIdsFor(req);
+  const query: any = familyMemberId
+    ? { userId: uid(req), familyMemberId }
+    : ownOrFamilyFilter(req, famIds);
   const list = await PatientMedicalRecord.find(query).sort({ createdAt: -1 }).lean();
   // Expose uploadedAt for the app (mirrors createdAt).
   res.json({
@@ -598,7 +634,8 @@ router.post(
 );
 
 router.get("/medical-records/:id", verifyUserToken, async (req, res) => {
-  const r = await PatientMedicalRecord.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
+  const famIds = await familyMemberIdsFor(req);
+  const r = await PatientMedicalRecord.findOne({ _id: (req.params.id as string), ...ownOrFamilyFilter(req, famIds) }).lean();
   if (!r) {
     return res.status(404).json({ success: false, message: "Record not found" });
   }
@@ -608,6 +645,55 @@ router.get("/medical-records/:id", verifyUserToken, async (req, res) => {
 router.delete("/medical-records/:id", verifyUserToken, async (req, res) => {
   await PatientMedicalRecord.deleteOne({ _id: (req.params.id as string), userId: uid(req) });
   ok(res);
+});
+
+// ================== Field / emergency clinical records ==================
+// Two things, surfaced to the patient in their own app:
+//   • patients   — HospitalPatient records ambulance staff registered in the
+//                  field that got bound to THIS app user by phone match at
+//                  registration (so the user can see which patient is theirs).
+//   • caseNotes  — vitals / notes the crew captured during a dispatch. Case
+//                  notes are keyed by `dispatchId` (an AmbulanceRequest or
+//                  EmergencyDispatch id), so we resolve this user's own
+//                  dispatches first and match notes against those ids.
+router.get("/field-records", verifyUserToken, async (req, res) => {
+  const userId = uid(req);
+
+  const [patients, reqDocs, dispDocs] = await Promise.all([
+    HospitalPatient.find({ appUserId: userId, isDeleted: false })
+      .sort({ createdAt: -1 })
+      .lean(),
+    AmbulanceRequest.find({ userId }).select("_id").lean(),
+    EmergencyDispatch.find({ patientUserId: userId }).select("_id").lean(),
+  ]);
+
+  const ownDispatchIds = [...reqDocs, ...dispDocs].map((d) => String(d._id));
+  const notes = ownDispatchIds.length
+    ? await StaffCaseNote.find({ dispatchId: { $in: ownDispatchIds } })
+        .sort({ createdAt: -1 })
+        .lean()
+    : [];
+
+  res.json({
+    success: true,
+    data: {
+      patients: patients.map((p) => ({
+        _id: p._id,
+        patientId: p.patientId,
+        fullName: p.fullName,
+        gender: p.gender,
+        phone: p.phone,
+        registeredAt: p.createdAt,
+      })),
+      caseNotes: notes.map((n) => ({
+        _id: n._id,
+        vitals: n.vitals ?? null,
+        notes: n.notes ?? null,
+        recordedAt: n.createdAt,
+      })),
+    },
+    message: "ok",
+  });
 });
 
 // Reverse geocode (coords → structured address) using the SERVER Google key.
@@ -950,6 +1036,19 @@ const toApp = (r: any) => {
     grossAmount: r.grossAmount ?? r.amount ?? null,
     discountAmount: r.discountAmount ?? 0,
     promoCode: r.promoCode ?? null,
+    // In-transit medical expenses logged by the control room, billed on top of
+    // the ambulance fare. grandTotal = ambulance amount + these.
+    inTransitExpenses: Array.isArray(r.inTransitExpenses)
+      ? r.inTransitExpenses.map((e: any) => ({
+          item: e.item,
+          qty: e.qty,
+          rate: e.rate,
+          amount: e.amount,
+        }))
+      : [],
+    inTransitTotal: r.inTransitTotal ?? 0,
+    grandTotal: r.grandTotal ?? r.amount ?? null,
+    paymentStatus: r.paymentStatus || "PENDING",
     tripDistanceKm: r.distanceKm ?? null,
     lastLocationAt: r.lastLocationAt || null,
     // Cancellation details (for the "what happened" booking detail).
@@ -1101,7 +1200,8 @@ router.get("/ambulance/active", verifyUserToken, async (req, res) => {
 // made (any status). MUST be declared before "/ambulance/:id" so "history"
 // isn't captured as an id.
 router.get("/ambulance/history", verifyUserToken, async (req, res) => {
-  const list = await AmbulanceRequest.find({ userId: uid(req) })
+  const famIds = await familyMemberIdsFor(req);
+  const list = await AmbulanceRequest.find(ownOrFamilyFilter(req, famIds))
     .sort({ createdAt: -1 })
     .lean();
   ok(res, { items: list.map(toApp) });
@@ -1175,7 +1275,8 @@ router.get("/sos/active", verifyUserToken, async (req, res) => {
 });
 
 router.get("/ambulance/:id", verifyUserToken, async (req, res) => {
-  const r = await AmbulanceRequest.findOne({ _id: (req.params.id as string), userId: uid(req) }).lean();
+  const famIds = await familyMemberIdsFor(req);
+  const r = await AmbulanceRequest.findOne({ _id: (req.params.id as string), ...ownOrFamilyFilter(req, famIds) }).lean();
   if (!r) return res.status(404).json({ success: false, message: "Request not found" });
   ok(res, toApp(r));
 });
@@ -1195,6 +1296,28 @@ router.post("/ambulance/:id/rate", verifyUserToken, async (req, res) => {
   r.review = String(req.body?.review || "").trim() || undefined;
   r.ratedAt = new Date();
   await r.save();
+  ok(res, toApp(r.toObject()));
+});
+
+// Pay the ambulance bill (ambulance fare + in-transit medical expenses).
+// NOTE: the payment gateway is still mock platform-wide, so this records the
+// payment as collected without a real charge. Real Razorpay/PSP is a separate
+// P0. The patient may also pay the crew Cash/UPI, in which case the control
+// room marks it paid from the admin side instead.
+router.post("/ambulance/:id/pay", verifyUserToken, async (req, res) => {
+  const r: any = await AmbulanceRequest.findOne({ _id: req.params.id as string, userId: uid(req) });
+  if (!r) return res.status(404).json({ success: false, message: "Request not found" });
+  if (r.paymentStatus !== "PAID") {
+    r.paymentStatus = "PAID";
+    r.paymentMethod = String(req.body?.method || "ONLINE");
+    r.paidAt = new Date();
+    await r.save();
+    emitToUser(String(r.userId), "booking:status", {
+      requestId: String(r._id),
+      status: r.status,
+      paymentStatus: "PAID",
+    });
+  }
   ok(res, toApp(r.toObject()));
 });
 

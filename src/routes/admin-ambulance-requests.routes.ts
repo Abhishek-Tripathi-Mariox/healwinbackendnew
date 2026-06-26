@@ -44,5 +44,19 @@ router.post(
   ErrorHandlerMiddleware(C.updateStatus),
   ResponseMiddleware,
 );
+router.put(
+  "/:id/expenses",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.SOS_RESPOND),
+  ErrorHandlerMiddleware(C.setExpenses),
+  ResponseMiddleware,
+);
+router.post(
+  "/:id/payment",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.SOS_RESPOND),
+  ErrorHandlerMiddleware(C.markPaid),
+  ResponseMiddleware,
+);
 
 export default router;

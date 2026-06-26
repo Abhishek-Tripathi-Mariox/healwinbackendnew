@@ -3,6 +3,8 @@ import { Types } from "mongoose";
 import AmbulanceRequest from "../../models/ambulance-request.model";
 import AmbulanceStaff from "../../models/ambulance-staff.model";
 import Ambulance from "../../models/ambulance.model";
+import InventoryItem from "../../models/inventory-item.model";
+import StockTransaction from "../../models/stock-transaction.model";
 import { getNearbyAmbulances } from "../../services/ambulance-dispatch.service";
 import { emitToUser } from "../../utils/socket.util";
 import { sendToUser, sendDispatchPush } from "../../services/notification.service";
@@ -226,6 +228,141 @@ export const assign = async (req: Request, _res: Response, next: NextFunction) =
     }
   }
 
+  req.rData = { item: reqDoc };
+  req.msg = "success";
+  return next();
+};
+
+/** Recompute inTransitTotal + grandTotal from the request's current state. */
+const recomputeBill = (reqDoc: any) => {
+  const expenses = Array.isArray(reqDoc.inTransitExpenses) ? reqDoc.inTransitExpenses : [];
+  const inTransitTotal = expenses.reduce((s: number, e: any) => s + (Number(e.amount) || 0), 0);
+  reqDoc.inTransitTotal = Math.round(inTransitTotal * 100) / 100;
+  reqDoc.grandTotal = Math.round(((Number(reqDoc.amount) || 0) + reqDoc.inTransitTotal) * 100) / 100;
+};
+
+/**
+ * PUT /:id/expenses — control room logs the in-transit medical expenses
+ * (oxygen, medicines, procedures) for this ride. They're billed on top of the
+ * ambulance fare; the patient app shows them as a separate section + new grand
+ * total. The full list is replaced each call (idempotent edit).
+ */
+export const setExpenses = async (req: Request, _res: Response, next: NextFunction) => {
+  const adminId = (req as any).adminId;
+  const raw = Array.isArray(req.body?.expenses) ? req.body.expenses : [];
+
+  const reqDoc = await AmbulanceRequest.findById(req.params.id as string);
+  if (!reqDoc) {
+    req.rCode = 5;
+    req.msg = "not_available";
+    req.rData = {};
+    return next();
+  }
+
+  // Snapshot the price/name from the chosen HMS inventory item (so a later
+  // catalogue price change never rewrites a past bill). A line may also be a
+  // free-text one-off (no inventoryItemId), in which case the typed rate stands.
+  const itemIds = raw
+    .map((e: any) => e?.inventoryItemId)
+    .filter((id: any) => Types.ObjectId.isValid(id));
+  const inv = itemIds.length
+    ? await InventoryItem.find({ _id: { $in: itemIds }, isDeleted: false }).lean()
+    : [];
+  const invById = new Map(inv.map((i: any) => [String(i._id), i]));
+
+  const expenses = raw
+    .map((e: any) => {
+      const src = e?.inventoryItemId ? invById.get(String(e.inventoryItemId)) : null;
+      const item = String(e?.item || src?.name || "").trim();
+      const qty = Math.max(0, Number(e?.qty) || 0);
+      // Prefer the explicit rate; else the inventory selling price.
+      const rate = Math.max(
+        0,
+        e?.rate != null && e?.rate !== "" ? Number(e.rate) : Number(src?.sellingPrice) || 0,
+      );
+      return {
+        inventoryItemId: src ? (src._id as any) : undefined,
+        item,
+        qty,
+        rate,
+        amount: Math.round(qty * rate * 100) / 100,
+      };
+    })
+    .filter((e: any) => e.item && e.qty > 0);
+
+  // ----- Stock deduction (delta vs the previously-saved expenses) -----
+  // setExpenses replaces the whole list, so we net out the change per inventory
+  // item to stay idempotent across edits: more billed → issue ("out"), fewer →
+  // return ("in"). Free-text lines (no inventoryItemId) don't touch stock.
+  const qtyByItem = (list: any[]) => {
+    const m = new Map<string, number>();
+    for (const e of list) {
+      if (!e.inventoryItemId) continue;
+      const k = String(e.inventoryItemId);
+      m.set(k, (m.get(k) || 0) + (Number(e.qty) || 0));
+    }
+    return m;
+  };
+  const prevQty = qtyByItem((reqDoc.inTransitExpenses as any[]) || []);
+  const newQty = qtyByItem(expenses);
+  const touched = new Set<string>([...prevQty.keys(), ...newQty.keys()]);
+  for (const id of touched) {
+    const delta = (newQty.get(id) || 0) - (prevQty.get(id) || 0); // +ve = issue more
+    if (!delta) continue;
+    const item = await InventoryItem.findById(id);
+    if (!item) continue;
+    item.currentStock -= delta;
+    await item.save();
+    await StockTransaction.create({
+      itemId: item._id,
+      type: delta > 0 ? "out" : "in",
+      quantity: Math.abs(delta),
+      balanceAfter: item.currentStock,
+      reason: "Ambulance in-transit billing",
+      issuedToType: "patient",
+      issuedToRef: String(reqDoc._id),
+      performedByAdminId: adminId,
+    }).catch(() => undefined);
+  }
+
+  reqDoc.inTransitExpenses = expenses as any;
+  recomputeBill(reqDoc);
+  await reqDoc.save();
+
+  // Push the new bill to the patient's tracking screen in real time.
+  emitToUser(String(reqDoc.userId), "booking:status", {
+    requestId: String(reqDoc._id),
+    status: reqDoc.status,
+    grandTotal: reqDoc.grandTotal,
+  });
+
+  req.rData = { item: reqDoc };
+  req.msg = "success";
+  return next();
+};
+
+/**
+ * POST /:id/payment — control room marks the bill collected (e.g. crew took
+ * Cash/UPI on the spot). Patient-side online pay sets the same fields.
+ */
+export const markPaid = async (req: Request, _res: Response, next: NextFunction) => {
+  const reqDoc = await AmbulanceRequest.findById(req.params.id as string);
+  if (!reqDoc) {
+    req.rCode = 5;
+    req.msg = "not_available";
+    req.rData = {};
+    return next();
+  }
+  const paid = req.body?.paymentStatus !== "PENDING"; // default to marking PAID
+  reqDoc.paymentStatus = paid ? "PAID" : "PENDING";
+  reqDoc.paymentMethod = paid ? String(req.body?.method || "CASH") : undefined;
+  reqDoc.paidAt = paid ? new Date() : undefined;
+  await reqDoc.save();
+  emitToUser(String(reqDoc.userId), "booking:status", {
+    requestId: String(reqDoc._id),
+    status: reqDoc.status,
+    paymentStatus: reqDoc.paymentStatus,
+  });
   req.rData = { item: reqDoc };
   req.msg = "success";
   return next();
