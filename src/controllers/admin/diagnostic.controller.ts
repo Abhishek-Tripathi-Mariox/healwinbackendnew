@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { DiagnosticOrder } from "../../models/diagnostic-order.model";
 import { HospitalPatient } from "../../models/hospital-patient.model";
 import { uploadFileToAws } from "../../utils/s3";
+import { notifyHospitalPatient } from "../../services/hms-notify.service";
 
 const CATEGORIES = new Set(["lab", "imaging"]);
 const STATUSES = new Set(["ordered", "collected", "reported"]);
@@ -118,6 +119,16 @@ export const update = async (
   }
 
   await order.save();
+
+  // Tell the patient their report is ready (app → Hospital Records → Lab).
+  if (hasResult) {
+    void notifyHospitalPatient(
+      order.patientId,
+      "Report ready",
+      `Your ${order.category === "imaging" ? "imaging" : "lab"} report for "${order.name}" is ready to view.`,
+      { tab: "lab" },
+    );
+  }
 
   req.rData = { order };
   req.msg = "diagnostic_updated";

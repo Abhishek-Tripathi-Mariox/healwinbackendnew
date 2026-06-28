@@ -84,7 +84,7 @@ const OtherAllowanceSchema = new Schema<IOtherAllowance>(
   { _id: false },
 );
 
-const SalaryStructureSchema = new Schema<ISalaryStructure>(
+export const SalaryStructureSchema = new Schema<ISalaryStructure>(
   {
     ctcAnnual: { type: Number, default: 0 },
     basic: { type: Number, default: 0 },

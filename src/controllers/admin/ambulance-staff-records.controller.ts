@@ -1,9 +1,9 @@
 import { Request, Response, NextFunction } from "express";
 import {
-  StaffLeave,
   StaffCaseNote,
   StaffStockRequest,
 } from "../../models/ambulance-staff-extras.model";
+import LeaveRequest from "../../models/leave-request.model";
 import { HospitalPatient } from "../../models/hospital-patient.model";
 import { sendToStaff } from "../../services/notification.service";
 
@@ -111,16 +111,31 @@ export const updateStockRequestStatus = async (req: Request, _res: Response, nex
   return next();
 };
 
-// ----- Leave applications -----
+// ----- Leave applications (central LeaveRequest store, ambulance_staff subset) -----
+// Legacy shape kept so the existing admin staff page renders unchanged.
+const toLegacyLeave = (lr: any) => ({
+  _id: lr._id,
+  staffId: lr.ambulanceStaffId,
+  type: lr.leaveTypeName || "Leave",
+  fromDate: lr.fromDate,
+  toDate: lr.toDate,
+  day: lr.halfDay ? "Half Day" : "Full Day",
+  reason: lr.reason,
+  attachmentUrl: lr.attachmentUrl,
+  status: lr.status === "approved" ? "Approved" : lr.status === "rejected" ? "Rejected" : "Pending",
+  createdAt: lr.createdAt,
+});
+
 export const listLeaves = async (req: Request, _res: Response, next: NextFunction) => {
-  const { status } = req.query as Record<string, string>;
-  const q: Record<string, unknown> = { ...optionalStaffFilter(req) };
-  if (status) q.status = status;
-  const items = await StaffLeave.find(q)
-    .populate("staffId", STAFF_FIELDS)
+  const { status, staffId } = req.query as Record<string, string>;
+  const q: Record<string, unknown> = { subjectType: "ambulance_staff" };
+  if (staffId) q.ambulanceStaffId = staffId;
+  if (status) q.status = status.toLowerCase();
+  const rows = await LeaveRequest.find(q)
+    .populate("ambulanceStaffId", STAFF_FIELDS)
     .sort({ createdAt: -1 })
     .lean();
-  req.rData = { items };
+  req.rData = { items: rows.map(toLegacyLeave) };
   req.msg = "success";
   return next();
 };
@@ -133,38 +148,38 @@ export const updateLeaveStatus = async (req: Request, _res: Response, next: Next
     req.rData = { hint: "status must be Pending | Approved | Rejected" };
     return next();
   }
-  const item = await StaffLeave.findByIdAndUpdate(
+  const mapped = status === "Approved" ? "approved" : status === "Rejected" ? "rejected" : "pending";
+  const lr: any = await LeaveRequest.findByIdAndUpdate(
     req.params.id,
-    { status },
+    { status: mapped, approverAdminId: (req as any).adminId, decidedAt: new Date() },
     { new: true },
   )
-    .populate("staffId", STAFF_FIELDS)
+    .populate("ambulanceStaffId", STAFF_FIELDS)
     .lean();
-  if (!item) {
+  if (!lr) {
     req.rCode = 5;
     req.msg = "item_not_found";
     return next();
   }
 
-  // Notify the staff member that their leave was approved/rejected, so the
-  // decision lands as a push + an entry in their app's notification bell.
-  const leaveStaffId = (item.staffId as any)?._id || item.staffId;
+  // Notify the staff member of the decision (push + in-app bell).
+  const leaveStaffId = (lr.ambulanceStaffId as any)?._id || lr.ambulanceStaffId;
   if (leaveStaffId && status !== "Pending") {
-    const range = `${fmtDate(item.fromDate)}–${fmtDate(item.toDate)}`;
+    const range = `${fmtDate(lr.fromDate)}–${fmtDate(lr.toDate)}`;
     sendToStaff(
       leaveStaffId,
       "SYSTEM",
       status === "Approved" ? "Leave Approved" : "Leave Rejected",
       status === "Approved"
-        ? `Your ${item.type} leave (${range}) has been approved.`
-        : `Your ${item.type} leave (${range}) was rejected.`,
-      { leaveId: String(item._id), status, route: "Leave" },
-      item._id,
-      "StaffLeave",
+        ? `Your ${lr.leaveTypeName || "leave"} leave (${range}) has been approved.`
+        : `Your ${lr.leaveTypeName || "leave"} leave (${range}) was rejected.`,
+      { leaveId: String(lr._id), status, route: "Leave" },
+      lr._id,
+      "LeaveRequest",
     ).catch(() => undefined);
   }
 
-  req.rData = { item };
+  req.rData = { item: toLegacyLeave(lr) };
   req.msg = "success";
   return next();
 };

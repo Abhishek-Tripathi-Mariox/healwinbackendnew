@@ -30,7 +30,9 @@ export interface IPayslipDeductions {
 export interface IPayslip {
   _id: Types.ObjectId;
   runId: Types.ObjectId;
-  employeeId: Types.ObjectId;
+  subjectType: "hr_employee" | "ambulance_staff";
+  employeeId?: Types.ObjectId;
+  ambulanceStaffId?: Types.ObjectId;
   month: number;
   year: number;
   // Snapshot for stable display / PDF.
@@ -84,12 +86,14 @@ const PayslipSchema = new Schema<IPayslip>(
       required: true,
       index: true,
     },
-    employeeId: {
-      type: Schema.Types.ObjectId,
-      ref: "HrEmployee",
-      required: true,
+    subjectType: {
+      type: String,
+      enum: ["hr_employee", "ambulance_staff"],
+      default: "hr_employee",
       index: true,
     },
+    employeeId: { type: Schema.Types.ObjectId, ref: "HrEmployee", index: true },
+    ambulanceStaffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff", index: true },
     month: { type: Number, required: true },
     year: { type: Number, required: true },
     employeeCode: { type: String, required: true },
@@ -111,7 +115,8 @@ const PayslipSchema = new Schema<IPayslip>(
   { timestamps: true },
 );
 
-PayslipSchema.index({ employeeId: 1, month: 1, year: 1 }, { unique: true });
+PayslipSchema.index({ employeeId: 1, month: 1, year: 1 }, { unique: true, sparse: true });
+PayslipSchema.index({ ambulanceStaffId: 1, month: 1, year: 1 }, { unique: true, sparse: true });
 
 export const Payslip = mongoose.model<IPayslip>("Payslip", PayslipSchema);
 

@@ -20,6 +20,13 @@ import VehicleType from "../models/vehicle-type.model";
 import { PharmacyOrder, LabBooking, Consultation } from "../models/patient-commerce.model";
 import HomePromo from "../models/home-promo.model";
 import { MembershipPlan, UserMembership } from "../models/membership.model";
+import { Appointment } from "../models/appointment.model";
+import { getDoctorSlots, isSlotAvailable } from "../services/doctor-slots.service";
+import DoctorSchedule from "../models/doctor-schedule.model";
+import { HospitalInvoice } from "../models/hospital-invoice.model";
+import { DiagnosticOrder } from "../models/diagnostic-order.model";
+import { EmrEncounter } from "../models/emr-encounter.model";
+import { Admission } from "../models/admission.model";
 import { calculateFare } from "../services/fare.service";
 import * as PromoService from "../services/promo.service";
 import { reverseGeocode, searchPlaces, resolvePlace } from "../services/geocode.service";
@@ -846,6 +853,223 @@ router.post("/membership/enroll", verifyUserToken, async (req, res) => {
     status: "active",
   });
   ok(res, m);
+});
+
+// ================== Hospital (HMS) patient portal ==================
+// The patient app is linked to its hospital record(s) by phone number — the app
+// User and the HMS HospitalPatient are separate entities, joined on the last 10
+// digits of the mobile so country-code/spacing differences don't break it.
+
+/** All HospitalPatient _ids that belong to the logged-in app user (by phone). */
+const myHospitalPatientIds = async (req: Request): Promise<any[]> => {
+  const user: any = await User.findById(uid(req)).select("mobileNumber").lean();
+  const last10 = String(user?.mobileNumber || "").replace(/\D/g, "").slice(-10);
+  if (last10.length !== 10) return [];
+  const patients = await HospitalPatient.find({
+    phone: { $regex: `${last10}$` },
+    isDeleted: { $ne: true },
+  })
+    .select("_id")
+    .lean();
+  return patients.map((p: any) => p._id);
+};
+
+/** Find (or create, for booking) the user's primary hospital record. */
+const ensureHospitalPatient = async (req: Request): Promise<any> => {
+  const user: any = await User.findById(uid(req)).lean();
+  const last10 = String(user?.mobileNumber || "").replace(/\D/g, "").slice(-10);
+  let hp: any = last10.length === 10
+    ? await HospitalPatient.findOne({ phone: { $regex: `${last10}$` }, isDeleted: { $ne: true } })
+    : null;
+  if (!hp) {
+    hp = await HospitalPatient.create({
+      fullName: user?.fullName || "Patient",
+      phone: user?.mobileNumber || "",
+      gender: user?.gender || undefined,
+    });
+  }
+  return hp;
+};
+
+// Quick summary: is a hospital record linked + counts for the dashboard tiles.
+router.get("/hms/summary", verifyUserToken, async (req, res) => {
+  const ids = await myHospitalPatientIds(req);
+  if (ids.length === 0) return ok(res, { linked: false });
+  const [appointments, prescriptions, labOrders, invoices, admissions] = await Promise.all([
+    Appointment.countDocuments({ patientId: { $in: ids } }),
+    EmrEncounter.countDocuments({ patientId: { $in: ids }, status: "finalized" }),
+    DiagnosticOrder.countDocuments({ patientId: { $in: ids } }),
+    HospitalInvoice.countDocuments({ patientId: { $in: ids } }),
+    Admission.countDocuments({ patientId: { $in: ids } }),
+  ]);
+  ok(res, { linked: true, appointments, prescriptions, labOrders, invoices, admissions });
+});
+
+// OPD appointments (view).
+router.get("/hms/appointments", verifyUserToken, async (req, res) => {
+  const ids = await myHospitalPatientIds(req);
+  if (ids.length === 0) return ok(res, []);
+  const rows: any[] = await Appointment.find({ patientId: { $in: ids } })
+    .sort({ scheduledAt: -1 })
+    .limit(100)
+    .populate("doctorId", "fullName doctorProfile.speciality")
+    .lean();
+  ok(res, rows.map((a) => ({
+    _id: String(a._id),
+    doctorName: a.doctorId?.fullName || "Doctor",
+    speciality: a.doctorId?.doctorProfile?.speciality || "",
+    scheduledAt: a.scheduledAt,
+    tokenNumber: a.tokenNumber,
+    status: a.status,
+    reason: a.reason || "",
+  })));
+});
+
+// Prescriptions + diagnoses from finalized EMR encounters.
+router.get("/hms/prescriptions", verifyUserToken, async (req, res) => {
+  const ids = await myHospitalPatientIds(req);
+  if (ids.length === 0) return ok(res, []);
+  const rows: any[] = await EmrEncounter.find({ patientId: { $in: ids }, status: "finalized" })
+    .sort({ visitDate: -1 })
+    .limit(100)
+    .populate("doctorId", "fullName doctorProfile.speciality")
+    .lean();
+  ok(res, rows.map((e) => ({
+    _id: String(e._id),
+    doctorName: e.doctorId?.fullName || "Doctor",
+    visitDate: e.visitDate,
+    encounterType: e.encounterType,
+    diagnoses: e.diagnoses || [],
+    prescriptions: (e.prescriptions || []).map((p: any) => ({
+      drug: p.drug,
+      dose: p.dose,
+      frequency: p.frequency,
+      duration: p.duration,
+    })),
+  })));
+});
+
+// Lab + imaging orders with results/reports.
+router.get("/hms/lab-orders", verifyUserToken, async (req, res) => {
+  const ids = await myHospitalPatientIds(req);
+  if (ids.length === 0) return ok(res, []);
+  const rows: any[] = await DiagnosticOrder.find({ patientId: { $in: ids } })
+    .sort({ orderedAt: -1 })
+    .limit(100)
+    .lean();
+  ok(res, rows.map((d) => ({
+    _id: String(d._id),
+    category: d.category,
+    name: d.name,
+    status: d.status,
+    resultValue: d.resultValue || "",
+    resultNotes: d.resultNotes || "",
+    reports: (d.attachments || []).map((f: any) => ({ url: f.url, label: f.label })),
+    orderedAt: d.orderedAt,
+    reportedAt: d.reportedAt || null,
+  })));
+});
+
+// Hospital bills/invoices.
+router.get("/hms/invoices", verifyUserToken, async (req, res) => {
+  const ids = await myHospitalPatientIds(req);
+  if (ids.length === 0) return ok(res, []);
+  const rows: any[] = await HospitalInvoice.find({ patientId: { $in: ids } })
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .lean();
+  ok(res, rows.map((inv) => ({
+    _id: String(inv._id),
+    invoiceNo: inv.invoiceNo,
+    total: inv.total,
+    amountPaid: inv.amountPaid,
+    balanceDue: inv.balanceDue,
+    status: inv.status,
+    createdAt: inv.createdAt,
+    items: (inv.lineItems || []).map((it: any) => ({
+      description: it.description,
+      section: it.section,
+      quantity: it.quantity,
+      amount: it.amount,
+    })),
+  })));
+});
+
+// IPD admissions + discharge summaries.
+router.get("/hms/admissions", verifyUserToken, async (req, res) => {
+  const ids = await myHospitalPatientIds(req);
+  if (ids.length === 0) return ok(res, []);
+  const rows: any[] = await Admission.find({ patientId: { $in: ids } })
+    .sort({ admittedAt: -1 })
+    .limit(50)
+    .lean();
+  ok(res, rows.map((a) => ({
+    _id: String(a._id),
+    ward: a.ward,
+    bedNumber: a.bedNumber,
+    reason: a.reason || "",
+    status: a.status,
+    admittedAt: a.admittedAt,
+    dischargedAt: a.dischargedAt || null,
+    dischargeSummary: a.dischargeSummary || "",
+  })));
+});
+
+// Available OPD slots for a doctor on a date (?date=YYYY-MM-DD). Empty list
+// means the doctor has no published schedule for that weekday (the app then
+// falls back to a free date/time pick).
+router.get("/hms/doctors/:id/slots", verifyUserToken, async (req, res) => {
+  const dateStr = String(req.query.date || "");
+  const date = dateStr ? new Date(dateStr) : new Date();
+  if (isNaN(date.getTime())) return res.status(400).json({ success: false, message: "Invalid date" });
+  const hasSchedule = await DoctorSchedule.exists({ doctorId: req.params.id, isActive: true });
+  const slots = await getDoctorSlots(req.params.id as string, date);
+  ok(res, { hasSchedule: !!hasSchedule, slots });
+});
+
+// Book an OPD appointment with a hospital doctor. Auto-links/creates the
+// patient's hospital record and assigns the next queue token for that doctor's
+// day — so it shows up live on the admin OPD board.
+router.post("/hms/appointments", verifyUserToken, async (req, res) => {
+  const doctorId = String(req.body?.doctorId || "");
+  const whenStr = String(req.body?.scheduledAt || "");
+  const reason = req.body?.reason ? String(req.body.reason) : undefined;
+  const doctor: any = await Admin.findOne({ _id: doctorId, roleName: "Doctor", isDeleted: false }).lean();
+  if (!doctor) return res.status(404).json({ success: false, message: "Doctor not found" });
+  const scheduledAt = whenStr ? new Date(whenStr) : new Date();
+  if (isNaN(scheduledAt.getTime())) {
+    return res.status(400).json({ success: false, message: "Invalid date" });
+  }
+  // If the doctor publishes a schedule, the chosen time must be a free slot —
+  // this prevents double-booking and out-of-hours bookings.
+  const hasSchedule = await DoctorSchedule.exists({ doctorId: doctor._id, isActive: true });
+  if (hasSchedule && !(await isSlotAvailable(doctor._id, scheduledAt))) {
+    return res.status(409).json({ success: false, message: "That slot is no longer available. Please pick another." });
+  }
+  const hp = await ensureHospitalPatient(req);
+  // Next token for this doctor on the scheduled calendar day.
+  const dayStart = new Date(scheduledAt); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(scheduledAt); dayEnd.setHours(23, 59, 59, 999);
+  const todays = await Appointment.countDocuments({
+    doctorId: doctor._id,
+    scheduledAt: { $gte: dayStart, $lte: dayEnd },
+  });
+  const appt = await Appointment.create({
+    patientId: hp._id,
+    doctorId: doctor._id,
+    scheduledAt,
+    tokenNumber: todays + 1,
+    status: "booked",
+    reason,
+    createdByAdminId: doctor._id, // self-service booking; attributed to the doctor
+  });
+  ok(res, {
+    _id: String(appt._id),
+    doctorName: doctor.fullName,
+    scheduledAt: appt.scheduledAt,
+    tokenNumber: appt.tokenNumber,
+    status: appt.status,
+  });
 });
 
 // ================== Ambulance ==================

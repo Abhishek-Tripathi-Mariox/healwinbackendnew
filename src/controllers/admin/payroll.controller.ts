@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import HrEmployee from "../../models/hr-employee.model";
+import AmbulanceStaff from "../../models/ambulance-staff.model";
 import { PayrollRun } from "../../models/payroll-run.model";
 import { Payslip } from "../../models/payslip.model";
 import { LeaveType } from "../../models/leave-type.model";
@@ -100,6 +101,7 @@ export const generate = async (
       {
         $set: {
           runId: run._id,
+          subjectType: "hr_employee",
           employeeId: emp._id,
           month,
           year,
@@ -119,7 +121,45 @@ export const generate = async (
     );
   }
 
-  run.employeeCount = employees.length;
+  // Ambulance crew on monthly salary (salaryStructure set) — same engine, days
+  // sourced from central attendance keyed by ambulanceStaffId.
+  const crew = await AmbulanceStaff.find({
+    isDeleted: { $ne: true },
+    "salaryStructure.ctcAnnual": { $gt: 0 },
+  }).lean();
+  for (const s of crew as any[]) {
+    const summary = await buildAttendanceSummary(s._id, month, year, unpaidReqIds, "ambulance_staff");
+    const computed = computePayslip(s.salaryStructure, summary, { tds: tdsMap[String(s._id)] || 0 });
+    totalGross += computed.earnings.gross;
+    totalDeductions += computed.deductions.total;
+    totalNet += computed.netPay;
+    await Payslip.findOneAndUpdate(
+      { ambulanceStaffId: s._id, month, year },
+      {
+        $set: {
+          runId: run._id,
+          subjectType: "ambulance_staff",
+          ambulanceStaffId: s._id,
+          month,
+          year,
+          employeeCode: s.role === "attendant" ? "ATT" : "DRV",
+          employeeName: s.fullName,
+          designation: s.role === "attendant" ? "Ambulance Attendant" : "Ambulance Driver",
+          totalDays: computed.totalDays,
+          paidDays: computed.paidDays,
+          lopDays: computed.lopDays,
+          leaveDays: computed.leaveDays,
+          earnings: computed.earnings,
+          deductions: computed.deductions,
+          netPay: computed.netPay,
+          status: "draft",
+        },
+      },
+      { upsert: true },
+    );
+  }
+
+  run.employeeCount = employees.length + crew.length;
   run.totalGross = Math.round(totalGross * 100) / 100;
   run.totalDeductions = Math.round(totalDeductions * 100) / 100;
   run.totalNet = Math.round(totalNet * 100) / 100;
@@ -213,9 +253,13 @@ export const payslipPdf = async (req: Request, res: Response) => {
   if (!payslip) {
     return res.status(404).json({ code: 5, message: "payslip not found" });
   }
-  const employee = await HrEmployee.findById(payslip.employeeId)
-    .select("pan accountNumber uan designationId")
-    .lean();
+  // Crew payslips have no HrEmployee record — the payslip already snapshots
+  // name/code, so the PDF renders fine without statutory IDs.
+  const employee = payslip.employeeId
+    ? await HrEmployee.findById(payslip.employeeId)
+        .select("pan accountNumber uan designationId")
+        .lean()
+    : null;
 
   const buffer = await generatePayslipPDF(payslip as any, employee as any);
   res.setHeader("Content-Type", "application/pdf");

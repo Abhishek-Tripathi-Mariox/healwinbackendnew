@@ -1,5 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 import { IAmbulanceStaff } from "../interfaces/ambulance-staff";
+import { SalaryStructureSchema } from "./hr-employee.model";
 
 const AmbulanceStaffSchema = new Schema<IAmbulanceStaff>(
   {
@@ -61,6 +62,10 @@ const AmbulanceStaffSchema = new Schema<IAmbulanceStaff>(
     lastLocationAttemptAt: Date,
     isActive: { type: Boolean, default: true, index: true },
     isDeleted: { type: Boolean, default: false },
+    // Optional monthly salary structure — when set, the crew member is included
+    // in the central HR payroll run (paid like an employee, days from central
+    // attendance).
+    salaryStructure: { type: SalaryStructureSchema, default: undefined },
     createdByAdminId: {
       type: Schema.Types.ObjectId,
       ref: "Admin",

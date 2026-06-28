@@ -4,6 +4,7 @@ import Bed from "../../models/bed.model";
 import Ward from "../../models/ward.model";
 import HospitalPatient from "../../models/hospital-patient.model";
 import { nextSequence } from "../../models/counter.model";
+import { notifyHospitalPatient } from "../../services/hms-notify.service";
 
 /**
  * Doctor Panel / HMS — IPD: bed master + admissions (admit, transfer,
@@ -397,6 +398,14 @@ export const discharge = async (
   admission.dischargeSummary = b.dischargeSummary || admission.dischargeSummary;
   admission.currentBedId = null;
   await admission.save();
+
+  // Notify the patient their discharge summary is available in the app.
+  void notifyHospitalPatient(
+    admission.patientId,
+    "Discharged",
+    "You have been discharged. Your discharge summary is available in Hospital Records.",
+    { tab: "admissions" },
+  );
 
   req.rData = { admission };
   req.msg = "admission_updated";

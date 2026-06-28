@@ -67,6 +67,14 @@ import adminDiagnosticsRoutes from "./admin-diagnostics.routes";
 import adminAlertsRoutes from "./admin-alerts.routes";
 import adminOpdRoutes from "./admin-opd.routes";
 import adminIpdRoutes from "./admin-ipd.routes";
+import adminDoctorScheduleRoutes from "./admin-doctor-schedule.routes";
+import adminInsuranceRoutes from "./admin-insurance.routes";
+import adminOtRoutes from "./admin-ot.routes";
+import adminProcurementRoutes from "./admin-procurement.routes";
+import adminHmsReportsRoutes from "./admin-hms-reports.routes";
+import adminDoctorRosterRoutes from "./admin-doctor-roster.routes";
+import adminStaffDirectoryRoutes from "./admin-staff-directory.routes";
+import adminEmployeeShiftsRoutes from "./admin-employee-shifts.routes";
 
 // Pharmacy platform + IVR escalation (non-HMS gaps)
 import pharmacyPublicRoutes from "./pharmacy.routes";
@@ -161,6 +169,14 @@ router.use("/admin/diagnostics", adminDiagnosticsRoutes);
 router.use("/admin/alerts", adminAlertsRoutes);
 router.use("/admin/opd", adminOpdRoutes);
 router.use("/admin/ipd", adminIpdRoutes);
+router.use("/admin/doctor-schedules", adminDoctorScheduleRoutes);
+router.use("/admin/insurance", adminInsuranceRoutes);
+router.use("/admin/ot", adminOtRoutes);
+router.use("/admin/procurement", adminProcurementRoutes);
+router.use("/admin/hms-reports", adminHmsReportsRoutes);
+router.use("/admin/doctor-roster", adminDoctorRosterRoutes);
+router.use("/admin/staff-directory", adminStaffDirectoryRoutes);
+router.use("/admin/employee-shifts", adminEmployeeShiftsRoutes);
 router.use("/admin/pharmacies", adminPharmaciesRoutes);
 router.use("/admin/ivr-escalations", adminIvrRoutes);
 

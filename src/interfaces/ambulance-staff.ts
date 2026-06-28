@@ -1,4 +1,5 @@
 import { Document, Types } from "mongoose";
+import type { ISalaryStructure } from "../models/hr-employee.model";
 
 export type AmbulanceStaffRole = "driver" | "attendant";
 
@@ -29,6 +30,7 @@ export interface IAmbulanceStaff extends Document {
   lastLocationAttemptAt?: Date;
   isActive: boolean;
   isDeleted: boolean;
+  salaryStructure?: ISalaryStructure;
   createdByAdminId: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;

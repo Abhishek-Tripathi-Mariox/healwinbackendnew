@@ -1,21 +1,31 @@
 import mongoose, { Schema, Types } from "mongoose";
 
 /**
- * HR — Leave request. On approval the leave controller writes `leave`
- * attendance rows across [fromDate, toDate] and decrements the matching
- * LeaveBalance so payroll and the attendance roster stay consistent.
+ * Central leave request — one store for ALL staff types.
+ *  - subjectType "hr_employee"   → employeeId (HrEmployee) + leaveTypeId; on
+ *    approval writes attendance rows + decrements LeaveBalance (payroll-linked).
+ *  - subjectType "ambulance_staff" → ambulanceStaffId (AmbulanceStaff); the
+ *    staff app posts these. leaveTypeName carries the free-text type from the
+ *    app; attendance/balance are skipped (ambulance crew isn't on HR attendance).
+ * The admin HR Leave page lists & approves both in one place.
  */
 
 export type LeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
+export type LeaveSubject = "hr_employee" | "ambulance_staff";
 
 export interface ILeaveRequest {
   _id: Types.ObjectId;
-  employeeId: Types.ObjectId;
-  leaveTypeId: Types.ObjectId;
+  subjectType: LeaveSubject;
+  employeeId?: Types.ObjectId; // HrEmployee (when hr_employee)
+  ambulanceStaffId?: Types.ObjectId; // AmbulanceStaff (when ambulance_staff)
+  leaveTypeId?: Types.ObjectId;
+  leaveTypeName?: string; // free-text type (ambulance staff app)
   fromDate: Date;
   toDate: Date;
   days: number;
+  halfDay?: boolean;
   reason?: string;
+  attachmentUrl?: string;
   status: LeaveStatus;
   approverAdminId?: Types.ObjectId;
   decisionNote?: string;
@@ -26,21 +36,22 @@ export interface ILeaveRequest {
 
 const LeaveRequestSchema = new Schema<ILeaveRequest>(
   {
-    employeeId: {
-      type: Schema.Types.ObjectId,
-      ref: "HrEmployee",
-      required: true,
+    subjectType: {
+      type: String,
+      enum: ["hr_employee", "ambulance_staff"],
+      default: "hr_employee",
       index: true,
     },
-    leaveTypeId: {
-      type: Schema.Types.ObjectId,
-      ref: "LeaveType",
-      required: true,
-    },
+    employeeId: { type: Schema.Types.ObjectId, ref: "HrEmployee", index: true },
+    ambulanceStaffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff", index: true },
+    leaveTypeId: { type: Schema.Types.ObjectId, ref: "LeaveType" },
+    leaveTypeName: { type: String, trim: true },
     fromDate: { type: Date, required: true },
     toDate: { type: Date, required: true },
     days: { type: Number, required: true },
+    halfDay: { type: Boolean, default: false },
     reason: { type: String, trim: true },
+    attachmentUrl: { type: String, trim: true },
     status: {
       type: String,
       enum: ["pending", "approved", "rejected", "cancelled"],

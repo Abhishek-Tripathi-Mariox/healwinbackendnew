@@ -7,6 +7,12 @@ import mongoose, { Schema, Types } from "mongoose";
  */
 
 // ----- Leave -----
+/**
+ * @deprecated Leave is now centralized in `LeaveRequest`
+ * (subjectType "ambulance_staff"). This model is READ-ONLY — kept only so
+ * `scripts/migrate-staff-leaves.ts` can copy any pre-migration rows into the
+ * central store. Nothing writes to it anymore; do not add new usages.
+ */
 export interface IStaffLeave {
   _id: Types.ObjectId;
   staffId: Types.ObjectId;
@@ -35,30 +41,10 @@ const StaffLeaveSchema = new Schema<IStaffLeave>(
 );
 export const StaffLeave = mongoose.model<IStaffLeave>("StaffLeave", StaffLeaveSchema);
 
-// ----- Patient (staff-registered) -----
-export interface IStaffPatient {
-  _id: Types.ObjectId;
-  staffId: Types.ObjectId;
-  name: string;
-  mobile?: string;
-  dob?: string;
-  gender?: string;
-  pincode?: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-const StaffPatientSchema = new Schema<IStaffPatient>(
-  {
-    staffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff", required: true, index: true },
-    name: { type: String, required: true },
-    mobile: String,
-    dob: String,
-    gender: String,
-    pincode: String,
-  },
-  { timestamps: true },
-);
-export const StaffPatient = mongoose.model<IStaffPatient>("StaffPatient", StaffPatientSchema);
+// NOTE: A `StaffPatient` model previously lived here but was unused — staff-
+// registered patients are written straight to the HMS `HospitalPatient`
+// collection (source: "ambulance_staff"), which `listStaffPatients` reads.
+// Removed to avoid a dead, never-written model.
 
 // ----- Case notes -----
 export interface IStaffCaseNote {

@@ -3,6 +3,24 @@ import { LeaveType } from "../../models/leave-type.model";
 import { LeaveRequest } from "../../models/leave-request.model";
 import { LeaveBalance } from "../../models/leave-balance.model";
 import Attendance from "../../models/attendance.model";
+import { sendToStaff } from "../../services/notification.service";
+
+const fmtD = (d: Date) => new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+
+// Notify an ambulance-staff member of a leave decision (push + in-app bell).
+const notifyStaffDecision = (lr: any, approved: boolean) => {
+  if (lr.subjectType !== "ambulance_staff" || !lr.ambulanceStaffId) return;
+  const range = `${fmtD(lr.fromDate)}–${fmtD(lr.toDate)}`;
+  void sendToStaff(
+    lr.ambulanceStaffId,
+    "SYSTEM",
+    approved ? "Leave Approved" : "Leave Rejected",
+    `Your ${lr.leaveTypeName || "leave"} (${range}) has been ${approved ? "approved" : "rejected"}.`,
+    { leaveId: String(lr._id), status: approved ? "approved" : "rejected", route: "Leave" },
+    lr._id,
+    "LeaveRequest",
+  ).catch(() => undefined);
+};
 
 /**
  * HR — Leave types, requests and balances.
@@ -73,13 +91,30 @@ export const listRequests = async (
   const query: any = {};
   if (req.query.status) query.status = req.query.status;
   if (req.query.employeeId) query.employeeId = req.query.employeeId;
+  if (req.query.subjectType) query.subjectType = req.query.subjectType;
 
-  const items = await LeaveRequest.find(query)
+  const rows: any[] = await LeaveRequest.find(query)
     .sort({ createdAt: -1 })
-    .limit(200)
+    .limit(300)
     .populate("employeeId", "fullName employeeCode")
+    .populate("ambulanceStaffId", "fullName mobileNumber role")
     .populate("leaveTypeId", "name code isPaid")
     .lean();
+
+  // Unified row: a single `subjectName` + `typeName` regardless of staff kind,
+  // so one HR Leave page renders HR employees and ambulance crew together.
+  const items = rows.map((lr) => ({
+    ...lr,
+    subjectName:
+      lr.subjectType === "ambulance_staff"
+        ? lr.ambulanceStaffId?.fullName || "Ambulance staff"
+        : lr.employeeId?.fullName || "Employee",
+    subjectRef:
+      lr.subjectType === "ambulance_staff"
+        ? `${(lr.ambulanceStaffId?.role || "crew")}${lr.ambulanceStaffId?.mobileNumber ? ` · ${lr.ambulanceStaffId.mobileNumber}` : ""}`
+        : lr.employeeId?.employeeCode || "",
+    typeName: lr.leaveTypeId?.name || lr.leaveTypeName || "Leave",
+  }));
 
   req.rData = { items };
   req.msg = "leave_request_list";
@@ -152,6 +187,15 @@ export const approveRequest = async (
   lr.decidedAt = new Date();
   await lr.save();
 
+  // Ambulance staff aren't on HR attendance/payroll balance — just record the
+  // decision and notify their app. (Central store, branched handling.)
+  if (lr.subjectType === "ambulance_staff") {
+    notifyStaffDecision(lr, true);
+    req.rData = { item: lr };
+    req.msg = "leave_request_updated";
+    return next();
+  }
+
   // Write leave attendance rows across the range (idempotent upsert).
   const ops: any[] = [];
   const cursor = new Date(lr.fromDate);
@@ -220,6 +264,8 @@ export const rejectRequest = async (
   lr.decisionNote = req.body?.decisionNote;
   lr.decidedAt = new Date();
   await lr.save();
+
+  notifyStaffDecision(lr, false);
 
   req.rData = { item: lr };
   req.msg = "leave_request_updated";

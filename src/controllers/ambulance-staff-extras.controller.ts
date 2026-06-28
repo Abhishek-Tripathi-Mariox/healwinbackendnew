@@ -1,9 +1,9 @@
 import { Request, Response, NextFunction } from "express";
 import {
-  StaffLeave,
   StaffCaseNote,
   StaffStockRequest,
 } from "../models/ambulance-staff-extras.model";
+import LeaveRequest from "../models/leave-request.model";
 import HospitalPatient from "../models/hospital-patient.model";
 import { nextSequence } from "../models/counter.model";
 import { uploadFileToAws } from "../utils/s3";
@@ -21,10 +21,28 @@ const staffName = async (staffId: any): Promise<string> => {
   return (s as any)?.fullName || "A staff member";
 };
 
-// ----- Leave -----
+// ----- Leave (central LeaveRequest store; shape kept stable for the app) -----
+const dayCount = (from: Date, to: Date, half: boolean) => {
+  const ms = dayStartUTC(to).getTime() - dayStartUTC(from).getTime();
+  const whole = Math.max(0, Math.round(ms / 86400000)) + 1;
+  return half ? 0.5 : whole;
+};
+const dayStartUTC = (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+// Present central leave rows in the legacy shape the staff app already renders.
+const toAppLeave = (lr: any) => ({
+  _id: lr._id,
+  type: lr.leaveTypeName || "Leave",
+  fromDate: lr.fromDate,
+  toDate: lr.toDate,
+  day: lr.halfDay ? "Half Day" : "Full Day",
+  reason: lr.reason,
+  attachmentUrl: lr.attachmentUrl,
+  status: lr.status === "approved" ? "Approved" : lr.status === "rejected" ? "Rejected" : "Pending",
+});
+
 export const listLeaves = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = await StaffLeave.find({ staffId: sid(req) }).sort({ createdAt: -1 }).lean();
-  req.rData = { items };
+  const rows = await LeaveRequest.find({ ambulanceStaffId: sid(req) }).sort({ createdAt: -1 }).lean();
+  req.rData = { items: rows.map(toAppLeave) };
   req.msg = "success";
   return next();
 };
@@ -43,28 +61,34 @@ export const applyLeave = async (req: Request, _res: Response, next: NextFunctio
     const { images } = await uploadFileToAws(files);
     attachmentUrl = images;
   }
-  const item = await StaffLeave.create({
-    staffId: sid(req),
-    type: b.type,
-    fromDate: new Date(b.from),
-    toDate: new Date(b.to),
-    day: b.day || "Full Day",
+  const fromDate = new Date(b.from);
+  const toDate = new Date(b.to);
+  const halfDay = b.day === "Half Day";
+  const lr = await LeaveRequest.create({
+    subjectType: "ambulance_staff",
+    ambulanceStaffId: sid(req),
+    leaveTypeName: b.type,
+    fromDate,
+    toDate,
+    days: dayCount(fromDate, toDate, halfDay),
+    halfDay,
     reason: b.reason,
     attachmentUrl,
+    status: "pending",
   });
 
   // Real-time alert to the admin dashboard so a new leave request is seen
   // without refreshing the HR Leave page.
   emitToAdmin("leave:new", {
-    leaveId: String(item._id),
+    leaveId: String(lr._id),
     staffName: await staffName(sid(req)),
-    type: item.type,
-    from: item.fromDate,
-    to: item.toDate,
-    day: item.day,
+    type: lr.leaveTypeName,
+    from: lr.fromDate,
+    to: lr.toDate,
+    day: lr.halfDay ? "Half Day" : "Full Day",
   });
 
-  req.rData = { item };
+  req.rData = { item: toAppLeave(lr) };
   req.msg = "success";
   return next();
 };

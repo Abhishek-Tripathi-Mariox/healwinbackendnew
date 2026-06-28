@@ -17,9 +17,13 @@ export type AttendanceStatus =
   | "holiday"
   | "week_off";
 
+export type AttendanceSubject = "hr_employee" | "ambulance_staff";
+
 export interface IAttendance {
   _id: Types.ObjectId;
-  employeeId: Types.ObjectId;
+  subjectType: AttendanceSubject;
+  employeeId?: Types.ObjectId; // HrEmployee (hr_employee)
+  ambulanceStaffId?: Types.ObjectId; // AmbulanceStaff (ambulance_staff)
   date: Date; // normalized to 00:00
   status: AttendanceStatus;
   checkIn?: string; // "HH:mm"
@@ -33,12 +37,14 @@ export interface IAttendance {
 
 const AttendanceSchema = new Schema<IAttendance>(
   {
-    employeeId: {
-      type: Schema.Types.ObjectId,
-      ref: "HrEmployee",
-      required: true,
+    subjectType: {
+      type: String,
+      enum: ["hr_employee", "ambulance_staff"],
+      default: "hr_employee",
       index: true,
     },
+    employeeId: { type: Schema.Types.ObjectId, ref: "HrEmployee", index: true },
+    ambulanceStaffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff", index: true },
     date: { type: Date, required: true, index: true },
     status: {
       type: String,
@@ -54,7 +60,9 @@ const AttendanceSchema = new Schema<IAttendance>(
   { timestamps: true },
 );
 
-AttendanceSchema.index({ employeeId: 1, date: 1 }, { unique: true });
+// Per-subject uniqueness per day (sparse so the unused id doesn't collide).
+AttendanceSchema.index({ employeeId: 1, date: 1 }, { unique: true, sparse: true });
+AttendanceSchema.index({ ambulanceStaffId: 1, date: 1 }, { unique: true, sparse: true });
 
 export const Attendance = mongoose.model<IAttendance>(
   "Attendance",

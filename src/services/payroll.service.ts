@@ -52,17 +52,22 @@ export const daysInMonth = (month: number, year: number): number =>
  * those days count as LOP.
  */
 export const buildAttendanceSummary = async (
-  employeeId: Types.ObjectId | string,
+  subjectId: Types.ObjectId | string,
   month: number,
   year: number,
   unpaidLeaveRequestIds: Set<string> = new Set(),
+  subjectType: "hr_employee" | "ambulance_staff" = "hr_employee",
 ): Promise<AttendanceSummary> => {
   const total = daysInMonth(month, year);
   const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
   const end = new Date(year, month - 1, total, 23, 59, 59, 999);
 
+  const subjectFilter =
+    subjectType === "ambulance_staff"
+      ? { ambulanceStaffId: subjectId }
+      : { employeeId: subjectId };
   const rows = await Attendance.find({
-    employeeId,
+    ...subjectFilter,
     date: { $gte: start, $lte: end },
   }).lean();
 

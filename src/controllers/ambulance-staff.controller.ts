@@ -10,6 +10,7 @@ import { emitToUser } from "../utils/socket.util";
 import { haversineKm, etaMinutesFromKm } from "../utils/geo.util";
 import Shift from "../models/shift.model";
 import OffDutyReason from "../models/off-duty-reason.model";
+import Attendance from "../models/attendance.model";
 import DutyEvent from "../models/duty-event.model";
 import { uploadFileToAws } from "../utils/s3";
 import config from "../config";
@@ -94,6 +95,31 @@ export const setDuty = async (
     return res
       .status(404)
       .json({ rCode: 0, rMsg: "not_found", rData: {} });
+  }
+
+  // Going on duty marks the crew "present" for the day in central attendance
+  // (one row per staff per day, idempotent) so HR/payroll can count paid days
+  // for ambulance crew the same way it does for employees. Check-in stamped on
+  // first on-duty; check-out updated on the latest off-duty.
+  {
+    const day = new Date();
+    day.setHours(0, 0, 0, 0);
+    const hhmm = new Date().toTimeString().slice(0, 5);
+    if (isDutyOn) {
+      await Attendance.updateOne(
+        { ambulanceStaffId: staff._id, date: day },
+        {
+          $set: { subjectType: "ambulance_staff", status: "present" },
+          $setOnInsert: { checkIn: hhmm },
+        },
+        { upsert: true },
+      ).catch(() => undefined);
+    } else {
+      await Attendance.updateOne(
+        { ambulanceStaffId: staff._id, date: day },
+        { $set: { checkOut: hhmm } },
+      ).catch(() => undefined);
+    }
   }
 
   // Audit row — captured regardless of role so ops can review patterns

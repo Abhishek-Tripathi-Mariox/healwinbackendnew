@@ -9,6 +9,7 @@ import Admission from "../../models/admission.model";
 import Bed from "../../models/bed.model";
 import EmrEncounter from "../../models/emr-encounter.model";
 import { nextSequence } from "../../models/counter.model";
+import { notifyHospitalPatient } from "../../services/hms-notify.service";
 
 /**
  * Doctor Panel / HMS — Billing: invoices, payments, refunds and financial reports.
@@ -163,6 +164,16 @@ export const create = async (
   });
   recompute(invoice);
   await invoice.save();
+
+  // Notify the patient a bill is ready (unless still a draft).
+  if (invoice.status !== "draft") {
+    void notifyHospitalPatient(
+      invoice.patientId,
+      "Bill generated",
+      `Invoice ${invoice.invoiceNo} for ₹${invoice.total} is ready. Balance due ₹${invoice.balanceDue}.`,
+      { tab: "bills" },
+    );
+  }
 
   req.rData = { invoice };
   req.msg = "invoice_created";
@@ -415,6 +426,16 @@ export const generate = async (
   });
   recompute(invoice);
   await invoice.save();
+
+  // Notify the patient a bill is ready (unless still a draft).
+  if (invoice.status !== "draft") {
+    void notifyHospitalPatient(
+      invoice.patientId,
+      "Bill generated",
+      `Invoice ${invoice.invoiceNo} for ₹${invoice.total} is ready. Balance due ₹${invoice.balanceDue}.`,
+      { tab: "bills" },
+    );
+  }
 
   req.rData = { invoice };
   req.msg = "invoice_created";
