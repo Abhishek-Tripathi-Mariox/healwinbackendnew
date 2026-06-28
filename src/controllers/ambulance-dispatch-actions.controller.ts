@@ -38,6 +38,21 @@ const notifyParties = (d: any) => {
       etaMinutes: d.etaMinutes,
     });
   }
+  // Notify BOTH crew on the dispatch (driver + attendant) so the partner's app
+  // updates too — e.g. when the driver completes, the attendant's Active
+  // Dispatch screen advances/clears instead of staying stuck. On a terminal
+  // status, send `dispatch:resolved` so their screen clears the active card.
+  const resolved = d?.status === "COMPLETED" || d?.status === "CANCELLED";
+  for (const crewId of [d?.driverStaffId, d?.attendantStaffId]) {
+    if (!crewId) continue;
+    emitToUser(String(crewId), "dispatch:status", {
+      dispatchId: String(d._id),
+      status: d.status,
+    });
+    if (resolved) {
+      emitToUser(String(crewId), "dispatch:resolved", { dispatchId: String(d._id) });
+    }
+  }
 };
 
 export const accept = async (

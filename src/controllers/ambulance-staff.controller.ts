@@ -137,21 +137,27 @@ export const setDuty = async (
     at: new Date(),
   });
 
-  // Vehicle availability is driven by the assigned DRIVER's duty alone — an
-  // ambulance can't roll without an on-duty driver, so an attendant being on
-  // duty must NOT keep it "available". When the driver goes off duty the
-  // vehicle flips to "offline" (and so disappears from the dispatch list);
-  // when they come on duty it flips back to "available". An attendant toggling
-  // duty never changes the vehicle status. (Dispatch also only rings on-duty
-  // crew and getNearbyAmbulances requires driver.isOnline — all consistent.)
-  if (staff.role === "driver") {
-    const amb = await Ambulance.findOne({ assignedDriverId: staff._id });
-    if (amb && amb.status !== "on_dispatch" && amb.status !== "maintenance") {
-      const next = isDutyOn ? "available" : "offline";
-      if (amb.status !== next) {
-        amb.status = next;
-        await amb.save();
-      }
+  // Vehicle availability requires the FULL crew on duty: an on-duty driver AND,
+  // if the ambulance has an assigned attendant, that attendant on duty too — an
+  // emergency ambulance shouldn't be dispatched without its attendant. So EITHER
+  // crew member toggling duty re-evaluates the vehicle: it's "available" only
+  // when the driver is on duty (and the attendant, when assigned, is too),
+  // otherwise "offline" (and thus invisible to getNearbyAmbulances/dispatch).
+  const amb = await Ambulance.findOne({
+    $or: [{ assignedDriverId: staff._id }, { assignedAttendantId: staff._id }],
+  });
+  if (amb && amb.status !== "on_dispatch" && amb.status !== "maintenance") {
+    const driver: any = amb.assignedDriverId
+      ? await AmbulanceStaff.findById(amb.assignedDriverId).select("isDutyOn").lean()
+      : null;
+    const attendant: any = amb.assignedAttendantId
+      ? await AmbulanceStaff.findById(amb.assignedAttendantId).select("isDutyOn").lean()
+      : null;
+    const crewReady = !!driver?.isDutyOn && (!amb.assignedAttendantId || !!attendant?.isDutyOn);
+    const next = crewReady ? "available" : "offline";
+    if (amb.status !== next) {
+      amb.status = next;
+      await amb.save();
     }
   }
 
