@@ -521,3 +521,120 @@ export const generatePayslipPDF = (
     }
   });
 };
+
+const INR = (n: number) => `Rs. ${(n || 0).toLocaleString("en-IN")}`;
+
+/** Hospital invoice as a PDF (digital bill). */
+export const generateInvoicePDF = (invoice: any): Promise<Buffer> => {
+  return new Promise((resolve, reject) => {
+    try {
+      const margin = 40;
+      const doc = new PDFDocument({
+        size: "A4",
+        margin,
+        info: { Title: `Invoice ${invoice.invoiceNo}`, Author: "HealWin" },
+      });
+      const chunks: Buffer[] = [];
+      doc.on("data", (c: Buffer) => chunks.push(c));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      const pageW = doc.page.width - margin * 2;
+      const patient = invoice.patientId || {};
+
+      doc.fontSize(16).font("Helvetica-Bold").fillColor("#0066cc")
+        .text("HealWin Life Support & Emergency Care", { align: "center" });
+      doc.fontSize(11).font("Helvetica").fillColor("#000")
+        .text("Tax Invoice", { align: "center" });
+      if (invoice.gstin) doc.fontSize(8).fillColor("#666").text(`GSTIN: ${invoice.gstin}`, { align: "center" });
+      doc.moveDown(1).fillColor("#000");
+
+      doc.fontSize(9);
+      doc.font("Helvetica-Bold").text(`Invoice No: `, { continued: true }).font("Helvetica").text(invoice.invoiceNo);
+      doc.font("Helvetica-Bold").text(`Date: `, { continued: true }).font("Helvetica")
+        .text(new Date(invoice.createdAt).toLocaleString("en-IN"));
+      doc.font("Helvetica-Bold").text(`Patient: `, { continued: true }).font("Helvetica")
+        .text(`${patient.fullName || "-"}${patient.patientId ? ` (${patient.patientId})` : ""}`);
+      doc.moveDown(0.5);
+
+      // Line items table
+      const cols = [margin, margin + 230, margin + 300, margin + 380, margin + pageW];
+      const row = (a: string, b: string, c: string, d: string, bold = false) => {
+        const y = doc.y;
+        doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(9).fillColor("#000");
+        doc.text(a, cols[0] + 2, y, { width: cols[1] - cols[0] - 4 });
+        doc.text(b, cols[1], y, { width: cols[2] - cols[1], align: "right" });
+        doc.text(c, cols[2], y, { width: cols[3] - cols[2], align: "right" });
+        doc.text(d, cols[3], y, { width: cols[4] - cols[3], align: "right" });
+        doc.moveDown(0.4);
+      };
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y).stroke("#ccc");
+      doc.moveDown(0.3);
+      row("Item (section)", "Qty", "Rate", "Amount", true);
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y).stroke("#ccc");
+      doc.moveDown(0.3);
+      for (const li of invoice.lineItems || []) {
+        row(`${li.description}  [${li.section}]`, String(li.quantity), INR(li.unitPrice), INR(li.amount));
+      }
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y).stroke("#ccc");
+      doc.moveDown(0.4);
+
+      const tot = (l: string, v: string, bold = false) => {
+        const y = doc.y;
+        doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(9);
+        doc.text(l, cols[2] - 40, y, { width: cols[3] - cols[2] + 40, align: "right" });
+        doc.text(v, cols[3], y, { width: cols[4] - cols[3], align: "right" });
+        doc.moveDown(0.35);
+      };
+      tot("Subtotal", INR(invoice.subtotal));
+      if (invoice.discount) tot("Discount", `- ${INR(invoice.discount)}`);
+      if (invoice.taxAmount) { tot(`CGST`, INR(invoice.cgstAmount)); tot(`SGST`, INR(invoice.sgstAmount)); }
+      tot("Total", INR(invoice.total), true);
+      tot("Paid", INR(invoice.amountPaid));
+      tot("Balance Due", INR(invoice.balanceDue), true);
+
+      doc.moveDown(1);
+      doc.fontSize(8).fillColor("#666").text("This is a computer-generated invoice.", { align: "center" });
+      doc.end();
+    } catch (e) { reject(e); }
+  });
+};
+
+/** Payment receipt PDF for an invoice's (non-refund) payments. */
+export const generateReceiptPDF = (invoice: any): Promise<Buffer> => {
+  return new Promise((resolve, reject) => {
+    try {
+      const margin = 40;
+      const doc = new PDFDocument({ size: "A4", margin, info: { Title: `Receipt ${invoice.invoiceNo}` } });
+      const chunks: Buffer[] = [];
+      doc.on("data", (c: Buffer) => chunks.push(c));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+      const patient = invoice.patientId || {};
+
+      doc.fontSize(16).font("Helvetica-Bold").fillColor("#0066cc")
+        .text("HealWin Life Support & Emergency Care", { align: "center" });
+      doc.fontSize(11).font("Helvetica").fillColor("#000").text("Payment Receipt", { align: "center" });
+      doc.moveDown(1);
+      doc.fontSize(9);
+      doc.font("Helvetica-Bold").text("Invoice: ", { continued: true }).font("Helvetica").text(invoice.invoiceNo);
+      doc.font("Helvetica-Bold").text("Patient: ", { continued: true }).font("Helvetica").text(patient.fullName || "-");
+      doc.moveDown(0.5);
+
+      doc.font("Helvetica-Bold").text("Payments", { underline: true });
+      doc.moveDown(0.3);
+      for (const p of (invoice.payments || [])) {
+        const label = p.isRefund ? "Refund" : p.isAdvance ? "Advance" : "Payment";
+        doc.font("Helvetica").fontSize(9).text(
+          `${new Date(p.paidAt).toLocaleString("en-IN")}  -  ${label} (${p.method})  -  ${p.isRefund ? "-" : ""}${INR(p.amount)}`,
+        );
+      }
+      doc.moveDown(0.8);
+      doc.font("Helvetica-Bold").text(`Total Paid: ${INR(invoice.amountPaid)}`);
+      doc.font("Helvetica-Bold").text(`Balance Due: ${INR(invoice.balanceDue)}`);
+      doc.moveDown(1);
+      doc.fontSize(8).fillColor("#666").text("Thank you. This is a computer-generated receipt.", { align: "center" });
+      doc.end();
+    } catch (e) { reject(e); }
+  });
+};

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as C from "../controllers/admin/ambulance-staff.controller";
+import { adminSetDuty } from "../controllers/ambulance-staff.controller";
 import Validator from "../validators/ambulance-staff.validator";
 import AdminAuthMiddleware from "../middlewares/admin-auth.middleware";
 import ErrorHandlerMiddleware from "../middlewares/error-handler.middleware";
@@ -36,6 +37,14 @@ router.put(
   auth.verifyAdminToken,
   V.validateUpdate,
   ErrorHandlerMiddleware(C.update),
+  ResponseMiddleware,
+);
+
+// Call-centre / control: remotely toggle a crew member's on/off-duty status.
+router.post(
+  "/:id/duty",
+  auth.verifyAdminToken,
+  ErrorHandlerMiddleware(adminSetDuty),
   ResponseMiddleware,
 );
 

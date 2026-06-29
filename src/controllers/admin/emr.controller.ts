@@ -4,6 +4,7 @@ import HospitalPatient from "../../models/hospital-patient.model";
 import InventoryItem from "../../models/inventory-item.model";
 import StockTransaction from "../../models/stock-transaction.model";
 import { DiagnosticOrder } from "../../models/diagnostic-order.model";
+import { Appointment } from "../../models/appointment.model";
 
 /**
  * Doctor Panel / HMS — EMR (SOAP) encounters.
@@ -14,6 +15,39 @@ import { DiagnosticOrder } from "../../models/diagnostic-order.model";
  */
 
 const ENCOUNTER_TYPES = new Set(["OPD", "IPD", "consultation", "emergency"]);
+
+/**
+ * Plan → follow-up: turn an encounter's `followUpAt` into a real OPD
+ * appointment (idempotent — only creates one once per encounter). The
+ * appointment shows on the doctor's OPD queue and the patient's Hospital
+ * Records, closing the loop on "follow-up visit scheduling".
+ */
+const scheduleFollowUp = async (encounter: any, adminId: any) => {
+  if (!encounter.followUpAt || encounter.followUpAppointmentId) return;
+  try {
+    const when = new Date(encounter.followUpAt);
+    const dayStart = new Date(when); dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(when); dayEnd.setHours(23, 59, 59, 999);
+    const todays = await Appointment.countDocuments({
+      doctorId: encounter.doctorId,
+      scheduledAt: { $gte: dayStart, $lte: dayEnd },
+    });
+    const appt = await Appointment.create({
+      patientId: encounter.patientId,
+      doctorId: encounter.doctorId,
+      scheduledAt: when,
+      tokenNumber: todays + 1,
+      status: "booked",
+      reason: `Follow-up: ${encounter.followUpNotes || encounter.chiefComplaint || "review"}`,
+      encounterId: encounter._id,
+      createdByAdminId: adminId,
+    });
+    encounter.followUpAppointmentId = appt._id;
+    await encounter.save();
+  } catch (e) {
+    console.error("follow-up appointment create failed:", e);
+  }
+};
 
 /** GET /admin/emr/patient/:patientId — clinical timeline for one patient. */
 export const listByPatient = async (
@@ -104,14 +138,30 @@ export const create = async (
     chiefComplaint: b.chiefComplaint || undefined,
     vitals: b.vitals || {},
     soap: b.soap || {},
+    subjectiveDetail: b.subjectiveDetail || undefined,
+    objectiveDetail: b.objectiveDetail || undefined,
+    attachments: Array.isArray(b.attachments) ? b.attachments : [],
     diagnoses: Array.isArray(b.diagnoses) ? b.diagnoses : [],
+    icdDiagnoses: Array.isArray(b.icdDiagnoses) ? b.icdDiagnoses.filter((d: any) => d?.text) : [],
+    severity: b.severity || undefined,
+    differentialDiagnoses: Array.isArray(b.differentialDiagnoses) ? b.differentialDiagnoses : [],
+    treatmentPlan: b.treatmentPlan || undefined,
     prescriptions: Array.isArray(b.prescriptions) ? b.prescriptions : [],
     labOrders: Array.isArray(b.labOrders) ? b.labOrders : [],
     imagingOrders: Array.isArray(b.imagingOrders) ? b.imagingOrders : [],
+    referrals: Array.isArray(b.referrals) ? b.referrals : [],
+    followUpAt: b.followUpAt ? new Date(b.followUpAt) : undefined,
+    followUpNotes: b.followUpNotes || undefined,
+    admissionRecommended: !!b.admissionRecommended,
+    admissionNote: b.admissionNote || undefined,
     notes: b.notes || undefined,
     status: b.status === "draft" ? "draft" : "finalized",
     createdByAdminId: adminId,
   });
+
+  // Plan → follow-up scheduling: if a follow-up date is set, auto-create an OPD
+  // appointment so it lands on the doctor's queue and the patient's record.
+  await scheduleFollowUp(encounter, adminId);
 
   // Mirror the encounter's lab/imaging orders into the diagnostics tracker
   // so their results/reports can be captured and followed up. Best-effort —
@@ -175,10 +225,21 @@ export const update = async (
     "chiefComplaint",
     "vitals",
     "soap",
+    "subjectiveDetail",
+    "objectiveDetail",
+    "attachments",
     "diagnoses",
+    "icdDiagnoses",
+    "severity",
+    "differentialDiagnoses",
+    "treatmentPlan",
     "prescriptions",
     "labOrders",
     "imagingOrders",
+    "referrals",
+    "followUpNotes",
+    "admissionRecommended",
+    "admissionNote",
     "notes",
     "status",
   ];
@@ -189,8 +250,13 @@ export const update = async (
     const d = new Date(b.visitDate);
     if (!Number.isNaN(d.getTime())) encounter.visitDate = d;
   }
+  if (b.followUpAt !== undefined) {
+    encounter.followUpAt = b.followUpAt ? new Date(b.followUpAt) : undefined;
+  }
 
   await encounter.save();
+  // Schedule the follow-up appointment if a date was set and none exists yet.
+  await scheduleFollowUp(encounter, (req as any).adminId);
 
   req.rData = { encounter };
   req.msg = "encounter_updated";

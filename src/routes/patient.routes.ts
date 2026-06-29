@@ -19,6 +19,7 @@ import { EmergencyDispatch } from "../models/emergency-dispatch.model";
 import VehicleType from "../models/vehicle-type.model";
 import { PharmacyOrder, LabBooking, Consultation } from "../models/patient-commerce.model";
 import HomePromo from "../models/home-promo.model";
+import FirstAidGuide from "../models/first-aid-guide.model";
 import { MembershipPlan, UserMembership } from "../models/membership.model";
 import { Appointment } from "../models/appointment.model";
 import { getDoctorSlots, isSlotAvailable } from "../services/doctor-slots.service";
@@ -770,6 +771,27 @@ router.get("/home/feed", (_req, res) =>
 );
 router.get("/home/banners", (_req, res) => emptyList(res));
 
+// First-aid / emergency education content (admin-managed, public).
+router.get("/first-aid", async (_req, res) => {
+  const items = await FirstAidGuide.find({ isActive: true, isDeleted: { $ne: true } })
+    .sort({ sortOrder: 1, createdAt: -1 })
+    .lean();
+  res.json({
+    success: true,
+    data: items.map((g) => ({
+      _id: String(g._id),
+      title: g.title,
+      category: g.category || "",
+      type: g.type,
+      videoUrl: g.videoUrl || null,
+      thumbnailUrl: g.thumbnailUrl || null,
+      content: g.content || null,
+      durationLabel: g.durationLabel || null,
+    })),
+    message: "ok",
+  });
+});
+
 // Admin-managed home promo shortcut cards (real, ordered).
 router.get("/home/promos", async (_req, res) => {
   const promos = await HomePromo.find({ isActive: true, isDeleted: { $ne: true } })
@@ -939,10 +961,17 @@ router.get("/hms/prescriptions", verifyUserToken, async (req, res) => {
     doctorName: e.doctorId?.fullName || "Doctor",
     visitDate: e.visitDate,
     encounterType: e.encounterType,
-    diagnoses: e.diagnoses || [],
+    // Show structured ICD diagnoses if present, else legacy free-text list.
+    diagnoses:
+      Array.isArray(e.icdDiagnoses) && e.icdDiagnoses.length
+        ? e.icdDiagnoses.map((d: any) => (d.code ? `${d.text} (${d.code})` : d.text))
+        : e.diagnoses || [],
+    severity: e.severity || undefined,
+    treatmentPlan: e.treatmentPlan || undefined,
+    followUpAt: e.followUpAt || undefined,
     prescriptions: (e.prescriptions || []).map((p: any) => ({
       drug: p.drug,
-      dose: p.dose,
+      dose: p.dosage || p.dose,
       frequency: p.frequency,
       duration: p.duration,
     })),

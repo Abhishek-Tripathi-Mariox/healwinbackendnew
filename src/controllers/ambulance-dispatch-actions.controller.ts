@@ -6,8 +6,18 @@ import {
   transitionDispatch,
 } from "../services/ambulance-dispatch.service";
 import { emitToUser, emitToSosSubmission } from "../utils/socket.util";
+import { sendToUser } from "../services/notification.service";
 
 const asId = (v: string) => new Types.ObjectId(v);
+
+// Patient-facing push copy per dispatch status.
+const PATIENT_PUSH: Record<string, { title: string; body: string }> = {
+  ACKNOWLEDGED: { title: "Crew on the way", body: "Your ambulance crew is preparing to move." },
+  EN_ROUTE: { title: "Ambulance en route", body: "Your ambulance is on the way. Track it live." },
+  ON_SCENE: { title: "Ambulance arrived", body: "Your ambulance has reached the pickup point." },
+  ON_TRIP: { title: "Trip started", body: "You are on the way to the hospital." },
+  COMPLETED: { title: "Trip completed", body: "Your ambulance trip is complete. Get well soon." },
+};
 
 const errCodeMap: Record<string, number> = {
   forbidden: 403,
@@ -30,6 +40,16 @@ const notifyParties = (d: any) => {
       dispatchId: String(d._id),
       status: d.status,
     });
+    // FCM push so the patient is told (esp. "ambulance arrived") even when the
+    // app is backgrounded.
+    const copy = PATIENT_PUSH[d.status];
+    if (copy) {
+      void sendToUser(d.patientUserId, "BOOKING", copy.title, copy.body, {
+        route: "Tracking",
+        dispatchId: String(d._id),
+        screen: "Tracking",
+      }).catch(() => undefined);
+    }
   }
   // Public website caller watching this SOS submission (anonymous, no user id).
   if (d?.sosSubmission) {

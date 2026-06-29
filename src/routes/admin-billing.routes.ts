@@ -44,6 +44,27 @@ router.post(
   ResponseMiddleware,
 );
 
+// PDFs stream the response directly (no ResponseMiddleware).
+router.get(
+  "/:id/pdf",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.BILLING_VIEW),
+  ErrorHandlerMiddleware(C.invoicePdf),
+);
+router.get(
+  "/:id/receipt",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.BILLING_VIEW),
+  ErrorHandlerMiddleware(C.receiptPdf),
+);
+router.get(
+  "/:id/audits",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.BILLING_VIEW),
+  ErrorHandlerMiddleware(C.auditTrail),
+  ResponseMiddleware,
+);
+
 router.get(
   "/:id",
   auth.verifyAdminToken,
@@ -73,6 +94,14 @@ router.post(
   auth.verifyAdminToken,
   auth.requirePermission(PERMISSIONS.BILLING_REFUND),
   ErrorHandlerMiddleware(C.refund),
+  ResponseMiddleware,
+);
+
+router.post(
+  "/:id/advance",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.BILLING_PAYMENT),
+  ErrorHandlerMiddleware(C.recordAdvance),
   ResponseMiddleware,
 );
 

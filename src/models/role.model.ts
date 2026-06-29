@@ -737,6 +737,37 @@ export const DEFAULT_ROLES = {
     ],
     isSystem: true,
   },
+  CALL_CENTRE: {
+    name: "Call Centre Executive",
+    description:
+      "Ground staff / call centre — receives SOS & call requests, finalizes and dispatches all ambulance bookings, monitors & manually assigns drivers, toggles crew duty, and enrolls patients on the move",
+    permissions: [
+      PERMISSIONS.DASHBOARD_VIEW,
+      PERMISSIONS.USERS_VIEW,
+      // SOS handling
+      PERMISSIONS.SOS_VIEW,
+      PERMISSIONS.SOS_RESPOND,
+      PERMISSIONS.SOS_RESOLVE,
+      // Finalize / dispatch all ambulance bookings
+      PERMISSIONS.BOOKINGS_VIEW,
+      PERMISSIONS.BOOKINGS_CREATE,
+      PERMISSIONS.BOOKINGS_UPDATE,
+      PERMISSIONS.BOOKINGS_CANCEL,
+      // Monitor + manually assign drivers / crew, toggle duty
+      PERMISSIONS.DRIVERS_VIEW,
+      PERMISSIONS.DRIVERS_UPDATE,
+      PERMISSIONS.VEHICLES_VIEW,
+      PERMISSIONS.STAFF_VIEW,
+      PERMISSIONS.TRACKING_VIEW,
+      // Coordinate with family / hospital
+      PERMISSIONS.SUPPORT_VIEW,
+      PERMISSIONS.SUPPORT_RESPOND,
+      // Patient enrollment on the move
+      PERMISSIONS.HMS_PATIENTS_VIEW,
+      PERMISSIONS.HMS_PATIENTS_CREATE,
+    ],
+    isSystem: true,
+  },
   FINANCE: {
     name: "Finance",
     description: "Financial operations access",

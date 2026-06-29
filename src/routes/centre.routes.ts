@@ -33,6 +33,13 @@ router.post(
 );
 
 // Search centres with filters
+// Best-hospital suggestion by case type (?lat=&lng=&caseType=)
+router.get(
+  "/suggest",
+  ErrorHandlerMiddleware(CentreController.suggestHospitals),
+  ResponseMiddleware,
+);
+
 router.get(
   "/",
   cacheResponse(60),

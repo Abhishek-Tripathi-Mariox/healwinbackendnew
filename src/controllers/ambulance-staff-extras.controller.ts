@@ -9,9 +9,10 @@ import { nextSequence } from "../models/counter.model";
 import { uploadFileToAws } from "../utils/s3";
 import { emitToAdmin } from "../utils/socket.util";
 import AmbulanceStaff from "../models/ambulance-staff.model";
+import { SOSAlert } from "../models/sos.model";
 import User from "../models/Users";
 
-/** Leave / Patient / Case-notes / Stock for the ambulance-staff app. */
+/** Leave / Patient / Case-notes / Stock / SOS for the ambulance-staff app. */
 
 const sid = (req: Request) => (req as any).staffId;
 
@@ -19,6 +20,40 @@ const sid = (req: Request) => (req as any).staffId;
 const staffName = async (staffId: any): Promise<string> => {
   const s = await AmbulanceStaff.findById(staffId).select("fullName").lean();
   return (s as any)?.fullName || "A staff member";
+};
+
+// ----- SOS (crew raises their own emergency) -----
+/**
+ * POST /ambulance-staff/sos — the crew presses the SOS button (e.g. accident,
+ * threat, vehicle breakdown). Raises a live SOS alert on the control-centre
+ * dashboard with the crew's name + location so the call centre responds.
+ */
+export const raiseSos = async (req: Request, _res: Response, next: NextFunction) => {
+  const b = req.body || {};
+  const lat = Number(b.lat);
+  const lng = Number(b.lng);
+  const name = await staffName(sid(req));
+  const alert = await SOSAlert.create({
+    triggeredBy: "DRIVER",
+    location:
+      Number.isFinite(lat) && Number.isFinite(lng)
+        ? { type: "Point", coordinates: [lng, lat] }
+        : undefined,
+    address: b.address || `Crew SOS — ${name}`,
+    status: "ACTIVE",
+  });
+  // Ring the control-centre dashboards (SOS-Alerts live feed).
+  emitToAdmin("sos-alert:new", {
+    alertId: String(alert._id),
+    source: "crew",
+    staffId: String(sid(req)),
+    staffName: name,
+    lat: Number.isFinite(lat) ? lat : undefined,
+    lng: Number.isFinite(lng) ? lng : undefined,
+  });
+  req.rData = { alertId: String(alert._id) };
+  req.msg = "sos_raised";
+  return next();
 };
 
 // ----- Leave (central LeaveRequest store; shape kept stable for the app) -----

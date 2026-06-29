@@ -129,7 +129,8 @@ router.get(
   ResponseMiddleware,
 );
 
-// ===== Leave / Patients / Case-notes / Stock (staff app) =====
+// ===== Leave / Patients / Case-notes / Stock / SOS (staff app) =====
+router.post("/sos", auth.verifyStaffToken, ErrorHandlerMiddleware(X.raiseSos), ResponseMiddleware);
 router.get("/leaves", auth.verifyStaffToken, ErrorHandlerMiddleware(X.listLeaves), ResponseMiddleware);
 router.post("/leaves", auth.verifyStaffToken, upload.array("attachment", 1), ErrorHandlerMiddleware(X.applyLeave), ResponseMiddleware);
 router.get("/patients", auth.verifyStaffToken, ErrorHandlerMiddleware(X.listPatients), ResponseMiddleware);

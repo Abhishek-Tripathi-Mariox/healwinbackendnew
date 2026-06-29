@@ -75,6 +75,8 @@ import adminHmsReportsRoutes from "./admin-hms-reports.routes";
 import adminDoctorRosterRoutes from "./admin-doctor-roster.routes";
 import adminStaffDirectoryRoutes from "./admin-staff-directory.routes";
 import adminEmployeeShiftsRoutes from "./admin-employee-shifts.routes";
+import adminFirstAidRoutes from "./admin-first-aid.routes";
+import adminFleetHealthRoutes from "./admin-fleet-health.routes";
 
 // Pharmacy platform + IVR escalation (non-HMS gaps)
 import pharmacyPublicRoutes from "./pharmacy.routes";
@@ -177,6 +179,8 @@ router.use("/admin/hms-reports", adminHmsReportsRoutes);
 router.use("/admin/doctor-roster", adminDoctorRosterRoutes);
 router.use("/admin/staff-directory", adminStaffDirectoryRoutes);
 router.use("/admin/employee-shifts", adminEmployeeShiftsRoutes);
+router.use("/admin/first-aid", adminFirstAidRoutes);
+router.use("/admin/fleet-health", adminFleetHealthRoutes);
 router.use("/admin/pharmacies", adminPharmaciesRoutes);
 router.use("/admin/ivr-escalations", adminIvrRoutes);
 

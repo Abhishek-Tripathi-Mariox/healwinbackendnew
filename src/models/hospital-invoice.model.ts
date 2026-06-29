@@ -13,7 +13,9 @@ import mongoose, { Schema, Types } from "mongoose";
 export type BillingSection =
   | "consultation"
   | "procedure"
+  | "nursing"
   | "room"
+  | "bed"
   | "pharmacy"
   | "diagnostics"
   | "other";
@@ -35,6 +37,7 @@ export interface IInvoicePayment {
   paidAt: Date;
   recordedByAdminId: Types.ObjectId;
   isRefund?: boolean;
+  isAdvance?: boolean; // advance deposit collected before/independent of items
 }
 
 export interface IHospitalInvoice {
@@ -42,6 +45,9 @@ export interface IHospitalInvoice {
   invoiceNo: string; // e.g. INV-000123
   patientId: Types.ObjectId;
   admissionId?: Types.ObjectId;
+  encounterId?: Types.ObjectId; // EMR encounter this bill belongs to
+  doctorId?: Types.ObjectId; // attending doctor (doctor-wise revenue)
+  departmentId?: Types.ObjectId; // department (department-wise revenue)
   lineItems: IInvoiceLineItem[];
   subtotal: number;
   taxPercent: number;
@@ -68,7 +74,9 @@ const LineItemSchema = new Schema<IInvoiceLineItem>(
       enum: [
         "consultation",
         "procedure",
+        "nursing",
         "room",
+        "bed",
         "pharmacy",
         "diagnostics",
         "other",
@@ -99,6 +107,7 @@ const PaymentSchema = new Schema<IInvoicePayment>(
       required: true,
     },
     isRefund: { type: Boolean, default: false },
+    isAdvance: { type: Boolean, default: false },
   },
   { _id: false },
 );
@@ -118,6 +127,9 @@ const HospitalInvoiceSchema = new Schema<IHospitalInvoice>(
       default: null,
       index: true,
     },
+    encounterId: { type: Schema.Types.ObjectId, ref: "EmrEncounter", default: null, index: true },
+    doctorId: { type: Schema.Types.ObjectId, ref: "Admin", default: null, index: true },
+    departmentId: { type: Schema.Types.ObjectId, ref: "Department", default: null, index: true },
     lineItems: { type: [LineItemSchema], default: [] },
     subtotal: { type: Number, default: 0 },
     taxPercent: { type: Number, default: 0 },

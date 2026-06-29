@@ -166,6 +166,81 @@ export const setDuty = async (
   next();
 };
 
+/**
+ * POST /ambulance-staff/:id/duty (admin) — control centre / call-centre updates
+ * a crew member's on/off-duty status remotely (e.g. on a phoned-in request).
+ * Mirrors the crew self-toggle: stamps central attendance, logs a DutyEvent and
+ * recomputes the ambulance's availability from the full crew.
+ */
+export const adminSetDuty = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const adminId = (req as any).admin?._id;
+  const isDutyOn = !!req.body?.isDutyOn;
+  const staff = await AmbulanceStaff.findByIdAndUpdate(
+    req.params.id as string,
+    { isDutyOn, isOnline: isDutyOn, lastSeenAt: new Date() },
+    { returnDocument: "after" },
+  );
+  if (!staff) {
+    req.rCode = 5;
+    req.msg = "not_found";
+    req.rData = {};
+    return next();
+  }
+
+  // Central attendance: going on duty marks present for the day.
+  const day = new Date();
+  day.setHours(0, 0, 0, 0);
+  const hhmm = new Date().toTimeString().slice(0, 5);
+  if (isDutyOn) {
+    await Attendance.updateOne(
+      { ambulanceStaffId: staff._id, date: day },
+      { $set: { subjectType: "ambulance_staff", status: "present" }, $setOnInsert: { checkIn: hhmm } },
+      { upsert: true },
+    ).catch(() => undefined);
+  } else {
+    await Attendance.updateOne(
+      { ambulanceStaffId: staff._id, date: day },
+      { $set: { checkOut: hhmm } },
+    ).catch(() => undefined);
+  }
+
+  await DutyEvent.create({
+    staffId: staff._id,
+    providerId: staff.providerId ?? undefined,
+    type: isDutyOn ? "on_duty" : "off_duty",
+    reasonLabel: isDutyOn ? undefined : (req.body?.reasonLabel || "Set by control centre"),
+    notes: req.body?.notes || `Toggled by admin ${adminId || ""}`.trim(),
+    at: new Date(),
+  }).catch(() => undefined);
+
+  // Recompute the ambulance availability from the full crew (driver + attendant).
+  const amb = await Ambulance.findOne({
+    $or: [{ assignedDriverId: staff._id }, { assignedAttendantId: staff._id }],
+  });
+  if (amb && amb.status !== "on_dispatch" && amb.status !== "maintenance") {
+    const driver: any = amb.assignedDriverId
+      ? await AmbulanceStaff.findById(amb.assignedDriverId).select("isDutyOn").lean()
+      : null;
+    const attendant: any = amb.assignedAttendantId
+      ? await AmbulanceStaff.findById(amb.assignedAttendantId).select("isDutyOn").lean()
+      : null;
+    const crewReady = !!driver?.isDutyOn && (!amb.assignedAttendantId || !!attendant?.isDutyOn);
+    const next2 = crewReady ? "available" : "offline";
+    if (amb.status !== next2) {
+      amb.status = next2;
+      await amb.save();
+    }
+  }
+
+  req.rData = { isDutyOn: staff.isDutyOn };
+  req.msg = "duty_set";
+  return next();
+};
+
 export const updateLocation = async (
   req: Request,
   res: Response,
