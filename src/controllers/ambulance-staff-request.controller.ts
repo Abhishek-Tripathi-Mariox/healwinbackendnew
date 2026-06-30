@@ -32,10 +32,26 @@ const notifyPatient = async (
   ).catch(() => undefined);
 };
 
+/**
+ * Mirror the trip status to the riding-along ATTENDANT (read-only). Their app
+ * follows the driver via `dispatch:status` (ride-along), and `dispatch:resolved`
+ * clears their card on completion — same contract as the SOS dispatch flow.
+ */
+const notifyAttendant = (reqDoc: any, status: string) => {
+  if (!reqDoc.attendantStaffId) return;
+  const attId = String(reqDoc.attendantStaffId);
+  const dispatchId = String(reqDoc._id);
+  emitToUser(attId, "dispatch:status", { dispatchId, status });
+  if (status === "COMPLETED") {
+    emitToUser(attId, "dispatch:resolved", { dispatchId });
+  }
+};
+
 /** GET /requests/active — the request currently assigned to this staff member. */
 export const activeRequest = async (req: Request, _res: Response, next: NextFunction) => {
   const r: any = await AmbulanceRequest.findOne({
-    driverStaffId: sid(req),
+    // Driver OR attendant — so the attendant's app also loads the active trip.
+    $or: [{ driverStaffId: sid(req) }, { attendantStaffId: sid(req) }],
     status: { $in: ACTIVE },
   } as any)
     .sort({ assignedAt: -1 })
@@ -85,6 +101,7 @@ export const accept = async (req: Request, _res: Response, next: NextFunction) =
   const r = await own(req);
   if (!guard(req, next, r)) return;
   await notifyPatient(r, "ASSIGNED", "Crew on the way", "Your ambulance crew has acknowledged and is preparing to move.");
+  notifyAttendant(r, "ACKNOWLEDGED");
   req.rData = { request: r };
   req.msg = "success";
   return next();
@@ -95,6 +112,7 @@ export const enRoute = async (req: Request, _res: Response, next: NextFunction) 
   const r = await own(req);
   if (!guard(req, next, r)) return;
   await notifyPatient(r, "EN_ROUTE", "Ambulance en route", "Your ambulance is on the way. Track it live.");
+  notifyAttendant(r, "EN_ROUTE");
   req.rData = { request: r };
   req.msg = "success";
   return next();
@@ -107,6 +125,7 @@ export const arrived = async (req: Request, _res: Response, next: NextFunction) 
   r.status = "ARRIVED";
   await r.save();
   await notifyPatient(r, "ARRIVED", "Ambulance arrived", "Your ambulance has reached the pickup point.");
+  notifyAttendant(r, "ARRIVED");
   req.rData = { request: r };
   req.msg = "success";
   return next();
@@ -127,6 +146,7 @@ export const startTrip = async (req: Request, res: Response, next: NextFunction)
   r.status = "ON_TRIP";
   await r.save();
   await notifyPatient(r, "ON_TRIP", "Trip started", "You are on the way to the hospital.");
+  notifyAttendant(r, "ON_TRIP");
   req.rData = { request: r };
   req.msg = "success";
   return next();
@@ -145,6 +165,7 @@ export const complete = async (req: Request, _res: Response, next: NextFunction)
     ).catch(() => undefined);
   }
   await notifyPatient(r, "COMPLETED", "Trip completed", "Your ambulance trip is complete. Get well soon.");
+  notifyAttendant(r, "COMPLETED");
   req.rData = { request: r };
   req.msg = "success";
   return next();
@@ -165,9 +186,14 @@ export const reject = async (req: Request, _res: Response, next: NextFunction) =
     ).catch(() => undefined);
   }
   const userId = String(r.userId);
+  // Clear the attendant's ride-along card before we drop the assignment.
+  if (r.attendantStaffId) {
+    emitToUser(String(r.attendantStaffId), "dispatch:cancelled", { dispatchId: String(r._id) });
+  }
   r.status = "SEARCHING";
   r.ambulanceId = undefined;
   r.driverStaffId = undefined;
+  r.attendantStaffId = undefined;
   r.driverName = undefined;
   r.driverPhone = undefined;
   r.vehicleNumber = undefined;

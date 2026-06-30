@@ -147,37 +147,35 @@ export const triggerSOS = async (
   });
   await sosAlert.save();
 
-  // Notify emergency contacts
-  await notifyEmergencyContacts(sosAlert);
+  // Emergency-contact notification + the other-party FCM push are FIRE-AND-FORGET
+  // (not awaited): they must NOT delay the SOS itself. Previously these awaits
+  // ran BEFORE the controller emitted `sos:new`, so the admin acknowledgment
+  // pop-up only appeared after all contact/push work finished. Now the alert is
+  // returned immediately and the dashboard pops near-instantly.
+  void notifyEmergencyContacts(sosAlert).catch(() => undefined);
 
   // NOTE: the admin alarm (sos:new) is emitted by the /sos/trigger controller
   // with the patient's name + address — emitting a second (generic) one here
   // produced a DUPLICATE alert card, so it's intentionally not emitted now.
 
-  // Notify the other party (if user triggers, notify driver and vice versa)
+  // Notify the other party (if user triggers, notify driver and vice versa).
   if (booking) {
     if (triggeredBy === "USER" && booking.driverId) {
-      await NotificationService.sendToDriver(
+      void NotificationService.sendToDriver(
         booking.driverId,
         "SYSTEM",
         "🚨 SOS Alert",
         "User has triggered an emergency alert. Please check on the customer.",
-        {
-          sosId: sosAlert._id.toString(),
-          bookingId: bookingId?.toString() || "",
-        },
-      );
+        { sosId: sosAlert._id.toString(), bookingId: bookingId?.toString() || "" },
+      ).catch(() => undefined);
     } else if (triggeredBy === "DRIVER" && booking.userId) {
-      await NotificationService.sendToUser(
+      void NotificationService.sendToUser(
         booking.userId,
         "SYSTEM",
         "🚨 SOS Alert",
         "Driver has triggered an emergency alert. Help is on the way.",
-        {
-          sosId: sosAlert._id.toString(),
-          bookingId: bookingId?.toString() || "",
-        },
-      );
+        { sosId: sosAlert._id.toString(), bookingId: bookingId?.toString() || "" },
+      ).catch(() => undefined);
     }
   }
 

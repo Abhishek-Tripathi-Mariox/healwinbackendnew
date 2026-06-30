@@ -476,12 +476,30 @@ export const activeDispatch = async (
     status: { $in: ["DISPATCHED", "ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE"] },
   })
     .populate("ambulanceId")
+    // The patient the crew registered in the field for this dispatch (if any).
+    .populate("hospitalPatientId", "patientId fullName phone gender dateOfBirth")
     .lean();
   // Expose the denormalised patient name + pickup address so the driver app
   // shows a real name + location (not an id / raw coordinates). `address` is
-  // the key the app's dispatch mapper reads.
+  // the key the app's dispatch mapper reads. `hospitalPatient` carries the
+  // field-registered patient's details so the crew sees who they added.
+  const hp: any = d?.hospitalPatientId;
   const dispatch = d
-    ? { ...d, patientName: d.patientName || "Emergency patient", address: d.pickupAddress || "" }
+    ? {
+        ...d,
+        patientName: d.patientName || "Emergency patient",
+        address: d.pickupAddress || "",
+        hospitalPatient: hp && typeof hp === "object"
+          ? {
+              _id: String(hp._id),
+              patientId: hp.patientId,
+              name: hp.fullName,
+              phone: hp.phone,
+              gender: hp.gender,
+              dateOfBirth: hp.dateOfBirth,
+            }
+          : null,
+      }
     : null;
   req.rData = { dispatch };
   req.msg = "active_dispatch";

@@ -128,6 +128,11 @@ export const assign = async (req: Request, _res: Response, next: NextFunction) =
       reqDoc.driverName = driver.fullName || reqDoc.driverName;
       reqDoc.driverPhone = driver.mobileNumber || reqDoc.driverPhone;
     }
+    // The ambulance's attendant rides along — record them so they're notified
+    // and can track the trip (read-only), exactly like the SOS dispatch flow.
+    if (reserved.assignedAttendantId) {
+      reqDoc.attendantStaffId = reserved.assignedAttendantId;
+    }
     if (b.etaMinutes != null) reqDoc.etaMinutes = Number(b.etaMinutes);
   } else {
     // ===== Path B (manual fallback): admin typed driver details directly.
@@ -224,6 +229,33 @@ export const assign = async (req: Request, _res: Response, next: NextFunction) =
           action: "incoming_dispatch",
           route: "IncomingDispatch",
         },
+      ).catch(() => undefined);
+    }
+  }
+
+  // Ring the ATTENDANT too — the "patient inbound" (info-only) variant: they
+  // acknowledge + ride along (they don't drive the lifecycle). Without this the
+  // attendant never learned an ambulance-request dispatch was assigned to them.
+  if (reqDoc.attendantStaffId) {
+    const attId = String(reqDoc.attendantStaffId);
+    emitToUser(attId, "dispatch:incoming_info", {
+      requestId: String(reqDoc._id),
+      kind: "request",
+      patientName: reqDoc.patientName || "Patient",
+      patientPhone: reqDoc.recipientPhone || undefined,
+      address: reqDoc.pickup?.address || "Patient location",
+      patientLat: reqDoc.pickup?.lat,
+      patientLng: reqDoc.pickup?.lng,
+      etaMinutes: reqDoc.etaMinutes,
+      priority: reqDoc.emergency ? "CRITICAL" : "HIGH",
+    });
+    const att: any = await AmbulanceStaff.findById(attId).select("fcmToken").lean();
+    if (att?.fcmToken) {
+      sendDispatchPush(
+        att.fcmToken,
+        "Patient Inbound",
+        `${reqDoc.patientName || "A patient"} pickup — ${reqDoc.pickup?.address || "tap to view"}.`,
+        { requestId: String(reqDoc._id), kind: "request", action: "incoming_dispatch", route: "IncomingDispatch" },
       ).catch(() => undefined);
     }
   }
@@ -414,12 +446,22 @@ export const updateStatus = async (req: Request, _res: Response, next: NextFunct
   }
   const userId = String(reqDoc.userId);
   emitToUser(userId, "booking:status", { requestId: String(reqDoc._id), status });
-  // If cancelled, also tell the crew app to drop the dispatch.
-  if (status === "CANCELLED" && reqDoc.driverStaffId) {
-    emitToUser(String(reqDoc.driverStaffId), "dispatch:cancelled", {
-      requestId: String(reqDoc._id),
-      kind: "request",
-    });
+  // If cancelled, also tell the crew app (driver + attendant) to drop the dispatch.
+  if (status === "CANCELLED") {
+    if (reqDoc.driverStaffId) {
+      emitToUser(String(reqDoc.driverStaffId), "dispatch:cancelled", {
+        requestId: String(reqDoc._id),
+        dispatchId: String(reqDoc._id),
+        kind: "request",
+      });
+    }
+    if (reqDoc.attendantStaffId) {
+      emitToUser(String(reqDoc.attendantStaffId), "dispatch:cancelled", {
+        requestId: String(reqDoc._id),
+        dispatchId: String(reqDoc._id),
+        kind: "request",
+      });
+    }
   }
   req.rData = { item: reqDoc };
   req.msg = "success";

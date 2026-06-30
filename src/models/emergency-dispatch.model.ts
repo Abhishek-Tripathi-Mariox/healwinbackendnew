@@ -33,6 +33,9 @@ export interface IEmergencyDispatch {
     | "CANCELLED";
   patientUserId?: Types.ObjectId; // SOS patient (for notify + live tracking)
   patientName?: string; // denormalised for driver display (avoids a populate)
+  // The hospital patient the crew registered in the field for THIS dispatch —
+  // links the SOS journey to a real HMS record so admin/crew see who was treated.
+  hospitalPatientId?: Types.ObjectId;
   pickupAddress?: string; // human-readable pickup, denormalised from the SOS
   otp?: string; // pickup verification code shown to the patient
   driverLocation?: { lat?: number; lng?: number };
@@ -135,6 +138,7 @@ const EmergencyDispatchSchema = new Schema<IEmergencyDispatch>(
     },
     patientUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
     patientName: String,
+    hospitalPatientId: { type: Schema.Types.ObjectId, ref: "HospitalPatient", index: true },
     pickupAddress: String,
     otp: String,
     driverLocation: { lat: Number, lng: Number },

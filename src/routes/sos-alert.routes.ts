@@ -28,4 +28,11 @@ router.post(
   ResponseMiddleware,
 );
 
+router.post(
+  "/:id/status",
+  auth.verifyAdminToken,
+  ErrorHandlerMiddleware(C.updateStatus),
+  ResponseMiddleware,
+);
+
 export default router;

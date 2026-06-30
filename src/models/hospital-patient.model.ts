@@ -61,7 +61,7 @@ export interface IHospitalPatient {
   // When a patient is registered from the field by an ambulance attendant
   // (not the admin desk), we record who and flag the source.
   registeredByStaffId?: Types.ObjectId;
-  source: "admin" | "ambulance_staff";
+  source: "admin" | "ambulance_staff" | "patient_app";
   isActive: boolean;
   isDeleted: boolean;
   createdAt: Date;
@@ -140,7 +140,7 @@ const HospitalPatientSchema = new Schema<IHospitalPatient>(
     },
     source: {
       type: String,
-      enum: ["admin", "ambulance_staff"],
+      enum: ["admin", "ambulance_staff", "patient_app"],
       default: "admin",
       index: true,
     },

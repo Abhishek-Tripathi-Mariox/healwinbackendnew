@@ -16,6 +16,11 @@ export interface ISOSAlert {
   userId?: Types.ObjectId;
   driverId?: Types.ObjectId;
   triggeredBy: "USER" | "DRIVER";
+  // Crew-raised SOS (ambulance driver/attendant pressed SOS in the app).
+  source?: "patient" | "crew";
+  crewStaffId?: Types.ObjectId; // ref AmbulanceStaff
+  crewName?: string;
+  crewPhone?: string;
   location: {
     type: "Point";
     coordinates: [number, number]; // [lng, lat]
@@ -100,6 +105,10 @@ const SOSAlertSchema = new Schema<ISOSAlert>(
       required: true,
       enum: ["USER", "DRIVER"],
     },
+    source: { type: String, enum: ["patient", "crew"], default: "patient", index: true },
+    crewStaffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff" },
+    crewName: String,
+    crewPhone: String,
     location: {
       type: {
         type: String,

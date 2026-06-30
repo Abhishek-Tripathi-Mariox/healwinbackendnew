@@ -16,6 +16,7 @@ import LabTest from "../models/lab-test.model";
 import PharmacyProduct from "../models/pharmacy-product.model";
 import AmbulanceRequest from "../models/ambulance-request.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
+import { SOSSubmission } from "../models/sos-submission.model";
 import VehicleType from "../models/vehicle-type.model";
 import { PharmacyOrder, LabBooking, Consultation } from "../models/patient-commerce.model";
 import HomePromo from "../models/home-promo.model";
@@ -27,6 +28,7 @@ import DoctorSchedule from "../models/doctor-schedule.model";
 import { HospitalInvoice } from "../models/hospital-invoice.model";
 import { DiagnosticOrder } from "../models/diagnostic-order.model";
 import { EmrEncounter } from "../models/emr-encounter.model";
+import { nextSequence } from "../models/counter.model";
 import { Admission } from "../models/admission.model";
 import { calculateFare } from "../services/fare.service";
 import * as PromoService from "../services/promo.service";
@@ -904,10 +906,22 @@ const ensureHospitalPatient = async (req: Request): Promise<any> => {
     ? await HospitalPatient.findOne({ phone: { $regex: `${last10}$` }, isDeleted: { $ne: true } })
     : null;
   if (!hp) {
+    // HospitalPatient requires a human-readable patientId (HWP-…) and a
+    // lowercase gender enum (male|female|other) — the app stores "Male"/etc., so
+    // normalise. Without these the create failed validation ("Could not book").
+    const seq = await nextSequence("hospital_patient");
+    const g = String(user?.gender || "").toLowerCase();
     hp = await HospitalPatient.create({
+      patientId: `HWP-${String(seq).padStart(6, "0")}`,
       fullName: user?.fullName || "Patient",
       phone: user?.mobileNumber || "",
-      gender: user?.gender || undefined,
+      gender: (["male", "female", "other"].includes(g) ? g : undefined) as
+        | "male"
+        | "female"
+        | "other"
+        | undefined,
+      appUserId: uid(req),
+      source: "patient_app" as const,
     });
   }
   return hp;
@@ -1442,7 +1456,13 @@ router.post("/ambulance/emergency", verifyUserToken, async (req, res) => {
 router.get("/ambulance/active", verifyUserToken, async (req, res) => {
   const r = await AmbulanceRequest.findOne({
     userId: uid(req),
-    status: { $in: ACTIVE_STATUSES },
+    $or: [
+      { status: { $in: ACTIVE_STATUSES } },
+      // Keep a just-finished trip visible until it's paid, so the patient lands
+      // on a "Trip completed" + final-bill view instead of the tracking screen
+      // staying stuck on "on the way" (or snapping back to "finding ambulance").
+      { status: "COMPLETED", paymentStatus: { $ne: "PAID" } },
+    ],
   } as any)
     .sort({ createdAt: -1 })
     .lean();
@@ -1452,12 +1472,63 @@ router.get("/ambulance/active", verifyUserToken, async (req, res) => {
 // Full booking history for "My Bookings" — every ambulance request the user
 // made (any status). MUST be declared before "/ambulance/:id" so "history"
 // isn't captured as an id.
+// Map a patient SOS (the SOSSubmission, enriched with its EmergencyDispatch when
+// the admin has dispatched an ambulance) into the same booking shape the app
+// renders — so SOS journeys also show up under "My Bookings".
+const sosToApp = (sub: any, disp: any) => {
+  const rawStatus = String(disp?.status || sub?.status || "PENDING").toUpperCase();
+  const status =
+    ["COMPLETED", "RESOLVED", "CLOSED"].includes(rawStatus)
+      ? "completed"
+      : ["CANCELLED", "CANCELED", "FALSE_ALARM", "REJECTED"].includes(rawStatus)
+        ? "cancelled"
+        : "active";
+  const dr = disp?.driverStaffId;
+  const amb = disp?.ambulanceId;
+  return {
+    _id: disp?._id || sub._id,
+    type: "SOS Emergency",
+    status,
+    emergency: true,
+    pickup: disp?.pickupAddress || sub?.address
+      ? { address: disp?.pickupAddress || sub?.address }
+      : null,
+    drop: null,
+    patientName: sub?.name || disp?.patientName || null,
+    notes: sub?.description || null,
+    driver: dr ? { name: dr.fullName, phone: dr.mobileNumber } : null,
+    vehicle: amb ? { number: amb.registrationNumber } : null,
+    otp: disp?.otp || null,
+    amount: null,
+    createdAt: disp?.createdAt || sub?.createdAt,
+  };
+};
+
 router.get("/ambulance/history", verifyUserToken, async (req, res) => {
   const famIds = await familyMemberIdsFor(req);
   const list = await AmbulanceRequest.find(ownOrFamilyFilter(req, famIds))
     .sort({ createdAt: -1 })
     .lean();
-  ok(res, { items: list.map(toApp) });
+
+  // Also include this patient's SOS journeys. SOS is a separate flow (it creates
+  // a SOSSubmission, not an AmbulanceRequest), so without this it never showed
+  // in My Bookings. We key each dispatch by its SOSSubmission to avoid showing a
+  // SOS twice (submission + dispatch).
+  const [subs, disps] = await Promise.all([
+    SOSSubmission.find({ userId: uid(req) }).sort({ createdAt: -1 }).lean(),
+    EmergencyDispatch.find({ patientUserId: uid(req) })
+      .populate("driverStaffId", "fullName mobileNumber")
+      .populate("ambulanceId", "registrationNumber")
+      .lean(),
+  ]);
+  const dispBySos = new Map(disps.map((d: any) => [String(d.sosSubmission), d]));
+  const sosItems = subs.map((s: any) => sosToApp(s, dispBySos.get(String(s._id))));
+
+  const items = [...list.map(toApp), ...sosItems].sort(
+    (a, b) =>
+      new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime(),
+  );
+  ok(res, { items });
 });
 
 // Active SOS dispatch (admin-dispatched EmergencyDispatch) for live tracking.

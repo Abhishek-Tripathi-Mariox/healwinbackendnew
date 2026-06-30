@@ -70,6 +70,8 @@ export interface IAmbulanceRequest {
   // Assignment
   ambulanceId?: Types.ObjectId;
   driverStaffId?: Types.ObjectId;
+  // The crew attendant riding along (notified + tracks the trip read-only).
+  attendantStaffId?: Types.ObjectId;
   driverName?: string;
   driverPhone?: string;
   vehicleNumber?: string;
@@ -155,6 +157,7 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     },
     ambulanceId: { type: Schema.Types.ObjectId, ref: "Ambulance" },
     driverStaffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff" },
+    attendantStaffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff" },
     driverName: String,
     driverPhone: String,
     vehicleNumber: String,

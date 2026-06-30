@@ -10,6 +10,7 @@ import { uploadFileToAws } from "../utils/s3";
 import { emitToAdmin } from "../utils/socket.util";
 import AmbulanceStaff from "../models/ambulance-staff.model";
 import { SOSAlert } from "../models/sos.model";
+import { EmergencyDispatch } from "../models/emergency-dispatch.model";
 import User from "../models/Users";
 
 /** Leave / Patient / Case-notes / Stock / SOS for the ambulance-staff app. */
@@ -32,13 +33,22 @@ export const raiseSos = async (req: Request, _res: Response, next: NextFunction)
   const b = req.body || {};
   const lat = Number(b.lat);
   const lng = Number(b.lng);
-  const name = await staffName(sid(req));
+  const staff: any = await AmbulanceStaff.findById(sid(req))
+    .select("fullName mobileNumber countryCode")
+    .lean();
+  const name = staff?.fullName || "A crew member";
+  const phone = staff?.mobileNumber
+    ? `${staff.countryCode || ""}${staff.mobileNumber}`
+    : "";
+  const hasGps = Number.isFinite(lat) && Number.isFinite(lng);
   const alert = await SOSAlert.create({
     triggeredBy: "DRIVER",
-    location:
-      Number.isFinite(lat) && Number.isFinite(lng)
-        ? { type: "Point", coordinates: [lng, lat] }
-        : undefined,
+    source: "crew",
+    crewStaffId: sid(req),
+    crewName: name,
+    crewPhone: phone,
+    // coordinates are required on the model — default to [0,0] when GPS is off.
+    location: { type: "Point", coordinates: hasGps ? [lng, lat] : [0, 0] },
     address: b.address || `Crew SOS — ${name}`,
     status: "ACTIVE",
   });
@@ -47,9 +57,10 @@ export const raiseSos = async (req: Request, _res: Response, next: NextFunction)
     alertId: String(alert._id),
     source: "crew",
     staffId: String(sid(req)),
-    staffName: name,
-    lat: Number.isFinite(lat) ? lat : undefined,
-    lng: Number.isFinite(lng) ? lng : undefined,
+    crewName: name,
+    crewPhone: phone,
+    lat: hasGps ? lat : undefined,
+    lng: hasGps ? lng : undefined,
   });
   req.rData = { alertId: String(alert._id) };
   req.msg = "sos_raised";
@@ -190,9 +201,26 @@ export const addPatient = async (req: Request, _res: Response, next: NextFunctio
     source: "ambulance_staff",
     registeredByStaffId: sid(req),
   });
+
+  // If the crew registered this patient DURING an active dispatch (the app
+  // passes its dispatchId), link the record to that SOS journey so the dispatch
+  // — and the admin — show who was actually treated. Only link a dispatch this
+  // crew is assigned to.
+  let linkedToDispatch = false;
+  if (b.dispatchId) {
+    const upd = await EmergencyDispatch.updateOne(
+      {
+        _id: b.dispatchId,
+        $or: [{ driverStaffId: sid(req) }, { attendantStaffId: sid(req) }],
+      },
+      { $set: { hospitalPatientId: item._id } },
+    );
+    linkedToDispatch = upd.modifiedCount > 0;
+  }
+
   // `linkedToApp` lets the staff app confirm the patient was matched to an
   // existing app account (vs a brand-new walk-in with no app).
-  req.rData = { item, linkedToApp: Boolean(linkedUser) };
+  req.rData = { item, linkedToApp: Boolean(linkedUser), linkedToDispatch };
   req.msg = "success";
   return next();
 };
