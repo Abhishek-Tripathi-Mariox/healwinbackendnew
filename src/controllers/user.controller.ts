@@ -164,9 +164,11 @@ export const deleteUserAddress = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const { addressId } = req.body;
+  // The id comes from the URL param (DELETE /users/address/:id), NOT the body —
+  // reading req.body.addressId left it undefined, so nothing ever got deleted.
+  const { id } = req.params as Record<string, string>;
 
-  await UserAddressService.deleteUserAddress(addressId);
+  await UserAddressService.deleteUserAddress(id);
 
   req.msg = "success";
   next();
