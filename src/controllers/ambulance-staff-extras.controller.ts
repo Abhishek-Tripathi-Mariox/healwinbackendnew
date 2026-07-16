@@ -9,6 +9,11 @@ import { nextSequence } from "../models/counter.model";
 import { uploadFileToAws } from "../utils/s3";
 import { emitToAdmin } from "../utils/socket.util";
 import AmbulanceStaff from "../models/ambulance-staff.model";
+import Ambulance from "../models/ambulance.model";
+import InventoryItem from "../models/inventory-item.model";
+import { AmbulanceStock } from "../models/ambulance-stock.model";
+import { consumeFromAmbulance } from "../services/ambulance-stock.service";
+import AmbulanceRequest from "../models/ambulance-request.model";
 import { SOSAlert } from "../models/sos.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
 import User from "../models/Users";
@@ -240,16 +245,40 @@ export const saveCaseNote = async (req: Request, _res: Response, next: NextFunct
   return next();
 };
 
+/** The ambulance this crew member is assigned to (driver or attendant). */
+const crewAmbulanceId = async (staffId: any): Promise<any> => {
+  const amb = await Ambulance.findOne({
+    isActive: true,
+    $or: [{ assignedDriverId: staffId }, { assignedAttendantId: staffId }],
+  })
+    .select("_id")
+    .lean();
+  return (amb as any)?._id ?? undefined;
+};
+
 // ----- Stock requests -----
+// Items now carry a real `itemId` (from the HMS inventory catalog) so fulfilling
+// a request can move stock central → this crew's ambulance accurately.
 export const createStockRequest = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  const raw = Array.isArray(req.body?.items) ? req.body.items : [];
+  const items = raw
+    .map((i: any) => ({
+      itemId: i.itemId || undefined,
+      name: String(i.name || "").trim(),
+      qty: Math.max(0, Number(i.qty) || 0),
+    }))
+    .filter((i: any) => (i.itemId || i.name) && i.qty > 0);
   if (items.length === 0) {
     req.rCode = 0;
     req.msg = "validation_failed";
     req.rData = { hint: "items array is required" };
     return next();
   }
-  const item = await StaffStockRequest.create({ staffId: sid(req), items });
+  const item = await StaffStockRequest.create({
+    staffId: sid(req),
+    ambulanceId: await crewAmbulanceId(sid(req)),
+    items,
+  });
 
   emitToAdmin("stock:new", {
     stockRequestId: String(item._id),
@@ -259,5 +288,147 @@ export const createStockRequest = async (req: Request, _res: Response, next: Nex
 
   req.rData = { item };
   req.msg = "success";
+  return next();
+};
+
+// ----- Ambulance inventory (crew) -----
+
+/** GET /ambulance-staff/inventory-items — the catalog to pick stock from. */
+export const inventoryCatalog = async (req: Request, _res: Response, next: NextFunction) => {
+  const q = String((req.query.q as string) || "").trim();
+  const filter: any = { isDeleted: { $ne: true }, isActive: { $ne: false } };
+  if (q) filter.name = new RegExp(q, "i");
+  const items = await InventoryItem.find(filter)
+    .select("name unit category sellingPrice unitCost currentStock")
+    .sort({ name: 1 })
+    .limit(200)
+    .lean();
+  req.rData = {
+    items: items.map((i: any) => ({
+      _id: String(i._id),
+      name: i.name,
+      unit: i.unit,
+      category: i.category,
+      sellingPrice: i.sellingPrice ?? 0,
+      centralStock: i.currentStock ?? 0,
+    })),
+  };
+  req.msg = "success";
+  return next();
+};
+
+/** GET /ambulance-staff/stock — the crew's ambulance current on-hand stock. */
+export const listMyStock = async (req: Request, _res: Response, next: NextFunction) => {
+  const ambulanceId = await crewAmbulanceId(sid(req));
+  if (!ambulanceId) {
+    req.rData = { ambulanceId: null, items: [] };
+    req.msg = "success";
+    return next();
+  }
+  const rows = await AmbulanceStock.find({ ambulanceId, quantity: { $gt: 0 } })
+    .populate("itemId", "name unit category sellingPrice")
+    .sort({ updatedAt: -1 })
+    .lean();
+  req.rData = {
+    ambulanceId: String(ambulanceId),
+    items: rows.map((r: any) => ({
+      itemId: String(r.itemId?._id || r.itemId),
+      name: r.itemId?.name || "Item",
+      unit: r.itemId?.unit || "",
+      sellingPrice: r.itemId?.sellingPrice ?? 0,
+      quantity: r.quantity,
+    })),
+  };
+  req.msg = "success";
+  return next();
+};
+
+/**
+ * POST /ambulance-staff/stock/consume — log items used on a patient during a
+ * dispatch. Decrements the ambulance's on-hand + bills the patient (in-transit).
+ * body: { requestId?, dispatchId?, patientId?, items:[{itemId, qty}] }
+ */
+export const consumeStock = async (req: Request, _res: Response, next: NextFunction) => {
+  const b = req.body || {};
+  const items = (Array.isArray(b.items) ? b.items : [])
+    .map((i: any) => ({ itemId: i.itemId, qty: Math.max(0, Number(i.qty) || 0) }))
+    .filter((i: any) => i.itemId && i.qty > 0);
+  if (items.length === 0) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "items array is required" };
+    return next();
+  }
+
+  // Resolve the ambulance + patient context from the dispatch/request if given.
+  let ambulanceId: any;
+  let patientId: any = b.patientId || undefined;
+  let patientName: string | undefined;
+  const requestId: any = b.requestId || undefined;
+  const dispatchId: any = b.dispatchId || undefined;
+
+  if (dispatchId) {
+    const d: any = await EmergencyDispatch.findById(dispatchId)
+      .populate("hospitalPatientId", "fullName")
+      .lean();
+    if (d) {
+      ambulanceId = d.ambulanceId;
+      if (!patientId && d.hospitalPatientId) {
+        patientId = (d.hospitalPatientId as any)._id;
+        patientName = (d.hospitalPatientId as any).fullName;
+      }
+    }
+  }
+  if (requestId) {
+    const r: any = await AmbulanceRequest.findById(requestId).lean();
+    if (r) {
+      ambulanceId = ambulanceId || r.ambulanceId;
+      if (!patientName) patientName = r.patientName;
+    }
+  }
+  if (!ambulanceId) ambulanceId = await crewAmbulanceId(sid(req));
+  if (!ambulanceId) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "No ambulance assigned to this crew" };
+    return next();
+  }
+
+  const { lines, total, shortages } = await consumeFromAmbulance({
+    ambulanceId,
+    staffId: sid(req),
+    requestId,
+    dispatchId,
+    patientId,
+    patientName,
+    items,
+  });
+
+  // Bill the patient: append to the AmbulanceRequest's in-transit expenses so
+  // the fare breakup + grand total reflect the supplies used.
+  if (requestId && lines.length > 0) {
+    const reqDoc: any = await AmbulanceRequest.findById(requestId);
+    if (reqDoc) {
+      reqDoc.inTransitExpenses = [
+        ...((reqDoc.inTransitExpenses as any[]) || []),
+        ...lines.map((l) => ({
+          inventoryItemId: l.itemId,
+          item: l.itemName,
+          qty: l.qty,
+          rate: l.rate,
+          amount: l.amount,
+        })),
+      ];
+      reqDoc.inTransitTotal = (reqDoc.inTransitExpenses as any[]).reduce(
+        (s: number, e: any) => s + (e.amount || 0),
+        0,
+      );
+      reqDoc.grandTotal = (reqDoc.amount || 0) + reqDoc.inTransitTotal;
+      await reqDoc.save();
+    }
+  }
+
+  req.rData = { lines, total, shortages };
+  req.msg = shortages.length ? "consumed_with_shortage" : "success";
   return next();
 };

@@ -73,7 +73,12 @@ export const StaffCaseNote = mongoose.model<IStaffCaseNote>("StaffCaseNote", Sta
 export interface IStaffStockRequest {
   _id: Types.ObjectId;
   staffId: Types.ObjectId;
-  items: { name: string; qty: number }[];
+  // The ambulance the requested stock is loaded onto when fulfilled (the crew's
+  // assigned vehicle). Resolved at request time.
+  ambulanceId?: Types.ObjectId;
+  // `itemId` links a line to a real InventoryItem so fulfilling a request can
+  // move stock central → ambulance accurately (name kept for display/legacy).
+  items: { itemId?: Types.ObjectId; name: string; qty: number }[];
   status: "Pending" | "Fulfilled" | "Rejected";
   createdAt: Date;
   updatedAt: Date;
@@ -81,7 +86,14 @@ export interface IStaffStockRequest {
 const StaffStockRequestSchema = new Schema<IStaffStockRequest>(
   {
     staffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff", required: true, index: true },
-    items: [{ name: String, qty: Number }],
+    ambulanceId: { type: Schema.Types.ObjectId, ref: "Ambulance", index: true },
+    items: [
+      {
+        itemId: { type: Schema.Types.ObjectId, ref: "InventoryItem" },
+        name: String,
+        qty: Number,
+      },
+    ],
     status: { type: String, enum: ["Pending", "Fulfilled", "Rejected"], default: "Pending" },
   },
   { timestamps: true },

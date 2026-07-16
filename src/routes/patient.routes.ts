@@ -1541,7 +1541,34 @@ router.get("/sos/active", verifyUserToken, async (req, res) => {
     .populate("ambulanceId", "registrationNumber currentLocation")
     .populate("driverStaffId", "fullName mobileNumber")
     .lean();
-  if (!d) return ok(res, null);
+  if (!d) {
+    // No ambulance dispatched yet — but the patient may have just raised an SOS
+    // that the control centre hasn't dispatched. Surface that PENDING SOS as a
+    // "searching" ride so the tracking screen shows "finding an ambulance"
+    // instead of "No active request" (which looked wrong right after an SOS).
+    const sub: any = await SOSSubmission.findOne({
+      userId: uid(req),
+      status: { $in: ["PENDING", "IN_PROGRESS"] },
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (!sub) return ok(res, null);
+    const sc = sub.location?.coordinates;
+    return ok(res, {
+      _id: sub._id,
+      kind: "sos",
+      status: "searching",
+      otp: null,
+      driver: null,
+      vehicle: null,
+      pickup: sc && (sc[0] || sc[1]) ? { lat: sc[1], lng: sc[0] } : null,
+      driverLocation: null,
+      distanceKm: null,
+      etaMinutes: null,
+      amount: null,
+      fareBreakdown: null,
+    });
+  }
 
   const amb = d.ambulanceId;
   const ac = amb?.currentLocation?.coordinates;

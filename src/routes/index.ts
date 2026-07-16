@@ -58,6 +58,7 @@ import ambulanceDispatchActionsRoutes from "./ambulance-dispatch-actions.routes"
 import adminPatientsRoutes from "./admin-patients.routes";
 import adminEmrRoutes from "./admin-emr.routes";
 import adminInventoryRoutes from "./admin-inventory.routes";
+import adminAmbulanceStockRoutes from "./admin-ambulance-stock.routes";
 import adminBillingRoutes from "./admin-billing.routes";
 import adminReportsRoutes from "./admin-reports.routes";
 import adminDashboardRoutes from "./admin-dashboard.routes";
@@ -162,6 +163,7 @@ router.use("/admin/sos-alerts", sosAlertRoutes);
 router.use("/admin/patients", adminPatientsRoutes);
 router.use("/admin/emr", adminEmrRoutes);
 router.use("/admin/inventory", adminInventoryRoutes);
+router.use("/admin/ambulance-stock", adminAmbulanceStockRoutes);
 router.use("/admin/billing", adminBillingRoutes);
 router.use("/admin/reports", adminReportsRoutes);
 router.use("/admin/dashboard", adminDashboardRoutes);

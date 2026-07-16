@@ -137,6 +137,11 @@ router.get("/patients", auth.verifyStaffToken, ErrorHandlerMiddleware(X.listPati
 router.post("/patients", auth.verifyStaffToken, ErrorHandlerMiddleware(X.addPatient), ResponseMiddleware);
 router.post("/case-notes", auth.verifyStaffToken, ErrorHandlerMiddleware(X.saveCaseNote), ResponseMiddleware);
 router.post("/stock-requests", auth.verifyStaffToken, ErrorHandlerMiddleware(X.createStockRequest), ResponseMiddleware);
+// Ambulance inventory (crew): catalog to pick from, own on-hand stock, and
+// logging items consumed on a patient during a dispatch.
+router.get("/inventory-items", auth.verifyStaffToken, ErrorHandlerMiddleware(X.inventoryCatalog), ResponseMiddleware);
+router.get("/stock", auth.verifyStaffToken, ErrorHandlerMiddleware(X.listMyStock), ResponseMiddleware);
+router.post("/stock/consume", auth.verifyStaffToken, ErrorHandlerMiddleware(X.consumeStock), ResponseMiddleware);
 
 // ===== Patient AmbulanceRequest dispatch actions (SOS / Book-Ambulance loop) =====
 router.get("/requests/active", auth.verifyStaffToken, ErrorHandlerMiddleware(R.activeRequest), ResponseMiddleware);

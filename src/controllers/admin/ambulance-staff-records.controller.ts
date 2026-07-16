@@ -5,6 +5,8 @@ import {
 } from "../../models/ambulance-staff-extras.model";
 import LeaveRequest from "../../models/leave-request.model";
 import { HospitalPatient } from "../../models/hospital-patient.model";
+import Ambulance from "../../models/ambulance.model";
+import { restockAmbulance } from "../../services/ambulance-stock.service";
 import { sendToStaff } from "../../services/notification.service";
 
 /**
@@ -76,18 +78,43 @@ export const updateStockRequestStatus = async (req: Request, _res: Response, nex
     req.rData = { hint: "status must be Pending | Fulfilled | Rejected" };
     return next();
   }
-  const item = await StaffStockRequest.findByIdAndUpdate(
-    req.params.id,
-    { status },
-    { new: true },
-  )
-    .populate("staffId", STAFF_FIELDS)
-    .lean();
-  if (!item) {
+  const doc: any = await StaffStockRequest.findById(req.params.id);
+  if (!doc) {
     req.rCode = 5;
     req.msg = "item_not_found";
     return next();
   }
+  const wasFulfilled = doc.status === "Fulfilled";
+  doc.status = status;
+  await doc.save();
+
+  // On FIRST fulfillment, move the requested stock central → the crew's
+  // ambulance (idempotent — re-saving a Fulfilled request won't double-load).
+  let restock: { moved: number; skipped: string[] } | undefined;
+  if (status === "Fulfilled" && !wasFulfilled) {
+    let ambulanceId = doc.ambulanceId;
+    if (!ambulanceId) {
+      const amb: any = await Ambulance.findOne({
+        isActive: true,
+        $or: [{ assignedDriverId: doc.staffId }, { assignedAttendantId: doc.staffId }],
+      })
+        .select("_id")
+        .lean();
+      ambulanceId = amb?._id;
+    }
+    if (ambulanceId) {
+      restock = await restockAmbulance({
+        ambulanceId,
+        staffId: doc.staffId,
+        stockRequestId: doc._id,
+        items: doc.items,
+      });
+    }
+  }
+
+  const item: any = await StaffStockRequest.findById(doc._id)
+    .populate("staffId", STAFF_FIELDS)
+    .lean();
 
   // Notify the staff member their stock request was actioned.
   const stockStaffId = (item.staffId as any)?._id || item.staffId;
@@ -106,7 +133,7 @@ export const updateStockRequestStatus = async (req: Request, _res: Response, nex
     ).catch(() => undefined);
   }
 
-  req.rData = { item };
+  req.rData = { item, restock };
   req.msg = "success";
   return next();
 };
