@@ -155,7 +155,7 @@ export const updateStockRequestStatus = async (req: Request, _res: Response, nex
       status === "Fulfilled"
         ? `Your stock request${itemNames ? ` (${itemNames})` : ""} has been fulfilled.`
         : `Your stock request${itemNames ? ` (${itemNames})` : ""} was rejected.`,
-      { stockRequestId: String(item._id), status, route: "StockRequests" },
+      { stockRequestId: String(item._id), status, route: "StockRequest" },
       item._id,
       "StaffStockRequest",
     ).catch(() => undefined);
@@ -228,7 +228,7 @@ export const updateLeaveStatus = async (req: Request, _res: Response, next: Next
       status === "Approved"
         ? `Your ${lr.leaveTypeName || "leave"} leave (${range}) has been approved.`
         : `Your ${lr.leaveTypeName || "leave"} leave (${range}) was rejected.`,
-      { leaveId: String(lr._id), status, route: "Leave" },
+      { leaveId: String(lr._id), status, route: "ApplyLeave" },
       lr._id,
       "LeaveRequest",
     ).catch(() => undefined);
