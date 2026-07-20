@@ -88,27 +88,56 @@ export const updateStockRequestStatus = async (req: Request, _res: Response, nex
   doc.status = status;
   await doc.save();
 
-  // On FIRST fulfillment, move the requested stock central → the crew's
-  // ambulance (idempotent — re-saving a Fulfilled request won't double-load).
-  let restock: { moved: number; skipped: string[] } | undefined;
-  if (status === "Fulfilled" && !wasFulfilled) {
-    let ambulanceId = doc.ambulanceId;
-    if (!ambulanceId) {
-      const amb: any = await Ambulance.findOne({
-        isActive: true,
-        $or: [{ assignedDriverId: doc.staffId }, { assignedAttendantId: doc.staffId }],
-      })
-        .select("_id")
-        .lean();
-      ambulanceId = amb?._id;
-    }
-    if (ambulanceId) {
-      restock = await restockAmbulance({
-        ambulanceId,
-        staffId: doc.staffId,
-        stockRequestId: doc._id,
-        items: doc.items,
-      });
+  // On FIRST fulfillment, move the requested stock central → an ambulance
+  // (idempotent — re-saving a Fulfilled request won't double-load).
+  // Ambulance priority: the one the admin picked > the one recorded on the
+  // request > the crew's currently assigned vehicle.
+  let restock:
+    | { moved: number; skipped: string[]; ambulanceId?: string; registrationNumber?: string }
+    | undefined;
+  let restockError: string | undefined;
+
+  if (status === "Fulfilled") {
+    if (wasFulfilled) {
+      restockError = "Already fulfilled earlier — stock was not loaded again.";
+    } else {
+      let ambulanceId = req.body?.ambulanceId || doc.ambulanceId;
+      if (!ambulanceId) {
+        const amb: any = await Ambulance.findOne({
+          isActive: { $ne: false },
+          $or: [{ assignedDriverId: doc.staffId }, { assignedAttendantId: doc.staffId }],
+        })
+          .select("_id")
+          .lean();
+        ambulanceId = amb?._id;
+      }
+      if (!ambulanceId) {
+        // Nothing to load onto — tell the admin instead of failing silently.
+        restockError =
+          "No ambulance selected and this crew member isn't assigned to any ambulance, so the stock was NOT loaded. Assign them a vehicle (Fleet) or pick an ambulance when fulfilling.";
+      } else {
+        const r = await restockAmbulance({
+          ambulanceId,
+          staffId: doc.staffId,
+          stockRequestId: doc._id,
+          items: doc.items,
+        });
+        const amb: any = await Ambulance.findById(ambulanceId).select("registrationNumber").lean();
+        restock = {
+          ...r,
+          ambulanceId: String(ambulanceId),
+          registrationNumber: amb?.registrationNumber,
+        };
+        // Remember where it was loaded so the record stays traceable.
+        if (!doc.ambulanceId) {
+          doc.ambulanceId = ambulanceId;
+          await doc.save();
+        }
+        if (r.moved === 0) {
+          restockError =
+            `None of the requested items matched an inventory item${r.skipped.length ? ` (${r.skipped.join(", ")})` : ""}, so nothing was loaded.`;
+        }
+      }
     }
   }
 
@@ -133,7 +162,7 @@ export const updateStockRequestStatus = async (req: Request, _res: Response, nex
     ).catch(() => undefined);
   }
 
-  req.rData = { item, restock };
+  req.rData = { item, restock, restockError };
   req.msg = "success";
   return next();
 };

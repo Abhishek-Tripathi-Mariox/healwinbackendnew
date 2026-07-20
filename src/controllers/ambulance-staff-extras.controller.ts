@@ -248,7 +248,10 @@ export const saveCaseNote = async (req: Request, _res: Response, next: NextFunct
 /** The ambulance this crew member is assigned to (driver or attendant). */
 const crewAmbulanceId = async (staffId: any): Promise<any> => {
   const amb = await Ambulance.findOne({
-    isActive: true,
+    // Staff are assigned FROM the ambulance record (assignedDriverId /
+    // assignedAttendantId), so we look the vehicle up by this crew member.
+    // `$ne: false` (not `true`) so vehicles without an explicit isActive still match.
+    isActive: { $ne: false },
     $or: [{ assignedDriverId: staffId }, { assignedAttendantId: staffId }],
   })
     .select("_id")
