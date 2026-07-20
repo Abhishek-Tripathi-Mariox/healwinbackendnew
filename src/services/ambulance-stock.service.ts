@@ -1,10 +1,49 @@
 import { Types } from "mongoose";
 import InventoryItem from "../models/inventory-item.model";
 import StockTransaction from "../models/stock-transaction.model";
+import Ambulance from "../models/ambulance.model";
+import Shift from "../models/shift.model";
 import {
   AmbulanceStock,
   AmbulanceStockTransaction,
 } from "../models/ambulance-stock.model";
+
+/**
+ * Which ambulance is this crew member on?
+ *
+ * Staff are assigned FROM the ambulance side, but `Ambulance.assignedDriverId /
+ * assignedAttendantId` are only a CACHE of the currently-ACTIVE shift — the
+ * shift state machine clears them when a shift ends. So when the crew is
+ * off-shift those fields are empty. We therefore fall back to the staff's
+ * active (then most recent) shift, which carries the real ambulanceId.
+ */
+export const resolveCrewAmbulanceId = async (staffId: any): Promise<any> => {
+  if (!staffId) return undefined;
+
+  const amb: any = await Ambulance.findOne({
+    isActive: { $ne: false },
+    $or: [{ assignedDriverId: staffId }, { assignedAttendantId: staffId }],
+  })
+    .select("_id")
+    .lean();
+  if (amb?._id) return amb._id;
+
+  const active: any = await Shift.findOne({
+    staffId,
+    status: "active",
+    ambulanceId: { $ne: null },
+  })
+    .sort({ startAt: -1 })
+    .select("ambulanceId")
+    .lean();
+  if (active?.ambulanceId) return active.ambulanceId;
+
+  const recent: any = await Shift.findOne({ staffId, ambulanceId: { $ne: null } })
+    .sort({ startAt: -1 })
+    .select("ambulanceId")
+    .lean();
+  return recent?.ambulanceId ?? undefined;
+};
 
 /**
  * Ambulance inventory movements — the single place stock is added to or removed
@@ -24,6 +63,8 @@ export const restockAmbulance = async (opts: {
   ambulanceId: any;
   staffId?: any;
   stockRequestId?: any;
+  /** Admin performing the fulfilment — required on the central StockTransaction. */
+  performedByAdminId?: any;
   items: Line[];
 }): Promise<{ moved: number; skipped: string[] }> => {
   const skipped: string[] = [];
@@ -57,6 +98,7 @@ export const restockAmbulance = async (opts: {
       balanceAfter: newCentral,
       reason: "Loaded onto ambulance",
       issuedToType: "other",
+      performedByAdminId: opts.performedByAdminId,
     });
 
     // Ambulance on-hand in.

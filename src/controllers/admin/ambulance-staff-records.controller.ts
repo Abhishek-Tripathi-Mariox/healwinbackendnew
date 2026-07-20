@@ -6,7 +6,10 @@ import {
 import LeaveRequest from "../../models/leave-request.model";
 import { HospitalPatient } from "../../models/hospital-patient.model";
 import Ambulance from "../../models/ambulance.model";
-import { restockAmbulance } from "../../services/ambulance-stock.service";
+import {
+  restockAmbulance,
+  resolveCrewAmbulanceId,
+} from "../../services/ambulance-stock.service";
 import { sendToStaff } from "../../services/notification.service";
 
 /**
@@ -101,25 +104,21 @@ export const updateStockRequestStatus = async (req: Request, _res: Response, nex
     if (wasFulfilled) {
       restockError = "Already fulfilled earlier — stock was not loaded again.";
     } else {
+      // Admin's pick > the vehicle recorded on the request > the crew's current
+      // ambulance (active shift, else their latest shift's vehicle).
       let ambulanceId = req.body?.ambulanceId || doc.ambulanceId;
-      if (!ambulanceId) {
-        const amb: any = await Ambulance.findOne({
-          isActive: { $ne: false },
-          $or: [{ assignedDriverId: doc.staffId }, { assignedAttendantId: doc.staffId }],
-        })
-          .select("_id")
-          .lean();
-        ambulanceId = amb?._id;
-      }
+      if (!ambulanceId) ambulanceId = await resolveCrewAmbulanceId(doc.staffId);
       if (!ambulanceId) {
         // Nothing to load onto — tell the admin instead of failing silently.
         restockError =
-          "No ambulance selected and this crew member isn't assigned to any ambulance, so the stock was NOT loaded. Assign them a vehicle (Fleet) or pick an ambulance when fulfilling.";
+          "Stock NOT loaded — no ambulance selected, and this crew member is not on any ambulance (no active/recent shift and not assigned on a vehicle). Pick an ambulance above, or assign them on the Ambulance / Shifts page.";
       } else {
         const r = await restockAmbulance({
           ambulanceId,
           staffId: doc.staffId,
           stockRequestId: doc._id,
+          // Central StockTransaction requires the acting admin.
+          performedByAdminId: (req as any).adminId,
           items: doc.items,
         });
         const amb: any = await Ambulance.findById(ambulanceId).select("registrationNumber").lean();

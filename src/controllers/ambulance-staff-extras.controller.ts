@@ -12,7 +12,10 @@ import AmbulanceStaff from "../models/ambulance-staff.model";
 import Ambulance from "../models/ambulance.model";
 import InventoryItem from "../models/inventory-item.model";
 import { AmbulanceStock } from "../models/ambulance-stock.model";
-import { consumeFromAmbulance } from "../services/ambulance-stock.service";
+import {
+  consumeFromAmbulance,
+  resolveCrewAmbulanceId,
+} from "../services/ambulance-stock.service";
 import AmbulanceRequest from "../models/ambulance-request.model";
 import { SOSAlert } from "../models/sos.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
@@ -245,19 +248,12 @@ export const saveCaseNote = async (req: Request, _res: Response, next: NextFunct
   return next();
 };
 
-/** The ambulance this crew member is assigned to (driver or attendant). */
-const crewAmbulanceId = async (staffId: any): Promise<any> => {
-  const amb = await Ambulance.findOne({
-    // Staff are assigned FROM the ambulance record (assignedDriverId /
-    // assignedAttendantId), so we look the vehicle up by this crew member.
-    // `$ne: false` (not `true`) so vehicles without an explicit isActive still match.
-    isActive: { $ne: false },
-    $or: [{ assignedDriverId: staffId }, { assignedAttendantId: staffId }],
-  })
-    .select("_id")
-    .lean();
-  return (amb as any)?._id ?? undefined;
-};
+/**
+ * The ambulance this crew member is on. Staff are assigned FROM the ambulance
+ * side, but those fields only cache the ACTIVE shift — so this also falls back
+ * to the crew's shift. (Shared with the admin fulfil flow.)
+ */
+const crewAmbulanceId = (staffId: any) => resolveCrewAmbulanceId(staffId);
 
 // ----- Stock requests -----
 // Items now carry a real `itemId` (from the HMS inventory catalog) so fulfilling
