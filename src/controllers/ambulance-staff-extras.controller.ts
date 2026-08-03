@@ -211,19 +211,29 @@ export const addPatient = async (req: Request, _res: Response, next: NextFunctio
   });
 
   // If the crew registered this patient DURING an active dispatch (the app
-  // passes its dispatchId), link the record to that SOS journey so the dispatch
+  // passes its dispatchId), link the record to that journey so the dispatch
   // — and the admin — show who was actually treated. Only link a dispatch this
-  // crew is assigned to.
+  // crew is assigned to. The active job can be either an SOS EmergencyDispatch
+  // or a booked "Book Ambulance" AmbulanceRequest — the app just passes
+  // whichever one is currently active without saying which kind it is, so try
+  // both rather than silently no-op'ing when it's the latter (this used to
+  // only try EmergencyDispatch, so field patients on booked rides never linked).
   let linkedToDispatch = false;
   if (b.dispatchId) {
-    const upd = await EmergencyDispatch.updateOne(
-      {
-        _id: b.dispatchId,
-        $or: [{ driverStaffId: sid(req) }, { attendantStaffId: sid(req) }],
-      },
-      { $set: { hospitalPatientId: item._id } },
-    );
-    linkedToDispatch = upd.modifiedCount > 0;
+    const assignedToThisCrew = {
+      _id: b.dispatchId,
+      $or: [{ driverStaffId: sid(req) }, { attendantStaffId: sid(req) }],
+    };
+    const updDispatch = await EmergencyDispatch.updateOne(assignedToThisCrew, {
+      $set: { hospitalPatientId: item._id },
+    });
+    linkedToDispatch = updDispatch.modifiedCount > 0;
+    if (!linkedToDispatch) {
+      const updRequest = await AmbulanceRequest.updateOne(assignedToThisCrew, {
+        $set: { hospitalPatientId: item._id },
+      });
+      linkedToDispatch = updRequest.modifiedCount > 0;
+    }
   }
 
   // `linkedToApp` lets the staff app confirm the patient was matched to an

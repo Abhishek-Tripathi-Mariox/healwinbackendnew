@@ -2,6 +2,8 @@ import { Request, Response, NextFunction } from "express";
 import { Model } from "mongoose";
 import LabTest from "../../models/lab-test.model";
 import PharmacyProduct from "../../models/pharmacy-product.model";
+import InventoryItem from "../../models/inventory-item.model";
+import Procedure from "../../models/procedure.model";
 
 /**
  * Admin CRUD for the patient-app catalog (pharmacy products / lab tests).
@@ -66,5 +68,51 @@ const makeCrud = (model: Model<any>, searchFields: string[]) => ({
   },
 });
 
-export const products = makeCrud(PharmacyProduct, ["name", "brand", "category"]);
+const productCrud = makeCrud(PharmacyProduct, ["name", "brand", "category"]);
+
+/**
+ * Overlay the real HMS InventoryItem.currentStock onto any product linked
+ * via itemId — that's the authoritative number once linked, not the static
+ * `stock` field (which stops being written to once a product is linked; see
+ * PharmacyProduct.itemId doc comment).
+ */
+const withLinkedStock = async (rows: any[]) => {
+  const itemIds = rows.map((r) => r.itemId).filter(Boolean);
+  if (!itemIds.length) return rows;
+  const items = await InventoryItem.find({ _id: { $in: itemIds } })
+    .select("name sku currentStock unit")
+    .lean();
+  const byId = new Map(items.map((it: any) => [String(it._id), it]));
+  return rows.map((r) => {
+    if (!r.itemId) return r;
+    const it: any = byId.get(String(r.itemId));
+    if (!it) return r;
+    return { ...r, stock: it.currentStock, linkedItemName: it.name, linkedItemSku: it.sku, linkedItemUnit: it.unit };
+  });
+};
+
+export const products = {
+  ...productCrud,
+  list: async (req: Request, res: Response, next: NextFunction) => {
+    await productCrud.list(req, res, async () => {
+      req.rData.items = await withLinkedStock(req.rData.items);
+      next();
+    });
+  },
+};
 export const tests = makeCrud(LabTest, ["name", "category"]);
+export const procedures = makeCrud(Procedure, ["name", "category"]);
+
+/** GET /admin/catalog/inventory-items — picker source for linking a pharmacy product to real HMS stock. */
+export const inventoryItemOptions = async (req: Request, _res: Response, next: NextFunction) => {
+  const search = ((req.query.search as string) || "").trim();
+  const query: any = { isDeleted: false, isActive: true };
+  if (search) {
+    const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    query.$or = [{ name: rx }, { sku: rx }];
+  }
+  const items = await InventoryItem.find(query).select("name sku currentStock unit").sort({ name: 1 }).limit(50).lean();
+  req.rData = { items };
+  req.msg = "success";
+  return next();
+};

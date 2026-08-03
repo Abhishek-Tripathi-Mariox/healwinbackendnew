@@ -1,6 +1,9 @@
 import { Types } from "mongoose";
 import DoctorSchedule from "../models/doctor-schedule.model";
 import { Appointment } from "../models/appointment.model";
+import HrEmployee from "../models/hr-employee.model";
+import LeaveRequest from "../models/leave-request.model";
+import { Consultation } from "../models/patient-commerce.model";
 
 const toMin = (hhmm: string): number => {
   const [h, m] = String(hhmm).split(":").map((x) => parseInt(x, 10));
@@ -15,6 +18,36 @@ export interface DoctorSlot {
 }
 
 /**
+ * True if this doctor (an Admin id — OPD scheduling has always keyed off
+ * Admin, not HrEmployee) has an approved HR leave request covering `date`.
+ * Requires the doctor's HrEmployee record to be linked via linkedAdminId —
+ * without that link HR leave and OPD scheduling stay disconnected, same as
+ * before. No-op (never on leave) if the doctor has no linked HR record.
+ */
+export const isDoctorOnApprovedLeave = async (
+  doctorId: Types.ObjectId | string,
+  date: Date,
+): Promise<boolean> => {
+  const employee = await HrEmployee.findOne({ linkedAdminId: doctorId, isDeleted: { $ne: true } })
+    .select("_id")
+    .lean();
+  if (!employee) return false;
+
+  const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+  const leave = await LeaveRequest.findOne({
+    subjectType: "hr_employee",
+    employeeId: employee._id,
+    status: "approved",
+    fromDate: { $lte: dayEnd },
+    toDate: { $gte: dayStart },
+  })
+    .select("_id")
+    .lean();
+  return !!leave;
+};
+
+/**
  * Available OPD slots for a doctor on a calendar date: weekly window(s) for that
  * weekday, stepped by slotMinutes, minus already-booked (non-cancelled)
  * appointments and minus times already in the past for today.
@@ -26,6 +59,8 @@ export const getDoctorSlots = async (
   const schedule: any = await DoctorSchedule.findOne({ doctorId, isActive: true }).lean();
   if (!schedule || !Array.isArray(schedule.windows) || schedule.windows.length === 0) return [];
 
+  if (await isDoctorOnApprovedLeave(doctorId, date)) return [];
+
   const weekday = date.getDay();
   const step = schedule.slotMinutes || 15;
   const windows = schedule.windows.filter((w: any) => w.weekday === weekday);
@@ -34,16 +69,29 @@ export const getDoctorSlots = async (
   const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
   const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
 
-  // Times already booked that day (by minute-of-day), excluding cancelled.
-  const booked: any[] = await Appointment.find({
-    doctorId,
-    scheduledAt: { $gte: dayStart, $lte: dayEnd },
-    status: { $ne: "cancelled" },
-  })
-    .select("scheduledAt")
-    .lean();
+  // Times already booked that day (by minute-of-day), excluding cancelled —
+  // across BOTH real OPD appointments and "Consult a Doctor" teleconsult
+  // bookings (a separate model/flow — see patient.routes.ts's /consultations
+  // — that key off the same doctorId with no shared ledger; without this a
+  // doctor could be double-booked in-person and by teleconsult at once).
+  const [bookedAppointments, bookedConsultations] = await Promise.all([
+    Appointment.find({
+      doctorId,
+      scheduledAt: { $gte: dayStart, $lte: dayEnd },
+      status: { $ne: "cancelled" },
+    })
+      .select("scheduledAt")
+      .lean(),
+    Consultation.find({
+      doctorId,
+      scheduledAt: { $gte: dayStart, $lte: dayEnd },
+      status: { $ne: "CANCELLED" },
+    })
+      .select("scheduledAt")
+      .lean(),
+  ]);
   const taken = new Set(
-    booked.map((b) => {
+    [...bookedAppointments, ...bookedConsultations].map((b: any) => {
       const d = new Date(b.scheduledAt);
       return d.getHours() * 60 + d.getMinutes();
     }),

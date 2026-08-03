@@ -3,6 +3,8 @@ import AmbulanceRequest from "../models/ambulance-request.model";
 import Ambulance from "../models/ambulance.model";
 import { emitToUser } from "../utils/socket.util";
 import { sendToUser } from "../services/notification.service";
+import { calculateFare } from "../services/fare.service";
+import { uploadMultipleFilesToAws } from "../utils/s3";
 
 /**
  * Ambulance-staff actions on a patient AmbulanceRequest (the SOS / "Book
@@ -157,6 +159,36 @@ export const complete = async (req: Request, _res: Response, next: NextFunction)
   const r = await own(req);
   if (!guard(req, next, r)) return;
   r.status = "COMPLETED";
+  r.completedAt = new Date();
+
+  // Bill the actual route driven (dispatch point → pickup → hospital), not
+  // just the booking-time estimate — recompute fare from the odometer
+  // accumulated in ambulance-staff.controller#updateLocation. The original
+  // estimate (amount/fareBreakdown) is left untouched so both stay visible.
+  if (r.vehicleTypeId && r.actualDistanceKm) {
+    const actualDurationMin = r.tripStartedTrackingAt
+      ? Math.max(
+          1,
+          Math.round(
+            (r.completedAt.getTime() - r.tripStartedTrackingAt.getTime()) / 60000,
+          ),
+        )
+      : 0;
+    try {
+      const actualFare = await calculateFare({
+        vehicleTypeId: r.vehicleTypeId as any,
+        distanceKm: r.actualDistanceKm,
+        durationMin: actualDurationMin,
+        promoDiscount: r.discountAmount || 0,
+      });
+      r.actualDurationMin = actualDurationMin;
+      r.actualFareAmount = actualFare.finalFare;
+      r.actualFareBreakdown = actualFare as any;
+    } catch {
+      // Vehicle type missing — don't block trip completion on a fare recompute failure.
+    }
+  }
+
   await r.save();
   if (r.ambulanceId) {
     await Ambulance.updateOne(
@@ -203,6 +235,41 @@ export const reject = async (req: Request, _res: Response, next: NextFunction) =
   // Patient app flips back to "Finding an ambulance".
   emitToUser(userId, "booking:status", { requestId: String(r._id), status: "SEARCHING" });
   req.rData = { request: r };
+  req.msg = "success";
+  return next();
+};
+
+/**
+ * POST /requests/:id/patient-media — crew uploads photo(s)/video(s) of the
+ * patient captured during transport, so the patient app can show them.
+ */
+export const uploadPatientMedia = async (req: Request, _res: Response, next: NextFunction) => {
+  const r = await own(req);
+  if (!guard(req, next, r)) return;
+
+  const files = Array.isArray(req.files) ? req.files : [];
+  if (!files.length) {
+    req.rCode = 0;
+    req.msg = "no_files";
+    req.rData = {};
+    return next();
+  }
+
+  const { images: urls } = await uploadMultipleFilesToAws(files as any);
+  const now = new Date();
+  const uploaded = files.map((f: any, i: number) => ({
+    url: (urls as string[])[i],
+    type: String(f.mimetype || "").startsWith("video/") ? "video" : "photo",
+    uploadedAt: now,
+    uploadedBy: sid(req),
+  }));
+
+  r.patientMedia = [...(r.patientMedia || []), ...(uploaded as any)];
+  await r.save();
+
+  emitToUser(String(r.userId), "booking:status", { requestId: String(r._id), status: r.status });
+
+  req.rData = { patientMedia: r.patientMedia };
   req.msg = "success";
   return next();
 };

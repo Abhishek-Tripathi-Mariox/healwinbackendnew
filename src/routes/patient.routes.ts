@@ -14,6 +14,9 @@ import { StaffCaseNote } from "../models/ambulance-staff-extras.model";
 import { Admin } from "../models/admin.model";
 import LabTest from "../models/lab-test.model";
 import PharmacyProduct from "../models/pharmacy-product.model";
+import InventoryItem from "../models/inventory-item.model";
+import StockTransaction from "../models/stock-transaction.model";
+import { issueFefo, returnFefo } from "../services/inventory-batch.service";
 import AmbulanceRequest from "../models/ambulance-request.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
 import { SOSSubmission } from "../models/sos-submission.model";
@@ -39,26 +42,18 @@ import { emitToAdmin, emitToUser } from "../utils/socket.util";
 import Ambulance from "../models/ambulance.model";
 import config from "../config";
 import { Types } from "mongoose";
+import { uploadFileToAws } from "../utils/s3";
+import { InsurancePayer, PatientPolicy, InsuranceClaim } from "../models/insurance.model";
 
 const router = Router();
 const { verifyUserToken } = AuthMiddleware();
 
-// Local disk storage for the records stub. Replaced by S3/GCS once the
-// real medical-records pipeline lands. Files live under /uploads so they
-// can be served by the static handler in server.ts and surface in the
-// patient app's "Open" action.
-const uploadDir = path.join(process.cwd(), "uploads", "medical-records");
-try {
-  fs.mkdirSync(uploadDir, { recursive: true });
-} catch {
-  /* dir already exists */
-}
+// Uploaded to S3 (uploadFileToAws) rather than local disk — local disk was a
+// stub that silently lost files on every redeploy/restart/scale-out (nothing
+// persists it across instances), which is why "view record" would hang/fail
+// to load. Memory storage here just buffers the file en route to S3.
 const recordsUpload = multer({
-  storage: multer.diskStorage({
-    destination: uploadDir,
-    filename: (_req, file, cb) =>
-      cb(null, `${Date.now()}-${randomUUID()}${path.extname(file.originalname)}`),
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
@@ -290,14 +285,29 @@ router.get("/doctors/:id/slots", verifyUserToken, async (req, res) => {
   const slots = generateSlots(dateStr);
   const dayStart = new Date(`${dateStr}T00:00:00+05:30`);
   const dayEnd = new Date(`${dateStr}T23:59:59+05:30`);
-  const booked = await Consultation.find({
-    doctorId: req.params.id,
-    status: { $ne: "CANCELLED" },
-    scheduledAt: { $gte: dayStart, $lte: dayEnd },
-  })
-    .select("scheduledAt")
-    .lean();
-  const bookedSet = new Set(booked.map((c: any) => new Date(c.scheduledAt).getTime()));
+  // Cross-check against real OPD appointments too — Consultation
+  // (teleconsult) and Appointment (in-person OPD) are separate models keyed
+  // off the same doctorId with no shared ledger; without this a doctor
+  // could be double-booked across the two flows for the same time.
+  const [booked, bookedOpd] = await Promise.all([
+    Consultation.find({
+      doctorId: req.params.id,
+      status: { $ne: "CANCELLED" },
+      scheduledAt: { $gte: dayStart, $lte: dayEnd },
+    })
+      .select("scheduledAt")
+      .lean(),
+    Appointment.find({
+      doctorId: req.params.id,
+      status: { $ne: "cancelled" },
+      scheduledAt: { $gte: dayStart, $lte: dayEnd },
+    })
+      .select("scheduledAt")
+      .lean(),
+  ]);
+  const bookedSet = new Set(
+    [...booked, ...bookedOpd].map((c: any) => new Date(c.scheduledAt).getTime()),
+  );
   const now = Date.now();
   const items = slots.map((s) => ({
     time: s.time,
@@ -343,12 +353,19 @@ router.post("/consultations", verifyUserToken, async (req, res) => {
     if (!when || when.getTime() <= Date.now()) {
       return res.status(400).json({ success: false, message: "Please pick a valid future slot" });
     }
-    const clash = await Consultation.findOne({
-      doctorId: doc._id,
-      status: { $ne: "CANCELLED" },
-      scheduledAt: when,
-    }).lean();
-    if (clash) {
+    const [clash, clashOpd] = await Promise.all([
+      Consultation.findOne({
+        doctorId: doc._id,
+        status: { $ne: "CANCELLED" },
+        scheduledAt: when,
+      }).lean(),
+      Appointment.findOne({
+        doctorId: doc._id,
+        status: { $ne: "cancelled" },
+        scheduledAt: when,
+      }).lean(),
+    ]);
+    if (clash || clashOpd) {
       return res.status(409).json({ success: false, message: "That slot was just taken — pick another" });
     }
     scheduledAt = when;
@@ -425,18 +442,29 @@ router.get("/pharmacy/categories", async (_req, res) => {
   const cats: string[] = await PharmacyProduct.distinct("category", { isActive: true, isDeleted: false });
   res.json({ success: true, data: cats.filter(Boolean).map((name, i) => ({ _id: `c${i}`, name })) });
 });
+// Products linked to a real InventoryItem show its live currentStock rather
+// than the (no-longer-written-to) static `stock` field, so "out of stock"
+// here matches what the pharmacy/dispensing side actually has on the shelf.
+const withRealStock = async (rows: any[]) => {
+  const itemIds = rows.map((r) => r.itemId).filter(Boolean);
+  if (!itemIds.length) return rows;
+  const items = await InventoryItem.find({ _id: { $in: itemIds } }).select("currentStock").lean();
+  const byId = new Map(items.map((it: any) => [String(it._id), it.currentStock]));
+  return rows.map((r) => (r.itemId && byId.has(String(r.itemId)) ? { ...r, stock: byId.get(String(r.itemId)) } : r));
+};
 router.get("/pharmacy/products", async (req, res) => {
   const { q, category } = req.query as { q?: string; category?: string };
   const query: any = { isActive: true, isDeleted: false };
   if (category) query.category = category;
   if (q) query.name = new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
   const list = await PharmacyProduct.find(query).sort({ name: 1 }).lean();
-  res.json({ success: true, data: list, message: "ok" });
+  res.json({ success: true, data: await withRealStock(list), message: "ok" });
 });
 router.get("/pharmacy/products/:id", async (req, res) => {
   const p = await PharmacyProduct.findOne({ _id: (req.params.id as string), isDeleted: false }).lean();
   if (!p) return res.status(404).json({ success: false, message: "Product not found" });
-  ok(res, p);
+  const [withStock] = await withRealStock([p]);
+  ok(res, withStock);
 });
 router.get("/pharmacy/cart", verifyUserToken, (_req, res) =>
   ok(res, { items: [], total: 0 })
@@ -444,7 +472,11 @@ router.get("/pharmacy/cart", verifyUserToken, (_req, res) =>
 router.post("/pharmacy/cart", verifyUserToken, (req, res) => ok(res, req.body));
 
 // Real, persisted pharmacy orders. Prices are read from the catalog at order
-// time so the stored total can't be tampered with from the client.
+// time so the stored total can't be tampered with from the client. Products
+// linked to a real InventoryItem (see PharmacyProduct.itemId) draw from the
+// SAME HMS stock ledger EMR/ward dispensing uses — via issueFefo, so this
+// order is not a second, unreconciled stock universe. Unlinked (legacy)
+// products still decrement their own PharmacyProduct.stock counter.
 router.post("/pharmacy/orders", verifyUserToken, async (req, res) => {
   const b: any = req.body ?? {};
   const reqItems: { productId: string; qty: number }[] = Array.isArray(b.items) ? b.items : [];
@@ -454,25 +486,89 @@ router.post("/pharmacy/orders", verifyUserToken, async (req, res) => {
   const ids = reqItems.map((i) => i.productId).filter(Boolean);
   const products = await PharmacyProduct.find({ _id: { $in: ids }, isDeleted: { $ne: true } }).lean();
   const byId = new Map(products.map((p: any) => [String(p._id), p]));
-  const items = reqItems
+  const lines = reqItems
     .map((i) => {
       const p: any = byId.get(String(i.productId));
       if (!p) return null;
       const qty = Math.max(1, Number(i.qty) || 1);
-      return { productId: p._id, name: p.name, price: p.price ?? 0, qty };
+      return { productId: p._id, name: p.name, price: p.price ?? 0, qty, itemId: p.itemId };
     })
-    .filter(Boolean) as any[];
-  if (items.length === 0) {
+    .filter(Boolean) as { productId: any; name: string; price: number; qty: number; itemId?: any }[];
+  if (lines.length === 0) {
     return res.status(400).json({ success: false, message: "No valid products in order" });
   }
+
+  // Draw real stock for each line, tracking what was taken so a partial
+  // failure partway through can be compensated (rolled back) rather than
+  // leaving stock silently decremented with no order to show for it.
+  const items: any[] = [];
+  const rollback: (() => Promise<void>)[] = [];
+  try {
+    for (const line of lines) {
+      if (line.itemId) {
+        const result = await issueFefo({ itemId: line.itemId, quantity: line.qty });
+        rollback.push(() =>
+          returnFefo({ itemId: line.itemId, drawn: result.drawn, legacyDrawn: result.legacyDrawn }).then(() => undefined),
+        );
+        await StockTransaction.create({
+          itemId: line.itemId,
+          type: "out",
+          quantity: line.qty,
+          balanceAfter: result.currentStock,
+          amount: result.costOfGoodsIssued,
+          reason: "Pharmacy order",
+          issuedToType: "patient",
+          issuedToRef: String(uid(req)),
+          performedByUserId: uid(req),
+        });
+        items.push({
+          productId: line.productId,
+          name: line.name,
+          price: line.price,
+          qty: line.qty,
+          itemId: line.itemId,
+          batchDraws: result.drawn.map((d) => ({ batchId: d.batchId, quantity: d.quantity })),
+          legacyDrawnQty: result.legacyDrawn,
+        });
+      } else {
+        const updated = await PharmacyProduct.findOneAndUpdate(
+          { _id: line.productId, stock: { $gte: line.qty } },
+          { $inc: { stock: -line.qty } },
+        );
+        if (!updated) throw new Error(`insufficient_stock:${line.name}`);
+        rollback.push(() =>
+          PharmacyProduct.updateOne({ _id: line.productId }, { $inc: { stock: line.qty } }).then(() => undefined),
+        );
+        items.push({ productId: line.productId, name: line.name, price: line.price, qty: line.qty });
+      }
+    }
+  } catch (e: any) {
+    for (const undo of rollback.reverse()) {
+      await undo().catch(() => undefined);
+    }
+    const msg = String(e?.message || "");
+    if (msg.startsWith("insufficient_stock")) {
+      return res.status(400).json({ success: false, message: `Out of stock: ${msg.split(":")[1] || "one or more items"}` });
+    }
+    return res.status(400).json({ success: false, message: "Could not reserve stock for this order" });
+  }
+
   const totalAmount = items.reduce((s, it) => s + it.price * it.qty, 0);
-  const order = await PharmacyOrder.create({
-    userId: uid(req),
-    items,
-    addressId: b.addressId || undefined,
-    prescriptionUrl: b.prescriptionUrl || undefined,
-    totalAmount,
-  });
+  let order: any;
+  try {
+    order = await PharmacyOrder.create({
+      userId: uid(req),
+      items,
+      addressId: b.addressId || undefined,
+      prescriptionUrl: b.prescriptionUrl || undefined,
+      totalAmount,
+    });
+  } catch (e) {
+    for (const undo of rollback.reverse()) {
+      await undo().catch(() => undefined);
+    }
+    return res.status(500).json({ success: false, message: "Could not place order" });
+  }
   emitToAdmin("pharmacy-order:new", { id: String(order._id), totalAmount });
   ok(res, order);
 });
@@ -498,6 +594,28 @@ router.post("/pharmacy/orders/:id/cancel", verifyUserToken, async (req, res) => 
   const o: any = await PharmacyOrder.findOne({ _id: req.params.id as string, userId: uid(req) });
   if (!o) return res.status(404).json({ success: false, message: "Order not found" });
   if (["DELIVERED", "CANCELLED"].includes(o.status)) return ok(res, o.toObject());
+  // Restock whatever was actually drawn — the exact batches for linked
+  // lines (see returnFefo), or the legacy PharmacyProduct.stock counter
+  // otherwise — so a cancelled order doesn't leave stock permanently short.
+  for (const line of o.items || []) {
+    if (line.itemId) {
+      await returnFefo({
+        itemId: line.itemId,
+        drawn: (line.batchDraws || []).map((d: any) => ({ batchId: d.batchId, quantity: d.quantity })),
+        legacyDrawn: line.legacyDrawnQty || 0,
+      }).catch(() => undefined);
+      await StockTransaction.create({
+        itemId: line.itemId,
+        type: "in",
+        quantity: line.qty,
+        balanceAfter: (await InventoryItem.findById(line.itemId).select("currentStock").lean() as any)?.currentStock ?? 0,
+        reason: "Pharmacy order cancelled",
+        performedByUserId: uid(req),
+      }).catch(() => undefined);
+    } else if (line.productId) {
+      await PharmacyProduct.updateOne({ _id: line.productId }, { $inc: { stock: line.qty } }).catch(() => undefined);
+    }
+  }
   o.status = "CANCELLED";
   await o.save();
   emitToAdmin("pharmacy-order:updated", { id: String(o._id), status: "CANCELLED" });
@@ -625,11 +743,8 @@ router.post(
   async (req, res) => {
     const body: any = req.body ?? {};
     const file = (req as any).file as Express.Multer.File | undefined;
-    // Absolute URL so the patient app's launchUrl() can open it from the
-    // device browser. req.protocol respects trust-proxy from server.ts.
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
     const fileUrl = file
-      ? `${baseUrl}/uploads/medical-records/${path.basename(file.path)}`
+      ? ((await uploadFileToAws([file])).images as string)
       : body.fileUrl ?? "";
     const record = await PatientMedicalRecord.create({
       userId: uid(req),
@@ -735,7 +850,13 @@ router.get("/geocode/resolve", verifyUserToken, async (req, res) => {
 });
 
 // ================== Facilities ==================
-router.get("/facilities/hospitals", (_req, res) => emptyList(res));
+// Hospitals/labs used to be dead stub routes here. The real facility
+// locator already exists — Centre model + LocatorServiceType taxonomy (see
+// seed-locator-service-types.ts) — and the patient app's centresApi already
+// calls it directly (GET /centres?serviceType=&search=&lat=&lng=, GET
+// /centres/service-types for the tab list). Removed the stubs rather than
+// duplicate that query logic under a second URL nothing was calling.
+//
 // Real pharmacy locator (approved, active). Supports ?state=&district=
 // &search= and ?lng=&lat=&radiusKm= proximity filters.
 router.get("/facilities/pharmacies", async (req, res) => {
@@ -760,18 +881,71 @@ router.get("/facilities/pharmacies", async (req, res) => {
   }
   return ok(res, await Pharmacy.find(q).sort({ rating: -1 }).limit(100).lean());
 });
-router.get("/facilities/labs", (_req, res) => emptyList(res));
 
 // ================== Home feed ==================
-router.get("/home/feed", (_req, res) =>
+// Real content aggregated from data that already exists elsewhere in the
+// app (no new speculative models): the same admin-managed promos the home
+// screen already shows as banners, a fixed set of quick-links to real
+// screens, this patient's nearest upcoming OPD appointment (ambulance rides
+// are immediate-dispatch, not scheduled, so OPD is the real "upcoming"
+// concept here), and a couple of first-aid guides as health suggestions.
+router.get("/home/feed", verifyUserToken, async (req, res) => {
+  const patientIds = await myHospitalPatientIds(req);
+  const [banners, upcomingAppt, suggestions] = await Promise.all([
+    HomePromo.find({ isActive: true }).sort({ sortOrder: 1 }).limit(10).lean(),
+    patientIds.length
+      ? Appointment.findOne({
+          patientId: { $in: patientIds },
+          status: "booked",
+          scheduledAt: { $gte: new Date() },
+        })
+          .sort({ scheduledAt: 1 })
+          .populate("doctorId", "fullName")
+          .lean()
+      : null,
+    FirstAidGuide.find({ isActive: true, isDeleted: { $ne: true } })
+      .sort({ sortOrder: 1 })
+      .limit(3)
+      .lean(),
+  ]);
   ok(res, {
-    banners: [],
-    shortcuts: [],
-    upcoming: [],
-    suggestions: [],
-  })
-);
-router.get("/home/banners", (_req, res) => emptyList(res));
+    banners: banners.map((p: any) => ({
+      _id: String(p._id),
+      titleTop: p.titleTop,
+      titleBold: p.titleBold || [],
+      cta: p.cta || "Book Now",
+      target: p.target,
+      image: p.image || null,
+    })),
+    shortcuts: [
+      { key: "hospitals", label: "Hospitals", route: "CentresList", params: { serviceType: "hospitals" } },
+      { key: "labs", label: "Labs", route: "CentresList", params: { serviceType: "labs" } },
+      { key: "firstAid", label: "First Aid", route: "FirstAid", params: null },
+      { key: "insurance", label: "My Insurance", route: "Insurance", params: null },
+    ],
+    upcoming: upcomingAppt
+      ? [
+          {
+            _id: String((upcomingAppt as any)._id),
+            type: "opd_appointment",
+            scheduledAt: (upcomingAppt as any).scheduledAt,
+            doctorName: (upcomingAppt as any).doctorId?.fullName || null,
+            tokenNumber: (upcomingAppt as any).tokenNumber,
+          },
+        ]
+      : [],
+    suggestions: suggestions.map((g: any) => ({
+      _id: String(g._id),
+      title: g.title,
+      category: g.category || "",
+      thumbnailUrl: g.thumbnailUrl || null,
+    })),
+  });
+});
+router.get("/home/banners", async (_req, res) => {
+  const banners = await HomePromo.find({ isActive: true }).sort({ sortOrder: 1 }).limit(10).lean();
+  ok(res, banners);
+});
 
 // First-aid / emergency education content (admin-managed, public).
 router.get("/first-aid", async (_req, res) => {
@@ -884,10 +1058,9 @@ router.post("/membership/enroll", verifyUserToken, async (req, res) => {
 // User and the HMS HospitalPatient are separate entities, joined on the last 10
 // digits of the mobile so country-code/spacing differences don't break it.
 
-/** All HospitalPatient _ids that belong to the logged-in app user (by phone). */
-const myHospitalPatientIds = async (req: Request): Promise<any[]> => {
-  const user: any = await User.findById(uid(req)).select("mobileNumber").lean();
-  const last10 = String(user?.mobileNumber || "").replace(/\D/g, "").slice(-10);
+/** All HospitalPatient _ids linked to a given phone (last-10-digit match). */
+const hospitalPatientIdsForPhone = async (phone?: string): Promise<any[]> => {
+  const last10 = String(phone || "").replace(/\D/g, "").slice(-10);
   if (last10.length !== 10) return [];
   const patients = await HospitalPatient.find({
     phone: { $regex: `${last10}$` },
@@ -896,6 +1069,43 @@ const myHospitalPatientIds = async (req: Request): Promise<any[]> => {
     .select("_id")
     .lean();
   return patients.map((p: any) => p._id);
+};
+
+/**
+ * The logged-in user's family group: the head (whoever's phone the family
+ * was built around) plus every user auto-linked under them — see
+ * user.service.ts#addUsers. A user with no dependents/head is their own
+ * one-person group.
+ */
+const familyMembers = async (req: Request): Promise<any[]> => {
+  const me: any = await User.findById(uid(req)).select("headUserId").lean();
+  const headId = me?.headUserId || uid(req);
+  return User.find({
+    $or: [{ _id: headId }, { headUserId: headId }],
+    isDeleted: { $ne: true },
+  })
+    .select("_id fullName mobileNumber gender profileImage headUserId")
+    .lean();
+};
+
+/**
+ * All HospitalPatient _ids that belong to the logged-in app user (by phone) —
+ * or, if `?patientUserId=` names another member of the SAME family group,
+ * that member's instead. Lets the app reuse these self-scoped HMS/insurance
+ * routes to view a family member's records via one "view as" picker, without
+ * duplicating every route. Unknown/non-family ids are silently denied (empty
+ * result), never leaked.
+ */
+const myHospitalPatientIds = async (req: Request): Promise<any[]> => {
+  const targetUserId = String(req.query.patientUserId || "").trim();
+  if (targetUserId && targetUserId !== String(uid(req))) {
+    const members = await familyMembers(req);
+    const target = members.find((m: any) => String(m._id) === targetUserId);
+    if (!target) return [];
+    return hospitalPatientIdsForPhone(target.mobileNumber);
+  }
+  const user: any = await User.findById(uid(req)).select("mobileNumber").lean();
+  return hospitalPatientIdsForPhone(user?.mobileNumber);
 };
 
 /** Find (or create, for booking) the user's primary hospital record. */
@@ -926,6 +1136,102 @@ const ensureHospitalPatient = async (req: Request): Promise<any> => {
   }
   return hp;
 };
+
+// Whole-family view: self + every auto-linked dependent (or, for a
+// dependent, self + head + siblings), each with their real hospital spend
+// and insurance coverage — like a real family health-insurance/hospital
+// portal where any member can see the household's combined picture. Numbers
+// come from the exact same HospitalInvoice/PatientPolicy/InsuranceClaim data
+// each member's own /hms/invoices and /insurance already show; this just
+// aggregates it across the family group instead of one phone at a time.
+router.get("/family/overview", verifyUserToken, async (req, res) => {
+  const meId = String(uid(req));
+  const members = await familyMembers(req);
+  const me: any = members.find((m: any) => String(m._id) === meId);
+  const headId = String(me?.headUserId || meId);
+
+  // Relation labels come from the head's own family-member rows (the only
+  // place a relation like "Wife"/"Son" is recorded), matched by linkedUserId.
+  const famRows = await PatientFamilyMember.find({
+    userId: headId,
+    linkedUserId: { $exists: true },
+  })
+    .select("relation linkedUserId")
+    .lean();
+  const relationByUserId = new Map(famRows.map((f: any) => [String(f.linkedUserId), f.relation]));
+
+  const results = await Promise.all(
+    members.map(async (m: any) => {
+      const ids = await hospitalPatientIdsForPhone(m.mobileNumber);
+      const [invoiceAgg, policies] = await Promise.all([
+        ids.length
+          ? HospitalInvoice.aggregate([
+              { $match: { patientId: { $in: ids } } },
+              {
+                $group: {
+                  _id: null,
+                  totalBilled: { $sum: "$total" },
+                  totalPaid: { $sum: "$amountPaid" },
+                  balanceDue: { $sum: "$balanceDue" },
+                  count: { $sum: 1 },
+                },
+              },
+            ])
+          : [],
+        ids.length
+          ? PatientPolicy.find({ patientId: { $in: ids }, isActive: true }).select("_id sumInsured").lean()
+          : [],
+      ]);
+      const billing = invoiceAgg[0] || { totalBilled: 0, totalPaid: 0, balanceDue: 0, count: 0 };
+
+      let totalUsed = 0;
+      let totalSumInsured = 0;
+      if (policies.length) {
+        const policyIds = policies.map((p: any) => p._id);
+        const claims = await InsuranceClaim.find({
+          policyId: { $in: policyIds },
+          status: { $in: ["approved", "settled"] },
+        })
+          .select("approvedAmount claimedAmount")
+          .lean();
+        totalUsed = claims.reduce((s: number, c: any) => s + (c.approvedAmount || c.claimedAmount || 0), 0);
+        totalSumInsured = policies.reduce((s: number, p: any) => s + (p.sumInsured || 0), 0);
+      }
+
+      return {
+        userId: String(m._id),
+        fullName: m.fullName || "Family member",
+        phone: m.mobileNumber,
+        isSelf: String(m._id) === meId,
+        isHead: String(m._id) === headId,
+        relation: String(m._id) === headId ? null : relationByUserId.get(String(m._id)) || null,
+        billing: {
+          totalBilled: billing.totalBilled || 0,
+          totalPaid: billing.totalPaid || 0,
+          balanceDue: billing.balanceDue || 0,
+          invoiceCount: billing.count || 0,
+        },
+        insurance: {
+          hasPolicy: policies.length > 0,
+          totalSumInsured,
+          totalUsed,
+          totalRemaining: Math.max(0, totalSumInsured - totalUsed),
+        },
+      };
+    }),
+  );
+
+  const familyTotal = results.reduce(
+    (acc, r) => ({
+      totalBilled: acc.totalBilled + r.billing.totalBilled,
+      totalPaid: acc.totalPaid + r.billing.totalPaid,
+      balanceDue: acc.balanceDue + r.billing.balanceDue,
+    }),
+    { totalBilled: 0, totalPaid: 0, balanceDue: 0 },
+  );
+
+  ok(res, { members: results, familyTotal });
+});
 
 // Quick summary: is a hospital record linked + counts for the dashboard tiles.
 router.get("/hms/summary", verifyUserToken, async (req, res) => {
@@ -1021,21 +1327,48 @@ router.get("/hms/invoices", verifyUserToken, async (req, res) => {
     .sort({ createdAt: -1 })
     .limit(100)
     .lean();
-  ok(res, rows.map((inv) => ({
-    _id: String(inv._id),
-    invoiceNo: inv.invoiceNo,
-    total: inv.total,
-    amountPaid: inv.amountPaid,
-    balanceDue: inv.balanceDue,
-    status: inv.status,
-    createdAt: inv.createdAt,
-    items: (inv.lineItems || []).map((it: any) => ({
-      description: it.description,
-      section: it.section,
-      quantity: it.quantity,
-      amount: it.amount,
-    })),
-  })));
+  // Surface any insurance claim raised against each bill (incl. the
+  // auto-drafted ones — see billing.controller.ts#autoDraftClaimForInvoice)
+  // right on the bill itself, instead of a patient with a balance due
+  // having no way to know insurance already covers it, or could.
+  const claims: any[] = rows.length
+    ? await InsuranceClaim.find({ invoiceId: { $in: rows.map((r) => r._id) } })
+        .select("invoiceId claimNumber status claimedAmount approvedAmount")
+        .lean()
+    : [];
+  const claimByInvoice = new Map(claims.map((c: any) => [String(c.invoiceId), c]));
+  // A patient can hold an active policy but still have no claim on a given
+  // bill (e.g. 2+ active policies — auto-draft skips ambiguous cases and
+  // leaves it for a human to pick) — surface that too so the UI can prompt
+  // "you're insured, check coverage" instead of looking uninsured.
+  const hasActivePolicy = !!(await PatientPolicy.exists({ patientId: { $in: ids }, isActive: true }));
+  ok(res, rows.map((inv) => {
+    const claim: any = claimByInvoice.get(String(inv._id));
+    return {
+      _id: String(inv._id),
+      invoiceNo: inv.invoiceNo,
+      total: inv.total,
+      amountPaid: inv.amountPaid,
+      balanceDue: inv.balanceDue,
+      status: inv.status,
+      createdAt: inv.createdAt,
+      hasActivePolicy,
+      items: (inv.lineItems || []).map((it: any) => ({
+        description: it.description,
+        section: it.section,
+        quantity: it.quantity,
+        amount: it.amount,
+      })),
+      claim: claim
+        ? {
+            claimNumber: claim.claimNumber,
+            status: claim.status,
+            claimedAmount: claim.claimedAmount,
+            approvedAmount: claim.approvedAmount,
+          }
+        : null,
+    };
+  }));
 });
 
 // IPD admissions + discharge summaries.
@@ -1113,6 +1446,111 @@ router.post("/hms/appointments", verifyUserToken, async (req, res) => {
     tokenNumber: appt.tokenNumber,
     status: appt.status,
   });
+});
+
+// ================== Insurance ==================
+// Real integration with the hospital billing module's insurance module
+// (admin/src/pages/InsuranceManagement.tsx, backend/src/models/insurance.model.ts)
+// — the patient self-registers a policy (like handing over your insurance
+// card), and this surfaces the SAME claims hospital billing staff raise +
+// approve/settle against it. Claim approval/settlement stays admin-only;
+// this is read + self-service "add my policy" only.
+
+// Active insurers/TPAs for the add-policy picker.
+router.get("/insurance/payers", verifyUserToken, async (_req, res) => {
+  const items = await InsurancePayer.find({ isActive: true, isDeleted: { $ne: true } })
+    .sort({ name: 1 })
+    .select("name type")
+    .lean();
+  ok(res, items.map((p: any) => ({ _id: String(p._id), name: p.name, type: p.type })));
+});
+
+// My policies + remaining coverage, computed from the same claims hospital
+// billing staff process (approved/settled claims reduce the balance — a
+// settled claim already posts a real payment onto the linked hospital
+// invoice, so this reflects real usage, not a self-reported number).
+router.get("/insurance", verifyUserToken, async (req, res) => {
+  const ids = await myHospitalPatientIds(req);
+  if (ids.length === 0) return ok(res, []);
+
+  const policies = await PatientPolicy.find({ patientId: { $in: ids } })
+    .sort({ createdAt: -1 })
+    .populate("payerId", "name type")
+    .lean();
+  if (!policies.length) return ok(res, []);
+
+  const policyIds = policies.map((p: any) => p._id);
+  const claims = await InsuranceClaim.find({ policyId: { $in: policyIds } })
+    .sort({ createdAt: -1 })
+    .lean();
+  const claimsByPolicy = new Map<string, any[]>();
+  for (const c of claims) {
+    const k = String(c.policyId);
+    if (!claimsByPolicy.has(k)) claimsByPolicy.set(k, []);
+    claimsByPolicy.get(k)!.push(c);
+  }
+
+  ok(
+    res,
+    policies.map((p: any) => {
+      const pClaims = claimsByPolicy.get(String(p._id)) || [];
+      const used = pClaims
+        .filter((c) => c.status === "approved" || c.status === "settled")
+        .reduce((s, c) => s + (c.approvedAmount || c.claimedAmount || 0), 0);
+      const pending = pClaims
+        .filter((c) => c.status === "submitted")
+        .reduce((s, c) => s + (c.claimedAmount || 0), 0);
+      const sumInsured = p.sumInsured || 0;
+      return {
+        _id: String(p._id),
+        payerName: p.payerId?.name || "Insurer",
+        payerType: p.payerId?.type || "insurer",
+        policyNumber: p.policyNumber,
+        holderName: p.holderName || "",
+        sumInsured,
+        used,
+        pending,
+        remaining: Math.max(0, sumInsured - used),
+        validFrom: p.validFrom || null,
+        validTo: p.validTo || null,
+        isActive: p.isActive,
+        claims: pClaims.map((c) => ({
+          _id: String(c._id),
+          claimNumber: c.claimNumber,
+          amount: c.approvedAmount || c.claimedAmount || 0,
+          status: c.status,
+          createdAt: c.createdAt,
+          settledAt: c.settledAt || null,
+        })),
+      };
+    }),
+  );
+});
+
+// Self-service "add my insurance" — same PatientPolicy hospital billing staff
+// create, just patient-originated. Links to (or creates) the patient's
+// HospitalPatient record the same way OPD booking does.
+router.post("/insurance", verifyUserToken, async (req, res) => {
+  const b = req.body || {};
+  const payerId = String(b.payerId || "");
+  const policyNumber = String(b.policyNumber || "").trim();
+  if (!payerId || !policyNumber) {
+    return res.status(400).json({ success: false, message: "payerId and policyNumber are required" });
+  }
+  const payer = await InsurancePayer.findOne({ _id: payerId, isActive: true, isDeleted: { $ne: true } }).lean();
+  if (!payer) return res.status(400).json({ success: false, message: "Invalid insurer selected" });
+
+  const hp = await ensureHospitalPatient(req);
+  const policy = await PatientPolicy.create({
+    patientId: hp._id,
+    payerId,
+    policyNumber,
+    holderName: b.holderName ? String(b.holderName).trim() : undefined,
+    sumInsured: Number(b.sumInsured) || 0,
+    validFrom: b.validFrom ? new Date(b.validFrom) : undefined,
+    validTo: b.validTo ? new Date(b.validTo) : undefined,
+  });
+  ok(res, { _id: String(policy._id) });
 });
 
 // ================== Ambulance ==================
@@ -1316,7 +1754,23 @@ const toApp = (r: any) => {
     inTransitTotal: r.inTransitTotal ?? 0,
     grandTotal: r.grandTotal ?? r.amount ?? null,
     paymentStatus: r.paymentStatus || "PENDING",
-    tripDistanceKm: r.distanceKm ?? null,
+    // Actual distance driven for this trip (dispatch point → pickup →
+    // hospital), accumulated live from location pings — distinct from the
+    // booking-time estimate in `distanceKm` above.
+    tripDistanceKm: r.actualDistanceKm ?? null,
+    // Final fare recomputed from the actual route at trip completion. Null
+    // until the trip is COMPLETED — the UI should show `amount` as the
+    // estimate until this is present, then show this as the final bill.
+    actualFareAmount: r.actualFareAmount ?? null,
+    actualFareBreakdown: r.actualFareBreakdown ?? null,
+    // Photos/videos of the patient captured by the crew during transport.
+    patientMedia: Array.isArray(r.patientMedia)
+      ? r.patientMedia.map((m: any) => ({
+          url: m.url,
+          type: m.type,
+          uploadedAt: m.uploadedAt,
+        }))
+      : [],
     lastLocationAt: r.lastLocationAt || null,
     // Cancellation details (for the "what happened" booking detail).
     cancelledBy: r.cancelledBy || null,
@@ -1458,10 +1912,18 @@ router.get("/ambulance/active", verifyUserToken, async (req, res) => {
     userId: uid(req),
     $or: [
       { status: { $in: ACTIVE_STATUSES } },
-      // Keep a just-finished trip visible until it's paid, so the patient lands
-      // on a "Trip completed" + final-bill view instead of the tracking screen
-      // staying stuck on "on the way" (or snapping back to "finding ambulance").
-      { status: "COMPLETED", paymentStatus: { $ne: "PAID" } },
+      // Keep a just-finished trip visible for a short grace period until it's
+      // paid, so the patient lands on a "Trip completed" + final-bill view
+      // instead of the tracking screen snapping back to "finding ambulance".
+      // Bounded to 2h so a cash-paid trip (never explicitly marked PAID)
+      // doesn't stay "active" forever and keep resurfacing on every app open —
+      // the app also remembers a dismissed ride once the patient taps "Done",
+      // but this bound covers reinstalls/other devices too.
+      {
+        status: "COMPLETED",
+        paymentStatus: { $ne: "PAID" },
+        completedAt: { $gte: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      },
     ],
   } as any)
     .sort({ createdAt: -1 })
@@ -1499,7 +1961,12 @@ const sosToApp = (sub: any, disp: any) => {
     driver: dr ? { name: dr.fullName, phone: dr.mobileNumber } : null,
     vehicle: amb ? { number: amb.registrationNumber } : null,
     otp: disp?.otp || null,
-    amount: null,
+    // Real final fare once the trip completed (see transitionDispatch in
+    // ambulance-dispatch.service.ts); null for still-active/cancelled SOS
+    // journeys — previously always null here, even for completed trips.
+    amount: disp?.actualFareAmount ?? null,
+    fareBreakdown: disp?.actualFareBreakdown ?? null,
+    tripDistanceKm: disp?.actualDistanceKm ?? null,
     createdAt: disp?.createdAt || sub?.createdAt,
   };
 };
@@ -1582,29 +2049,32 @@ router.get("/sos/active", verifyUserToken, async (req, res) => {
   const pickup = pc ? { lat: pc[1], lng: pc[0] } : null;
   const distanceKm = haversineKm(pickup, driverLocation);
 
-  // DUMMY SOS FARE (placeholder until the real SOS fare engine is wired). An
-  // emergency dispatch has no booked VehicleType, so we estimate a stable fare
-  // from a flat base + a nominal trip distance + GST, and surface it as
-  // amount + fareBreakdown so the patient sees a price breakup on the tracking
-  // screen. tripKm is fixed per-dispatch (not the shrinking approach distance)
-  // so the amount doesn't fluctuate as the ambulance nears.
-  const SOS_BASE_FARE = 500;
-  const SOS_PER_KM = 20;
-  const SOS_GST_PCT = 5;
-  const tripKm = Math.max(Math.round(d.estimatedDistanceKm || 10), 1);
-  const distanceCharge = tripKm * SOS_PER_KM;
-  const subtotal = SOS_BASE_FARE + distanceCharge;
-  const gstAmount = Math.round((subtotal * SOS_GST_PCT) / 100);
-  const finalFare = subtotal + gstAmount;
-  const fareBreakdown = {
-    baseFare: SOS_BASE_FARE,
-    distanceCharge,
-    distanceKm: tripKm,
-    gstPercentage: SOS_GST_PCT,
-    gstAmount,
-    finalFare,
-    estimated: true,
-  };
+  // Real fare, priced off the assigned ambulance's actual VehicleType
+  // (resolved at dispatch time — see resolveVehicleTypeForAmbulance in
+  // ambulance-dispatch.service.ts) instead of a flat placeholder. Uses the
+  // real distance driven so far (actualDistanceKm, accumulated live from GPS
+  // pings) once tracking has started, falling back to the road-distance
+  // estimate captured at dispatch. Once the trip completes, this same shape
+  // is filled from actualFareAmount/actualFareBreakdown (see below) — this
+  // block only runs for in-progress trips, so it's always the live estimate.
+  let amount: number | null = null;
+  let fareBreakdown: Record<string, any> | null = null;
+  if (d.vehicleTypeId) {
+    const tripKm = Math.max(d.actualDistanceKm || d.roadDistanceKm || 0, 1);
+    try {
+      const breakdown = await calculateFare({
+        vehicleTypeId: d.vehicleTypeId,
+        distanceKm: tripKm,
+        durationMin: etaMinutesFromKm(tripKm) ?? 0,
+        serviceType: "WITHIN_CITY",
+      });
+      amount = breakdown.finalFare;
+      fareBreakdown = { ...breakdown, estimated: true };
+    } catch {
+      // Fare config missing for this vehicle type — leave amount/fareBreakdown
+      // null rather than showing a fabricated number.
+    }
+  }
 
   ok(res, {
     _id: d._id,
@@ -1619,8 +2089,7 @@ router.get("/sos/active", verifyUserToken, async (req, res) => {
     driverLocation,
     distanceKm,
     etaMinutes: etaMinutesFromKm(distanceKm) ?? d.etaMinutes ?? null,
-    // Dummy payment so the patient sees an estimated fare for the SOS trip.
-    amount: finalFare,
+    amount,
     fareBreakdown,
   });
 });

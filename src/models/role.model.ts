@@ -238,6 +238,10 @@ export const PERMISSIONS = {
   INVENTORY_UPDATE: "inventory:update",
   INVENTORY_DELETE: "inventory:delete",
   INVENTORY_ADJUST: "inventory:adjust", // stock in/out movements
+  // Approve a pending manual adjustment/write-off (maker-checker) — deliberately
+  // separate from INVENTORY_ADJUST so the person requesting a correction isn't
+  // also the one who can wave it through.
+  INVENTORY_APPROVE: "inventory:approve",
 
   // Billing Management
   BILLING_VIEW: "billing:view",
@@ -302,6 +306,30 @@ export const PERMISSIONS = {
   // Patient-app catalog (doctors / pharmacy products / lab tests)
   CATALOG_VIEW: "catalog:view",
   CATALOG_MANAGE: "catalog:manage",
+
+  // Ambulance fare config + vehicle types & pricing
+  AMBULANCE_CONFIG_VIEW: "ambulance_config:view",
+  AMBULANCE_CONFIG_MANAGE: "ambulance_config:manage",
+
+  // Help & Support FAQs
+  FAQ_VIEW: "faq:view",
+  FAQ_MANAGE: "faq:manage",
+
+  // Patient-app home promo cards
+  HOME_PROMOS_VIEW: "home_promos:view",
+  HOME_PROMOS_MANAGE: "home_promos:manage",
+
+  // Membership plans
+  MEMBERSHIP_PLANS_VIEW: "membership_plans:view",
+  MEMBERSHIP_PLANS_MANAGE: "membership_plans:manage",
+
+  // Patient-app commerce inbox (doctor consultations, lab bookings, pharmacy orders)
+  PATIENT_COMMERCE_VIEW: "patient_commerce:view",
+  PATIENT_COMMERCE_MANAGE: "patient_commerce:manage",
+
+  // Ambulance crew shift scheduling
+  AMBULANCE_SHIFTS_VIEW: "ambulance_shifts:view",
+  AMBULANCE_SHIFTS_MANAGE: "ambulance_shifts:manage",
 } as const;
 
 // Group permissions by module for frontend display
@@ -519,6 +547,7 @@ export const PERMISSION_GROUPS = {
     PERMISSIONS.INVENTORY_UPDATE,
     PERMISSIONS.INVENTORY_DELETE,
     PERMISSIONS.INVENTORY_ADJUST,
+    PERMISSIONS.INVENTORY_APPROVE,
   ],
   "Doctor Panel — Billing": [
     PERMISSIONS.BILLING_VIEW,
@@ -569,6 +598,27 @@ export const PERMISSION_GROUPS = {
     PERMISSIONS.PAYROLL_FINALIZE,
   ],
   "Patient Catalog": [PERMISSIONS.CATALOG_VIEW, PERMISSIONS.CATALOG_MANAGE],
+  "Ambulance Config": [
+    PERMISSIONS.AMBULANCE_CONFIG_VIEW,
+    PERMISSIONS.AMBULANCE_CONFIG_MANAGE,
+  ],
+  "Help FAQs": [PERMISSIONS.FAQ_VIEW, PERMISSIONS.FAQ_MANAGE],
+  "Home Promos": [
+    PERMISSIONS.HOME_PROMOS_VIEW,
+    PERMISSIONS.HOME_PROMOS_MANAGE,
+  ],
+  "Membership Plans": [
+    PERMISSIONS.MEMBERSHIP_PLANS_VIEW,
+    PERMISSIONS.MEMBERSHIP_PLANS_MANAGE,
+  ],
+  "Patient Commerce": [
+    PERMISSIONS.PATIENT_COMMERCE_VIEW,
+    PERMISSIONS.PATIENT_COMMERCE_MANAGE,
+  ],
+  "Ambulance Shifts": [
+    PERMISSIONS.AMBULANCE_SHIFTS_VIEW,
+    PERMISSIONS.AMBULANCE_SHIFTS_MANAGE,
+  ],
 };
 
 // Sidebar modules mapping to permissions
@@ -616,6 +666,16 @@ export const SIDEBAR_MODULES = {
   holidays: [PERMISSIONS.HOLIDAYS_VIEW],
   payroll: [PERMISSIONS.PAYROLL_VIEW],
   catalog: [PERMISSIONS.CATALOG_VIEW],
+  "ambulance-pricing": [PERMISSIONS.AMBULANCE_CONFIG_VIEW],
+  "help-faqs": [PERMISSIONS.FAQ_VIEW],
+  "home-promos": [PERMISSIONS.HOME_PROMOS_VIEW],
+  "membership-plans": [PERMISSIONS.MEMBERSHIP_PLANS_VIEW],
+  "patient-orders": [PERMISSIONS.PATIENT_COMMERCE_VIEW],
+  shifts: [PERMISSIONS.AMBULANCE_SHIFTS_VIEW],
+  bookings: [PERMISSIONS.BOOKINGS_VIEW],
+  "promo-codes": [PERMISSIONS.PROMOS_VIEW],
+  hospitals: [PERMISSIONS.STAFF_VIEW],
+  "staff-records": [PERMISSIONS.STAFF_VIEW],
 };
 
 export interface IRole {
@@ -717,6 +777,7 @@ export const DEFAULT_ROLES = {
       PERMISSIONS.SUPPORT_VIEW,
       PERMISSIONS.SUPPORT_RESPOND,
       PERMISSIONS.REPORTS_VIEW,
+      PERMISSIONS.AMBULANCE_SHIFTS_VIEW,
     ],
     isSystem: true,
   },
@@ -765,6 +826,9 @@ export const DEFAULT_ROLES = {
       // Patient enrollment on the move
       PERMISSIONS.HMS_PATIENTS_VIEW,
       PERMISSIONS.HMS_PATIENTS_CREATE,
+      // Toggle crew duty / shift scheduling
+      PERMISSIONS.AMBULANCE_SHIFTS_VIEW,
+      PERMISSIONS.AMBULANCE_SHIFTS_MANAGE,
     ],
     isSystem: true,
   },
@@ -830,6 +894,20 @@ export const DEFAULT_ROLES = {
       PERMISSIONS.IPD_MANAGE,
       PERMISSIONS.BEDS_VIEW,
       PERMISSIONS.BEDS_MANAGE,
+    ],
+    isSystem: true,
+  },
+  NURSE: {
+    name: "Nurse",
+    description:
+      "Ward nursing staff — vitals, medication administration (MAR) and IPD care logs. Reads patient/EMR context but doesn't prescribe, bill, or manage inventory.",
+    permissions: [
+      PERMISSIONS.DASHBOARD_VIEW,
+      PERMISSIONS.HMS_PATIENTS_VIEW,
+      PERMISSIONS.EMR_VIEW,
+      PERMISSIONS.IPD_VIEW,
+      PERMISSIONS.IPD_MANAGE,
+      PERMISSIONS.BEDS_VIEW,
     ],
     isSystem: true,
   },

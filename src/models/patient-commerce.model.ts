@@ -14,6 +14,14 @@ interface PharmacyOrderItem {
   name: string;
   price: number;
   qty: number;
+  // Set only when the product was linked to a real InventoryItem at order
+  // time — this is what actually got drawn from HMS stock (see
+  // patient.routes.ts pharmacy/orders), recorded here so cancelling the
+  // order can restock the EXACT batches drawn (FEFO) rather than a generic
+  // add-back.
+  itemId?: Types.ObjectId;
+  batchDraws?: { batchId: Types.ObjectId; quantity: number }[];
+  legacyDrawnQty?: number;
 }
 
 export interface IPharmacyOrder {
@@ -38,6 +46,15 @@ const PharmacyOrderSchema = new Schema<IPharmacyOrder>(
         name: String,
         price: { type: Number, default: 0 },
         qty: { type: Number, default: 1 },
+        itemId: { type: Schema.Types.ObjectId, ref: "InventoryItem" },
+        batchDraws: [
+          {
+            _id: false,
+            batchId: { type: Schema.Types.ObjectId, ref: "InventoryBatch" },
+            quantity: Number,
+          },
+        ],
+        legacyDrawnQty: Number,
       },
     ],
     addressId: { type: Schema.Types.ObjectId, ref: "UserAddress" },

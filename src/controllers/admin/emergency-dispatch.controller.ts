@@ -64,6 +64,7 @@ export const createDispatch = async (req: Request, res: Response) => {
     // Populate for response
     const populated = await EmergencyDispatch.findById(dispatch._id)
       .populate("dispatchedBy", "name email")
+      .populate("hospitalPatientId", "patientId fullName phone")
       .populate("sosSubmission", "type name phone location emergencyType");
 
     // Emit socket event
@@ -101,6 +102,7 @@ export const getDispatchesForSubmission = async (
 
     const dispatches = await EmergencyDispatch.find({ sosSubmission: id })
       .populate("dispatchedBy", "name email")
+      .populate("hospitalPatientId", "patientId fullName phone")
       .sort({ dispatchedAt: -1 });
 
     res.json({
@@ -133,6 +135,7 @@ export const getAllDispatches = async (req: Request, res: Response) => {
     const [dispatches, total] = await Promise.all([
       EmergencyDispatch.find(query)
         .populate("dispatchedBy", "name email")
+      .populate("hospitalPatientId", "patientId fullName phone")
         .populate(
           "sosSubmission",
           "type name phone location emergencyType address status",
@@ -226,6 +229,7 @@ export const updateDispatchStatus = async (req: Request, res: Response) => {
       },
     )
       .populate("dispatchedBy", "name email")
+      .populate("hospitalPatientId", "patientId fullName phone")
       .populate("sosSubmission", "type name phone location emergencyType");
 
     if (!dispatch) {

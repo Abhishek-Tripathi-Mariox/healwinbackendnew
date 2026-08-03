@@ -7,6 +7,7 @@ import {
   AmbulanceStock,
   AmbulanceStockTransaction,
 } from "../models/ambulance-stock.model";
+import { issueFefo } from "./inventory-batch.service";
 
 /**
  * Which ambulance is this crew member on?
@@ -86,16 +87,24 @@ export const restockAmbulance = async (opts: {
       skipped.push(line.name || String(line.itemId || "unknown"));
       continue;
     }
+    if ((item.currentStock || 0) < qty) {
+      skipped.push(`${item.name} (only ${item.currentStock || 0} in central stock)`);
+      continue;
+    }
 
-    // Central inventory out.
-    const newCentral = Math.max(0, (item.currentStock || 0) - qty);
-    item.currentStock = newCentral;
-    await item.save();
+    // Central inventory out — FEFO: draws the soonest-expiring batch(es)
+    // first, and gives back their REAL cost (not the item's possibly-stale
+    // scalar unitCost).
+    const { currentStock: newCentral, costOfGoodsIssued, avgUnitCost } = await issueFefo({
+      itemId: item._id,
+      quantity: qty,
+    });
     await StockTransaction.create({
       itemId: item._id,
       type: "out",
       quantity: qty,
       balanceAfter: newCentral,
+      amount: costOfGoodsIssued,
       reason: "Loaded onto ambulance",
       issuedToType: "other",
       performedByAdminId: opts.performedByAdminId,
@@ -114,7 +123,7 @@ export const restockAmbulance = async (opts: {
       type: "in",
       quantity: qty,
       balanceAfter: stock.quantity,
-      unitCost: item.unitCost,
+      unitCost: avgUnitCost || item.unitCost,
       sellingPrice: item.sellingPrice,
       reason: "restock",
       staffId: opts.staffId,

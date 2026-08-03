@@ -60,6 +60,7 @@ export const detail = async (
     .populate("designationId", "name")
     .populate("employmentTypeId", "name")
     .populate("reportingToId", "fullName employeeCode")
+    .populate("linkedAdminId", "fullName roleName")
     .lean();
 
   if (!employee) {
@@ -101,6 +102,7 @@ const ASSIGNABLE = [
   "employmentTypeId",
   "reportingToId",
   "photo",
+  "linkedAdminId",
   "status",
   "bankName",
   "accountNumber",

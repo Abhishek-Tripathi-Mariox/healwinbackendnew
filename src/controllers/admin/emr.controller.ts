@@ -5,6 +5,8 @@ import InventoryItem from "../../models/inventory-item.model";
 import StockTransaction from "../../models/stock-transaction.model";
 import { DiagnosticOrder } from "../../models/diagnostic-order.model";
 import { Appointment } from "../../models/appointment.model";
+import Admission from "../../models/admission.model";
+import { issueFefo } from "../../services/inventory-batch.service";
 
 /**
  * Doctor Panel / HMS — EMR (SOAP) encounters.
@@ -13,6 +15,38 @@ import { Appointment } from "../../models/appointment.model";
  * doctor (an Admin user with the Doctor role). Listing is scoped per patient
  * so the UI can render a clinical timeline.
  */
+
+/**
+ * Match prescribed drug names against a patient's free-text known allergies
+ * (e.g. "Penicillin, Sulfa drugs, Aspirin"). Simple substring match either
+ * direction, case-insensitive — there's no drug-class ontology here (no
+ * clinical database backs this), so this catches an exact/named allergy
+ * ("Penicillin" prescribed against a "Penicillin" allergy) but NOT drug-class
+ * relationships (e.g. Amoxicillin as a penicillin derivative). It's a real
+ * safety net for the common case, not a substitute for clinical judgment.
+ */
+const findAllergyConflicts = (
+  allergiesText: string | undefined,
+  drugs: string[],
+): { drug: string; allergyTerm: string }[] => {
+  const terms = String(allergiesText || "")
+    .split(/[,;]|\band\b/i)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (terms.length === 0) return [];
+
+  const conflicts: { drug: string; allergyTerm: string }[] = [];
+  for (const drug of drugs) {
+    const d = String(drug || "").trim().toLowerCase();
+    if (!d) continue;
+    const hit = terms.find((t) => {
+      const term = t.toLowerCase();
+      return d.includes(term) || term.includes(d);
+    });
+    if (hit) conflicts.push({ drug, allergyTerm: hit });
+  }
+  return conflicts;
+};
 
 const ENCOUNTER_TYPES = new Set(["OPD", "IPD", "consultation", "emergency"]);
 
@@ -147,6 +181,7 @@ export const create = async (
     differentialDiagnoses: Array.isArray(b.differentialDiagnoses) ? b.differentialDiagnoses : [],
     treatmentPlan: b.treatmentPlan || undefined,
     prescriptions: Array.isArray(b.prescriptions) ? b.prescriptions : [],
+    procedures: Array.isArray(b.procedures) ? b.procedures : [],
     labOrders: Array.isArray(b.labOrders) ? b.labOrders : [],
     imagingOrders: Array.isArray(b.imagingOrders) ? b.imagingOrders : [],
     referrals: Array.isArray(b.referrals) ? b.referrals : [],
@@ -193,7 +228,12 @@ export const create = async (
     console.error("diagnostic auto-create failed:", e);
   }
 
-  req.rData = { encounter };
+  const allergyWarnings = findAllergyConflicts(
+    patient.healthHistory?.allergies,
+    (Array.isArray(b.prescriptions) ? b.prescriptions : []).map((p: any) => p.drug),
+  );
+
+  req.rData = { encounter, allergyWarnings };
   req.msg = "encounter_created";
   return next();
 };
@@ -234,6 +274,7 @@ export const update = async (
     "differentialDiagnoses",
     "treatmentPlan",
     "prescriptions",
+    "procedures",
     "labOrders",
     "imagingOrders",
     "referrals",
@@ -258,7 +299,13 @@ export const update = async (
   // Schedule the follow-up appointment if a date was set and none exists yet.
   await scheduleFollowUp(encounter, (req as any).adminId);
 
-  req.rData = { encounter };
+  const patient = await HospitalPatient.findById(encounter.patientId).select("healthHistory.allergies").lean();
+  const allergyWarnings = findAllergyConflicts(
+    (patient as any)?.healthHistory?.allergies,
+    (encounter.prescriptions || []).map((p: any) => p.drug),
+  );
+
+  req.rData = { encounter, allergyWarnings };
   req.msg = "encounter_updated";
   return next();
 };
@@ -301,6 +348,43 @@ export const dispense = async (
           quantity: 1,
         }));
 
+  // Allergy safety gate — this is the actual physical-administration moment
+  // (unlike the prescribe-time warning in create/update, which is advisory),
+  // so a known conflict blocks the dispense outright unless the caller
+  // explicitly overrides with a reason, mirroring how real hospital EMRs
+  // require an acknowledged override rather than silently allowing it.
+  if (!req.body?.overrideAllergyWarning) {
+    const patient = await HospitalPatient.findById(encounter.patientId).select("healthHistory.allergies").lean();
+    const allergyWarnings = findAllergyConflicts(
+      (patient as any)?.healthHistory?.allergies,
+      requested.map((r) => r.drug),
+    );
+    if (allergyWarnings.length > 0) {
+      req.rCode = 0;
+      req.msg = "allergy_warning";
+      req.rData = {
+        allergyWarnings,
+        hint: "Patient has a recorded allergy that may conflict with this drug. Resubmit with overrideAllergyWarning: true (and a documented reason) to proceed.",
+      };
+      return next();
+    }
+  }
+
+  // Bill IPD dispensing against the active admission (matches how billing's
+  // pharmacy pull is scoped — see billing.controller.ts#computePharmacyLines
+  // — so it's found when a bill is generated/drafted for THIS stay, not
+  // mixed into the patient's lifetime OPD total or lost entirely).
+  let issuedToRef = String(encounter.patientId);
+  if (encounter.encounterType === "IPD") {
+    const activeAdmission = await Admission.findOne({
+      patientId: encounter.patientId,
+      status: "admitted",
+    })
+      .select("_id")
+      .lean();
+    if (activeAdmission) issuedToRef = String(activeAdmission._id);
+  }
+
   const results: any[] = [];
   for (const item of requested) {
     if (!item.drug) continue;
@@ -313,12 +397,14 @@ export const dispense = async (
       isDeleted: false,
       isActive: true,
       name: rx,
-    });
+    })
+      .select("_id currentStock")
+      .lean();
     if (!med) {
       results.push({ drug: item.drug, status: "not_found" });
       continue;
     }
-    if (med.currentStock < item.quantity) {
+    if ((med.currentStock || 0) < item.quantity) {
       results.push({
         drug: item.drug,
         status: "insufficient",
@@ -326,23 +412,26 @@ export const dispense = async (
       });
       continue;
     }
-    med.currentStock -= item.quantity;
-    await med.save();
+    // Real FEFO batch draw — same ledger ward issue, ambulance stock and
+    // pharmacy-commerce checkout all use, instead of a scalar decrement that
+    // bypassed batch/expiry tracking.
+    const result = await issueFefo({ itemId: med._id, quantity: item.quantity });
     await StockTransaction.create({
       itemId: med._id,
       type: "out",
       quantity: item.quantity,
-      balanceAfter: med.currentStock,
+      balanceAfter: result.currentStock,
+      amount: result.costOfGoodsIssued,
       reason: "EMR dispense",
       issuedToType: "patient",
-      issuedToRef: String(encounter.patientId),
+      issuedToRef,
       performedByAdminId: adminId,
     });
     results.push({
       drug: item.drug,
       status: "issued",
       quantity: item.quantity,
-      balanceAfter: med.currentStock,
+      balanceAfter: result.currentStock,
     });
   }
 

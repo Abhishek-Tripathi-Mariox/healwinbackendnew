@@ -152,6 +152,13 @@ router.post("/requests/:id/arrived", auth.verifyStaffToken, ErrorHandlerMiddlewa
 router.post("/requests/:id/start", auth.verifyStaffToken, ErrorHandlerMiddleware(R.startTrip), ResponseMiddleware);
 router.post("/requests/:id/complete", auth.verifyStaffToken, ErrorHandlerMiddleware(R.complete), ResponseMiddleware);
 router.post("/requests/:id/destination", auth.verifyStaffToken, ErrorHandlerMiddleware(R.setDestination), ResponseMiddleware);
+router.post(
+  "/requests/:id/patient-media",
+  auth.verifyStaffToken,
+  upload.array("media", 10),
+  ErrorHandlerMiddleware(R.uploadPatientMedia),
+  ResponseMiddleware,
+);
 
 // ===== Support tickets (staff app) =====
 router.get("/tickets", auth.verifyStaffToken, ErrorHandlerMiddleware(StaffSupport.getMyTickets), ResponseMiddleware);

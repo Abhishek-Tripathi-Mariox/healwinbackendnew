@@ -35,10 +35,15 @@ const SupplierSchema = new Schema<ISupplier>(
 export const Supplier = mongoose.model<ISupplier>("Supplier", SupplierSchema);
 
 export interface IPOItem {
-  name: string;
+  itemId?: Types.ObjectId; // ref InventoryItem — required for new POs
+  name: string; // denormalized display (kept even with itemId, e.g. if the item is later renamed)
   quantity: number;
   unitPrice: number;
   amount: number;
+  // Captured at PO creation as the expected lot, used to create a proper
+  // InventoryBatch when the PO is received (see inventory-batch.service.ts).
+  batchNo?: string;
+  expiryDate?: Date;
 }
 export type POStatus = "draft" | "ordered" | "received" | "cancelled";
 export interface IPurchaseOrder {
@@ -56,10 +61,13 @@ export interface IPurchaseOrder {
 }
 const POItemSchema = new Schema<IPOItem>(
   {
+    itemId: { type: Schema.Types.ObjectId, ref: "InventoryItem" },
     name: { type: String, required: true, trim: true },
     quantity: { type: Number, required: true, default: 1 },
     unitPrice: { type: Number, required: true, default: 0 },
     amount: { type: Number, required: true, default: 0 },
+    batchNo: { type: String, trim: true },
+    expiryDate: Date,
   },
   { _id: false },
 );

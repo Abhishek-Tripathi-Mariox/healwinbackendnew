@@ -16,6 +16,11 @@ export interface IPatientFamilyMember {
   photo?: string;
   bloodGroup?: string;
   conditions?: string[];
+  // Set once this profile's phone actually signs up in the app and gets
+  // auto-linked as a real dependent under `userId` (the head) — see
+  // user.service.ts#addUsers. Until then this is just a static profile with
+  // no login of its own.
+  linkedUserId?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -31,6 +36,7 @@ const PatientFamilyMemberSchema = new Schema<IPatientFamilyMember>(
     photo: { type: String, trim: true },
     bloodGroup: { type: String, trim: true },
     conditions: { type: [String], default: [] },
+    linkedUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
   },
   { timestamps: true },
 );

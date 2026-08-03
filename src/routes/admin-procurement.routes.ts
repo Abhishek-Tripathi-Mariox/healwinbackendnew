@@ -15,6 +15,7 @@ router.get("/suppliers", auth.verifyAdminToken, view, ErrorHandlerMiddleware(C.l
 router.post("/suppliers", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.createSupplier), ResponseMiddleware);
 router.put("/suppliers/:id", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.updateSupplier), ResponseMiddleware);
 router.delete("/suppliers/:id", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.deleteSupplier), ResponseMiddleware);
+router.get("/suppliers/:id/performance", auth.verifyAdminToken, view, ErrorHandlerMiddleware(C.supplierPerformance), ResponseMiddleware);
 
 router.get("/purchase-orders", auth.verifyAdminToken, view, ErrorHandlerMiddleware(C.listPurchaseOrders), ResponseMiddleware);
 router.post("/purchase-orders", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.createPurchaseOrder), ResponseMiddleware);

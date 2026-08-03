@@ -15,6 +15,7 @@
     "seed": "ts-node src/seeds/index.ts",
     "seed:roles": "ts-node src/scripts/seed-roles.ts",
     "seed:ambulance-types": "ts-node src/scripts/seed-ambulance-types.ts",
+    "seed:locator-service-types": "ts-node src/scripts/seed-locator-service-types.ts",
     "seed:home-promos": "ts-node src/scripts/seed-home-promos.ts",
     "seed:membership": "ts-node src/scripts/seed-membership-plans.ts",
     "seed:ambulance": "ts-node src/seeds/ambulance-dispatch.seed.ts",

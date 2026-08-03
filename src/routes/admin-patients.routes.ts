@@ -21,6 +21,23 @@ router.get(
   ResponseMiddleware,
 );
 
+// Must come before "/:id" so "duplicates" isn't swallowed as a patient id.
+router.get(
+  "/duplicates",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.HMS_PATIENTS_VIEW),
+  ErrorHandlerMiddleware(C.findDuplicates),
+  ResponseMiddleware,
+);
+
+router.post(
+  "/merge",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.HMS_PATIENTS_DELETE),
+  ErrorHandlerMiddleware(C.mergePatients),
+  ResponseMiddleware,
+);
+
 router.post(
   "/",
   auth.verifyAdminToken,

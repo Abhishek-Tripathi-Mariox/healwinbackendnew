@@ -1,14 +1,51 @@
 import { Types } from "mongoose";
 import User from "../models/Users";
+import PatientFamilyMember from "../models/patient-family-member.model";
 import helpers from "../utils/helpers";
 import redis from "../utils/redis";
 import { IUser } from "../interfaces/users";
 
 /**
+ * If this brand-new user's phone matches a family-member profile someone
+ * else (a "head") already added, auto-link them as a dependent under that
+ * head — no invite step, matching how the app already resolves "family
+ * bookings made for me" by phone (see patient.routes.ts#familyMemberIdsFor).
+ * Only the FIRST unlinked match decides the head, so one phone never ends up
+ * claimed by two different families; multi-level adds collapse onto the
+ * root head so the family stays a flat, single-level group.
+ */
+const linkToFamilyHeadIfMatched = async (user: any): Promise<void> => {
+  const last10 = String(user?.mobileNumber || "").replace(/\D/g, "").slice(-10);
+  if (last10.length !== 10) return;
+
+  const match = await PatientFamilyMember.findOne({
+    phone: { $regex: `${last10}$` },
+    linkedUserId: { $exists: false },
+  }).sort({ createdAt: 1 });
+  if (!match) return;
+
+  const owner: any = await User.findById(match.userId).select("headUserId").lean();
+  if (!owner) return;
+  const headId = owner.headUserId || match.userId;
+  if (String(headId) === String(user._id)) return; // safety: never self-link
+
+  await User.findByIdAndUpdate(user._id, { headUserId: headId });
+  // Link every unlinked row for this phone under the SAME head only — other
+  // heads who happen to reference the same phone stay untouched, so this
+  // user doesn't end up claimed by two families at once.
+  await PatientFamilyMember.updateMany(
+    { phone: { $regex: `${last10}$` }, linkedUserId: { $exists: false }, userId: match.userId },
+    { $set: { linkedUserId: user._id } },
+  );
+};
+
+/**
  * Create user
  */
 export const addUsers = async (data: Partial<IUser>) => {
-  return await User.create(data);
+  const user = await User.create(data);
+  await linkToFamilyHeadIfMatched(user);
+  return user;
 };
 
 /**

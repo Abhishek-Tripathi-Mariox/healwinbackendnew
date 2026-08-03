@@ -30,6 +30,7 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
     .sort({ createdAt: -1 })
     .limit(200)
     .populate("userId", "fullName mobileNumber")
+    .populate("hospitalPatientId", "patientId fullName phone")
     .lean();
   req.rData = { items };
   req.msg = "success";
@@ -39,6 +40,7 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
 export const detail = async (req: Request, _res: Response, next: NextFunction) => {
   const item = await AmbulanceRequest.findById(req.params.id)
     .populate("userId", "fullName mobileNumber")
+    .populate("hospitalPatientId", "patientId fullName phone")
     .lean();
   if (!item) {
     req.rCode = 5;

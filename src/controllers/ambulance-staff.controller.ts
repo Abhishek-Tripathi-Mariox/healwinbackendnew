@@ -300,12 +300,43 @@ export const updateLocation = async (
   // assigned to this staff, then push it to the patient so their tracking
   // screen shows how far the ambulance is — in real time.
   if (typeof lat === "number" && typeof lng === "number") {
+    // Snapshot the request's location BEFORE this ping overwrites it, so we
+    // can (a) capture the very first ping after assignment as the real trip
+    // start ("sector 135" in dispatch terms, not the pickup point) and
+    // (b) accumulate a running odometer of the actual route driven, covering
+    // the whole ASSIGNED→ARRIVED→ON_TRIP trail in one continuous total.
+    const prevReq: any = await AmbulanceRequest.findOne(
+      {
+        driverStaffId: staff._id,
+        status: { $in: ["ASSIGNED", "ARRIVED", "ON_TRIP"] },
+      },
+      { pickup: 1, driverLocation: 1, tripStartLocation: 1 },
+    ).lean();
+
+    const update: any = { $set: { driverLocation: { lat, lng }, lastLocationAt: now } };
+    if (prevReq && !prevReq.tripStartLocation?.lat) {
+      update.$set.tripStartLocation = { lat, lng };
+      update.$set.tripStartedTrackingAt = now;
+    } else if (
+      prevReq &&
+      typeof prevReq.driverLocation?.lat === "number" &&
+      typeof prevReq.driverLocation?.lng === "number"
+    ) {
+      // GPS jitter guard: the driver app already throttles pings to ~25m
+      // movement, this is a second floor so noisy stationary pings don't
+      // inflate the billed distance.
+      const delta = haversineKm(prevReq.driverLocation, { lat, lng });
+      if (typeof delta === "number" && delta >= 0.02) {
+        update.$inc = { actualDistanceKm: delta };
+      }
+    }
+
     const activeReq: any = await AmbulanceRequest.findOneAndUpdate(
       {
         driverStaffId: staff._id,
         status: { $in: ["ASSIGNED", "ARRIVED", "ON_TRIP"] },
       },
-      { driverLocation: { lat, lng }, lastLocationAt: now },
+      update,
       { returnDocument: "after" },
     );
     if (activeReq) {
@@ -321,13 +352,38 @@ export const updateLocation = async (
     }
 
     // Same for an active SOS EmergencyDispatch this crew is on — push the live
-    // position to the SOS patient so they see how far the ambulance is.
+    // position to the SOS patient so they see how far the ambulance is, and
+    // (mirroring the AmbulanceRequest block above) accumulate the real
+    // odometer for the whole route so SOS trips can be billed on actual
+    // distance driven instead of a flat placeholder.
+    const dispFilter = {
+      $or: [{ driverStaffId: staff._id }, { attendantStaffId: staff._id }],
+      status: { $in: ["ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE", "ON_TRIP"] },
+    } as any;
+    const prevDisp: any = await EmergencyDispatch.findOne(dispFilter, {
+      patientLocation: 1,
+      driverLocation: 1,
+      tripStartLocation: 1,
+    }).lean();
+
+    const dispUpdate: any = { $set: { driverLocation: { lat, lng }, lastLocationAt: now } };
+    if (prevDisp && !prevDisp.tripStartLocation?.lat) {
+      dispUpdate.$set.tripStartLocation = { lat, lng };
+      dispUpdate.$set.tripStartedTrackingAt = now;
+    } else if (
+      prevDisp &&
+      typeof prevDisp.driverLocation?.lat === "number" &&
+      typeof prevDisp.driverLocation?.lng === "number"
+    ) {
+      const delta = haversineKm(prevDisp.driverLocation, { lat, lng });
+      if (typeof delta === "number" && delta >= 0.02) {
+        dispUpdate.$inc = { actualDistanceKm: delta };
+      }
+    }
+
     const activeDisp: any = await EmergencyDispatch.findOneAndUpdate(
-      {
-        $or: [{ driverStaffId: staff._id }, { attendantStaffId: staff._id }],
-        status: { $in: ["ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE", "ON_TRIP"] },
-      } as any,
-      { driverLocation: { lat, lng }, lastLocationAt: now },
+      dispFilter,
+      dispUpdate,
       { returnDocument: "after" },
     );
     if (activeDisp?.patientUserId) {

@@ -6,6 +6,32 @@ import { SOSSubmission } from "../models/sos-submission.model";
 import { AmbulanceRequest } from "../models/ambulance-request.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
 import User from "../models/Users";
+import VehicleType from "../models/vehicle-type.model";
+import { calculateFare } from "./fare.service";
+
+/**
+ * SOS has no patient-selected VehicleType — resolve one from the assigned
+ * ambulance's free-form `ambulanceType` (e.g. "BLS") so the trip can be
+ * billed on the same real fare engine as a booked ride, not a flat
+ * placeholder. Admin-managed VehicleType names are usually the long form
+ * ("Basic Life Support (BLS)"), so match on an exact name OR the
+ * abbreviation appearing in parentheses before falling back to a
+ * starts-with match. Returns null (never throws) if nothing resolves —
+ * callers treat a missing vehicle type as "can't bill this trip yet".
+ */
+const resolveVehicleTypeForAmbulance = async (ambulanceType?: string) => {
+  const raw = String(ambulanceType || "").trim();
+  if (!raw) return null;
+  const esc = raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return VehicleType.findOne({
+    isDeleted: { $ne: true },
+    $or: [
+      { name: new RegExp(`^${esc}$`, "i") },
+      { name: new RegExp(`\\(${esc}\\)`, "i") },
+      { name: new RegExp(`^${esc}\\b`, "i") },
+    ],
+  });
+};
 
 /**
  * Resolve the patient behind an SOS id — works whether the id is a
@@ -443,6 +469,10 @@ export const createDispatch = async (params: {
       const contactPhone =
         driverDoc?.mobileNumber || attendantDoc?.mobileNumber || "N/A";
 
+      const vehicleType = await resolveVehicleTypeForAmbulance(ambulance.ambulanceType).catch(
+        () => null,
+      );
+
       const dispatch = await EmergencyDispatch.create(
         [
           {
@@ -463,6 +493,7 @@ export const createDispatch = async (params: {
             },
             roadDistanceKm: params.roadDistanceKm,
             etaMinutes: params.etaMinutes,
+            vehicleTypeId: vehicleType?._id,
           },
         ] as any,
         { session },
@@ -502,20 +533,20 @@ export const createDispatch = async (params: {
     await session.endSession();
   }
 
-  // Link the SOS patient, denormalise their name + pickup address for the
-  // driver display, and mint the pickup-verification OTP — in ONE place so
-  // every dispatch path (admin SOS dashboard, sos-alerts, etc.) behaves
-  // identically: the patient app flips to live tracking and the crew can
-  // verify the patient at pickup.
+  // Link the SOS patient and denormalise their name + pickup address for the
+  // driver display — in ONE place so every dispatch path (admin SOS
+  // dashboard, sos-alerts, etc.) behaves identically: the patient app flips
+  // to live tracking. SOS trips skip the pickup-OTP step (unlike a proper
+  // "Book Ambulance" request) — no otp is minted here, and
+  // transitionDispatch's OTP check is already conditional on dispatch.otp
+  // being set, so leaving it unset disables that check.
   const { patientUserId, patientName, pickupAddress } = await resolveSosPatient(params.sosId);
-  const otp = String(Math.floor(1000 + Math.random() * 9000));
   await EmergencyDispatch.updateOne(
     { _id: dispatchId },
     {
       patientUserId: patientUserId || undefined,
       patientName: patientName || undefined,
       pickupAddress: pickupAddress || undefined,
-      otp,
     },
   );
 
@@ -590,7 +621,37 @@ export const transitionDispatch = async (
     dispatch.acceptedAt = new Date();
   }
   if (toStatus === "ON_SCENE") dispatch.arrivedAt = new Date();
-  if (toStatus === "COMPLETED") dispatch.completedAt = new Date();
+  if (toStatus === "COMPLETED") {
+    dispatch.completedAt = new Date();
+
+    // Real fare for the actual route driven (dispatch point → pickup →
+    // hospital), mirroring AmbulanceRequest#complete() — replaces the flat
+    // placeholder estimate shown while the trip was in progress. Silently
+    // skipped (not blocking trip completion) if the vehicle type never
+    // resolved or no distance was tracked.
+    if (dispatch.vehicleTypeId && dispatch.actualDistanceKm) {
+      const actualDurationMin = dispatch.tripStartedTrackingAt
+        ? Math.max(
+            1,
+            Math.round(
+              (dispatch.completedAt.getTime() - dispatch.tripStartedTrackingAt.getTime()) / 60000,
+            ),
+          )
+        : 0;
+      try {
+        const actualFare = await calculateFare({
+          vehicleTypeId: dispatch.vehicleTypeId as any,
+          distanceKm: dispatch.actualDistanceKm,
+          durationMin: actualDurationMin,
+        });
+        dispatch.actualDurationMin = actualDurationMin;
+        dispatch.actualFareAmount = actualFare.finalFare;
+        dispatch.actualFareBreakdown = actualFare as any;
+      } catch {
+        // Vehicle type/fare config missing — don't block trip completion.
+      }
+    }
+  }
   await dispatch.save();
 
   if (toStatus === "COMPLETED" && dispatch.ambulanceId) {

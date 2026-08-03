@@ -638,3 +638,110 @@ export const generateReceiptPDF = (invoice: any): Promise<Buffer> => {
     } catch (e) { reject(e); }
   });
 };
+
+const age = (dob?: Date | string) => {
+  if (!dob) return null;
+  const d = new Date(dob);
+  if (Number.isNaN(d.getTime())) return null;
+  const diff = Date.now() - d.getTime();
+  return Math.floor(diff / (365.25 * 24 * 60 * 60 * 1000));
+};
+
+/**
+ * IPD discharge summary — the real document a real hospital hands the
+ * patient at discharge, built entirely from the admission's own data
+ * (bed history, vitals/medication/progress logs, the free-text summary
+ * staff wrote) rather than fields that don't exist on the model.
+ */
+export const generateDischargeSummaryPDF = (admission: any): Promise<Buffer> => {
+  return new Promise((resolve, reject) => {
+    try {
+      const margin = 40;
+      const doc = new PDFDocument({
+        size: "A4",
+        margin,
+        info: { Title: `Discharge Summary ${admission.admissionNo}`, Author: "HealWin" },
+      });
+      const chunks: Buffer[] = [];
+      doc.on("data", (c: Buffer) => chunks.push(c));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      const pageW = doc.page.width - margin * 2;
+      const patient = admission.patientId || {};
+      const doctor = admission.attendingDoctorId || {};
+      const patientAge = patient.age ?? age(patient.dateOfBirth);
+
+      doc.fontSize(16).font("Helvetica-Bold").fillColor("#0066cc")
+        .text("HealWin Life Support & Emergency Care", { align: "center" });
+      doc.fontSize(11).font("Helvetica").fillColor("#000")
+        .text("Discharge Summary", { align: "center" });
+      doc.moveDown(1);
+
+      const field = (label: string, value: string) => {
+        doc.fontSize(9).font("Helvetica-Bold").text(`${label}: `, { continued: true })
+          .font("Helvetica").text(value || "-");
+      };
+      field("Admission No", admission.admissionNo);
+      field(
+        "Patient",
+        `${patient.fullName || "-"}${patient.patientId ? ` (${patient.patientId})` : ""}` +
+          `${patientAge != null ? `, ${patientAge}y` : ""}${patient.gender ? `, ${titleCasePdf(patient.gender)}` : ""}`,
+      );
+      field("Attending Doctor", doctor.fullName || "-");
+      field("Ward / Bed", `${admission.currentWard || admission.ward || "-"} / ${admission.currentBedNumber || admission.bedNumber || "-"}`);
+      field("Admitted", new Date(admission.admittedAt).toLocaleString("en-IN"));
+      field("Discharged", admission.dischargedAt ? new Date(admission.dischargedAt).toLocaleString("en-IN") : "-");
+      if (admission.reason) field("Reason for Admission", admission.reason);
+      doc.moveDown(0.8);
+
+      const section = (title: string) => {
+        doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y).stroke("#ccc");
+        doc.moveDown(0.3);
+        doc.fontSize(10).font("Helvetica-Bold").fillColor("#0066cc").text(title);
+        doc.fillColor("#000").moveDown(0.3);
+      };
+
+      section("Course in Hospital / Discharge Notes");
+      doc.fontSize(9).font("Helvetica").text(admission.dischargeSummary || "No summary recorded.", { width: pageW });
+      doc.moveDown(0.6);
+
+      if ((admission.medicationLog || []).length > 0) {
+        section("Medications Administered");
+        for (const m of admission.medicationLog) {
+          doc.fontSize(9).font("Helvetica").text(
+            `${new Date(m.at).toLocaleString("en-IN")}  —  ${m.drug}${m.dose ? ` ${m.dose}` : ""}${m.route ? ` (${m.route})` : ""}${m.notes ? `  ${m.notes}` : ""}`,
+            { width: pageW },
+          );
+        }
+        doc.moveDown(0.6);
+      }
+
+      if ((admission.vitalsLog || []).length > 0) {
+        const last = admission.vitalsLog[admission.vitalsLog.length - 1];
+        section("Vitals at Discharge");
+        doc.fontSize(9).font("Helvetica").text(
+          [
+            last.bloodPressure ? `BP: ${last.bloodPressure}` : null,
+            last.pulse != null ? `Pulse: ${last.pulse}` : null,
+            last.temperature != null ? `Temp: ${last.temperature}°F` : null,
+            last.spo2 != null ? `SpO2: ${last.spo2}%` : null,
+            last.respiratoryRate != null ? `RR: ${last.respiratoryRate}` : null,
+          ]
+            .filter(Boolean)
+            .join("   ·   ") || "No vitals recorded.",
+        );
+        doc.moveDown(0.6);
+      }
+
+      doc.moveDown(0.6);
+      doc.fontSize(8).fillColor("#666").text(
+        "This is a computer-generated discharge summary. Please follow up with your treating doctor as advised.",
+        { align: "center" },
+      );
+      doc.end();
+    } catch (e) { reject(e); }
+  });
+};
+
+const titleCasePdf = (s: string) => s.replace(/\b\w/g, (c) => c.toUpperCase());

@@ -14,6 +14,46 @@ import { SupportTicket } from "../../models/support-ticket.model";
  */
 const AMB_COLL = "ambulancerequests";
 
+/** Reconciled count across Booking + AmbulanceRequest for the same match filter. */
+export const unionCount = async (match: any): Promise<number> => {
+  const res = await Booking.aggregate([
+    { $match: match },
+    { $project: { _id: 1 } },
+    { $unionWith: { coll: AMB_COLL, pipeline: [{ $match: match }, { $project: { _id: 1 } }] } },
+    { $count: "n" },
+  ]);
+  return res[0]?.n || 0;
+};
+
+/** Reconciled revenue sum (Booking.finalFare + AmbulanceRequest.amount) for a completed-status match. */
+export const unionRevenueSum = async (match: any): Promise<number> => {
+  const res = await Booking.aggregate([
+    { $match: match },
+    { $project: { rev: "$finalFare" } },
+    {
+      $unionWith: {
+        coll: AMB_COLL,
+        pipeline: [{ $match: match }, { $project: { rev: "$amount" } }],
+      },
+    },
+    { $group: { _id: null, total: { $sum: "$rev" } } },
+  ]);
+  return res[0]?.total || 0;
+};
+
+/** Reconciled status breakdown across Booking + AmbulanceRequest. */
+const unionByStatus = async (): Promise<{ _id: string; count: number }[]> =>
+  Booking.aggregate([
+    { $project: { status: 1 } },
+    {
+      $unionWith: {
+        coll: AMB_COLL,
+        pipeline: [{ $project: { status: 1 } }],
+      },
+    },
+    { $group: { _id: "$status", count: { $sum: 1 } } },
+  ]);
+
 /**
  * Get dashboard stats
  */
@@ -25,7 +65,11 @@ export const getDashboardStats = async (req: Request, res: Response) => {
   const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
   const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
 
-  // Parallel queries for efficiency
+  // Parallel queries for efficiency. Bookings/revenue are reconciled across
+  // the legacy Booking collection AND the real, active AmbulanceRequest
+  // collection (see AMB_COLL/union* helpers above) — Booking alone has been
+  // empty since the platform moved to AmbulanceRequest, so this dashboard
+  // was silently showing all-zero ride/revenue numbers before this fix.
   const [
     totalBookings,
     todayBookings,
@@ -46,31 +90,15 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     openTickets,
     bookingsByStatus,
   ] = await Promise.all([
-    Booking.countDocuments(),
-    Booking.countDocuments({ createdAt: { $gte: today } }),
-    Booking.countDocuments({ createdAt: { $gte: thisMonth } }),
-    Booking.countDocuments({
-      createdAt: { $gte: lastMonth, $lt: thisMonth },
-    }),
-    Booking.countDocuments({ status: "COMPLETED" }),
-    Booking.countDocuments({ status: "CANCELLED" }),
-    Booking.aggregate([
-      { $match: { status: "COMPLETED" } },
-      { $group: { _id: null, total: { $sum: "$finalFare" } } },
-    ]),
-    Booking.aggregate([
-      { $match: { status: "COMPLETED", createdAt: { $gte: thisMonth } } },
-      { $group: { _id: null, total: { $sum: "$finalFare" } } },
-    ]),
-    Booking.aggregate([
-      {
-        $match: {
-          status: "COMPLETED",
-          createdAt: { $gte: lastMonth, $lt: thisMonth },
-        },
-      },
-      { $group: { _id: null, total: { $sum: "$finalFare" } } },
-    ]),
+    unionCount({}),
+    unionCount({ createdAt: { $gte: today } }),
+    unionCount({ createdAt: { $gte: thisMonth } }),
+    unionCount({ createdAt: { $gte: lastMonth, $lt: thisMonth } }),
+    unionCount({ status: "COMPLETED" }),
+    unionCount({ status: "CANCELLED" }),
+    unionRevenueSum({ status: "COMPLETED" }),
+    unionRevenueSum({ status: "COMPLETED", createdAt: { $gte: thisMonth } }),
+    unionRevenueSum({ status: "COMPLETED", createdAt: { $gte: lastMonth, $lt: thisMonth } }),
     User.countDocuments({ isDeleted: false }),
     User.countDocuments({ createdAt: { $gte: today } }),
     User.countDocuments({ createdAt: { $gte: thisMonth } }),
@@ -86,7 +114,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       status: { $in: ["documents_uploaded", "under_verification"] },
     }),
     SupportTicket.countDocuments({ status: { $in: ["OPEN", "IN_PROGRESS"] } }),
-    Booking.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
+    unionByStatus(),
   ]);
 
   // Calculate growth percentages
@@ -98,8 +126,8 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         ).toFixed(1)
       : 0;
 
-  const currentMonthRevenue = monthRevenue[0]?.total || 0;
-  const previousMonthRevenue = lastMonthRevenue[0]?.total || 0;
+  const currentMonthRevenue = monthRevenue;
+  const previousMonthRevenue = lastMonthRevenue;
   const revenueGrowth =
     previousMonthRevenue > 0
       ? (
@@ -120,7 +148,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       byStatus: bookingsByStatus,
     },
     revenue: {
-      total: totalRevenue[0]?.total || 0,
+      total: totalRevenue,
       thisMonth: currentMonthRevenue,
       growth: `${Number(revenueGrowth) >= 0 ? "+" : ""}${revenueGrowth}%`,
     },

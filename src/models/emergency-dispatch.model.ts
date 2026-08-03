@@ -60,6 +60,19 @@ export interface IEmergencyDispatch {
     rejectedAt: Date;
     reason?: string;
   }[];
+  // Real fare tracking — SOS has no patient-selected VehicleType (it's an
+  // emergency auto-dispatch), so this is resolved from the assigned
+  // ambulance's `ambulanceType` at dispatch time. Distance is accumulated
+  // live from location pings the same way AmbulanceRequest does (dispatch
+  // point → pickup → hospital, the whole route), then billed for real at
+  // completion instead of the flat placeholder estimate.
+  vehicleTypeId?: Types.ObjectId;
+  tripStartLocation?: { lat?: number; lng?: number };
+  tripStartedTrackingAt?: Date;
+  actualDistanceKm?: number;
+  actualDurationMin?: number;
+  actualFareAmount?: number;
+  actualFareBreakdown?: Record<string, any>;
   // Metadata
   createdAt: Date;
   updatedAt: Date;
@@ -182,6 +195,13 @@ const EmergencyDispatchSchema = new Schema<IEmergencyDispatch>(
         reason: String,
       },
     ],
+    vehicleTypeId: { type: Schema.Types.ObjectId, ref: "VehicleType" },
+    tripStartLocation: { lat: Number, lng: Number },
+    tripStartedTrackingAt: Date,
+    actualDistanceKm: { type: Number, default: 0 },
+    actualDurationMin: Number,
+    actualFareAmount: Number,
+    actualFareBreakdown: { type: Schema.Types.Mixed },
   },
   {
     timestamps: true,

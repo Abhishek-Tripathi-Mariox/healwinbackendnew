@@ -85,6 +85,11 @@ const UserSchema: Schema<IUser> = new Schema(
       unique: true,
       sparse: true,
     },
+    headUserId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+    },
   },
   {
     timestamps: true,

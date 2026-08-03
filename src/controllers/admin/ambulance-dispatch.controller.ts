@@ -266,10 +266,11 @@ export const dispatch = async (
     throw err;
   }
 
-  // The service already linked the SOS patient + minted the pickup OTP +
-  // denormalised the patient name/address onto the dispatch — read them back.
+  // The service already linked the SOS patient + denormalised the patient
+  // name/address onto the dispatch — read them back. SOS trips skip the
+  // pickup-OTP step (unlike a proper "Book Ambulance" request), so no otp
+  // is read/forwarded here.
   const patientUserId = (dispatchDoc.patientUserId as Types.ObjectId) || null;
-  const otp = dispatchDoc.otp as string;
 
   // Fetch driver & attendant for FCM tokens + duty state. Off-duty crew are
   // never rung (no FCM, no socket) — an off-duty member is unavailable.
@@ -353,13 +354,12 @@ export const dispatch = async (
       dispatchId: String(dispatchDoc._id),
       status: "ASSIGNED",
       etaMinutes: picked.etaMinutes,
-      otp,
     });
     await sendToUser(
       patientUserId as any,
       "BOOKING",
       "Ambulance dispatched 🚑",
-      `Help is on the way — ETA ${picked.etaMinutes} min. Share OTP ${otp} with the crew.`,
+      `Help is on the way — ETA ${picked.etaMinutes} min.`,
       { route: "Tracking", dispatchId: String(dispatchDoc._id), screen: "Tracking" },
     ).catch(() => undefined);
   }

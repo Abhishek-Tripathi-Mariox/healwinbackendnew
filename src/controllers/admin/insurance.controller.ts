@@ -116,6 +116,41 @@ export const listClaims = async (req: Request, _res: Response, next: NextFunctio
   req.msg = "success";
   return next();
 };
+/**
+ * Auto-called when an invoice is finalized (billing.controller.ts#generate)
+ * — drafts a claim so billing staff don't have to remember an admitted/OPD
+ * patient is insured before they can raise one. Only acts when the patient
+ * has EXACTLY ONE active policy (0 = nothing to claim against; 2+ = which
+ * one is ambiguous, a human should pick) and skips if a claim already
+ * exists for this invoice (no duplicates on repeated generate() calls).
+ * Never blocks invoice finalization — callers should swallow errors.
+ */
+export const autoDraftClaimForInvoice = async (invoice: {
+  _id: any;
+  patientId: any;
+  total: number;
+}): Promise<any | null> => {
+  const already = await InsuranceClaim.findOne({ invoiceId: invoice._id }).select("_id").lean();
+  if (already) return null;
+
+  const policies = await PatientPolicy.find({ patientId: invoice.patientId, isActive: true })
+    .limit(2)
+    .lean();
+  if (policies.length !== 1) return null;
+  const policy: any = policies[0];
+
+  const seq = await nextSequence("insurance_claim");
+  return InsuranceClaim.create({
+    claimNumber: `CLM-${String(seq).padStart(6, "0")}`,
+    patientId: invoice.patientId,
+    policyId: policy._id,
+    payerId: policy.payerId,
+    invoiceId: invoice._id,
+    claimedAmount: invoice.total,
+    status: "draft",
+  });
+};
+
 export const createClaim = async (req: Request, _res: Response, next: NextFunction) => {
   const b = req.body || {};
   const policy: any = await PatientPolicy.findById(b.policyId).lean();

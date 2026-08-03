@@ -12,10 +12,14 @@ const ResponseMiddleware = (
   const data = req.rData ?? {};
   const code = req.rCode ?? 1;
 
+  // Unregistered/dynamic req.msg values (e.g. "insufficient_stock (have 3,
+  // need 10)") aren't in the static translation table below — fall back to
+  // the raw string instead of silently dropping the message from the
+  // response when messages()[...] comes back undefined.
   const message = customMsg
     ? customMsg
     : req.msg
-    ? messages()[req.msg as MessageKey]
+    ? messages()[req.msg as MessageKey] || req.msg
     : "success";
 
   switch (code) {

@@ -3,17 +3,28 @@ import HrEmployee from "../../models/hr-employee.model";
 import Attendance from "../../models/attendance.model";
 import { LeaveRequest } from "../../models/leave-request.model";
 import { PayrollRun } from "../../models/payroll-run.model";
+import { PERMISSIONS } from "../../models/role.model";
 
 /**
  * HR — Dashboard summary cards.
+ *
+ * Headcount/attendance is fine for anyone who can see this page at all
+ * (gated by HR_DASHBOARD_VIEW at the route), but leave counts and payroll
+ * totals are more sensitive sub-modules with their own permissions — a
+ * role with only HR_DASHBOARD_VIEW (no LEAVE_VIEW/PAYROLL_VIEW) shouldn't
+ * see pending-leave counts or salary spend just because it can load this page.
  */
 export const summary = async (
-  _req: Request,
+  req: Request,
   _res: Response,
   next: NextFunction,
 ) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+
+  const perms: string[] = (req as any).admin?.permissions || [];
+  const canSeeLeave = perms.includes(PERMISSIONS.LEAVE_VIEW);
+  const canSeePayroll = perms.includes(PERMISSIONS.PAYROLL_VIEW);
 
   const [
     headcount,
@@ -28,7 +39,7 @@ export const summary = async (
     HrEmployee.countDocuments({ isDeleted: false, status: "active" }),
     Attendance.countDocuments({ date: today, status: "leave" }),
     Attendance.countDocuments({ date: today, status: "present" }),
-    LeaveRequest.countDocuments({ status: "pending" }),
+    canSeeLeave ? LeaveRequest.countDocuments({ status: "pending" }) : Promise.resolve(null),
     HrEmployee.aggregate([
       { $match: { isDeleted: false } },
       { $group: { _id: "$departmentId", count: { $sum: 1 } } },
@@ -48,10 +59,10 @@ export const summary = async (
       },
       { $sort: { count: -1 } },
     ]),
-    PayrollRun.findOne().sort({ year: -1, month: -1 }).lean(),
+    canSeePayroll ? PayrollRun.findOne().sort({ year: -1, month: -1 }).lean() : Promise.resolve(null),
   ]);
 
-  _req.rData = {
+  req.rData = {
     headcount,
     activeCount,
     presentToday,
@@ -60,6 +71,6 @@ export const summary = async (
     byDepartment,
     latestRun,
   };
-  _req.msg = "hr_dashboard";
+  req.msg = "hr_dashboard";
   return next();
 };

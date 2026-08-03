@@ -49,6 +49,10 @@ export interface IShift extends Document {
   // when a shift completes without an explicit clock-out.
   clockInAt?: Date;
   clockOutAt?: Date;
+  // Set once a pre-shift reminder push has gone out — see
+  // shift-state-machine.service.ts's remind pass — so a scheduled shift
+  // isn't re-notified every tick during its reminder window.
+  reminderSentAt?: Date;
   notes?: string;
   cancelReason?: string;
   // For rosters created in bulk (recurring weekly) we link back so admin

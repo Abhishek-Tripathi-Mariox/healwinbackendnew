@@ -27,5 +27,13 @@ const resource = (
 
 resource("/products", C.products);
 resource("/lab-tests", C.tests);
+resource("/procedures", C.procedures);
+router.get(
+  "/inventory-items",
+  auth.verifyAdminToken,
+  view,
+  ErrorHandlerMiddleware(C.inventoryItemOptions),
+  ResponseMiddleware,
+);
 
 export default router;

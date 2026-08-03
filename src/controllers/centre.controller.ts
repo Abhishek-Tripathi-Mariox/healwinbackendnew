@@ -47,7 +47,11 @@ export const suggestHospitals = async (req: Request, res: Response) => {
   const caseType = String(req.query.caseType || "").toUpperCase();
   const wantTags = CASE_TAGS[caseType] || [];
 
-  const baseFilter = { isVerified: true, isDeleted: { $ne: true } } as any;
+  // Centre has no isVerified/isDeleted fields (this used to filter on both,
+  // which don't exist on the schema — every query silently matched zero
+  // rows, so this endpoint always returned an empty list). isActive is the
+  // real field, matching every other Centre query in this controller.
+  const baseFilter = { isActive: true } as any;
   let centres: any[];
   if (Number.isFinite(lat) && Number.isFinite(lng)) {
     centres = await Centre.aggregate([

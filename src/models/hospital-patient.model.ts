@@ -64,6 +64,12 @@ export interface IHospitalPatient {
   source: "admin" | "ambulance_staff" | "patient_app";
   isActive: boolean;
   isDeleted: boolean;
+  // Set when this record was merged into another (duplicate cleanup) — the
+  // record stays (soft-deleted, isActive:false) rather than being erased, so
+  // anything that still points at its old id can be traced forward. See
+  // hospital-patient.controller.ts#mergePatients.
+  mergedIntoPatientId?: Types.ObjectId;
+  mergedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -146,6 +152,8 @@ const HospitalPatientSchema = new Schema<IHospitalPatient>(
     },
     isActive: { type: Boolean, default: true, index: true },
     isDeleted: { type: Boolean, default: false, index: true },
+    mergedIntoPatientId: { type: Schema.Types.ObjectId, ref: "HospitalPatient" },
+    mergedAt: Date,
   },
   { timestamps: true },
 );

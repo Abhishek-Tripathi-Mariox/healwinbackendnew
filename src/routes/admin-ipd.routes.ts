@@ -107,5 +107,19 @@ router.post(
   ErrorHandlerMiddleware(C.addLog),
   ResponseMiddleware,
 );
+// PDF streams the response directly (no ResponseMiddleware).
+router.get(
+  "/admissions/:id/discharge-summary-pdf",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.IPD_VIEW),
+  ErrorHandlerMiddleware(C.dischargeSummaryPdf),
+);
+router.get(
+  "/admissions/:id/mar",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.IPD_VIEW),
+  ErrorHandlerMiddleware(C.mar),
+  ResponseMiddleware,
+);
 
 export default router;

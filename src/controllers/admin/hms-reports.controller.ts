@@ -39,8 +39,8 @@ export const summary = async (req: Request, _res: Response, next: NextFunction) 
       { $group: { _id: null, billed: { $sum: "$total" }, paid: { $sum: "$amountPaid" }, due: { $sum: "$balanceDue" } } },
     ]),
     HospitalInvoice.aggregate([
-      { $unwind: "$items" },
-      { $group: { _id: "$items.section", amount: { $sum: "$items.amount" } } },
+      { $unwind: "$lineItems" },
+      { $group: { _id: "$lineItems.section", amount: { $sum: "$lineItems.amount" } } },
       { $sort: { amount: -1 } },
     ]),
 

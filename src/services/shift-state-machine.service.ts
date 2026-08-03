@@ -19,9 +19,11 @@
 import { Types } from "mongoose";
 import Shift from "../models/shift.model";
 import Ambulance from "../models/ambulance.model";
+import { sendToStaff } from "./notification.service";
 
 const TICK_MS = 30 * 1000; // 30 seconds — good enough granularity for shift swaps
 const MISSED_GRACE_MS = 15 * 60 * 1000; // 15 minutes past startAt without clock-in = missed
+const REMINDER_WINDOW_MS = 45 * 60 * 1000; // remind 45 minutes before shift start
 
 let timer: NodeJS.Timeout | null = null;
 
@@ -74,6 +76,23 @@ const markMissed = async (shiftId: Types.ObjectId) => {
   // Missed shifts never had their staff written to the cache, so nothing
   // to clear — but emitting a dispatcher notification here would be a
   // good follow-up.
+};
+
+/** Push a "your shift starts soon" reminder, exactly once per shift. */
+const remindShift = async (shift: { _id: Types.ObjectId; staffId: Types.ObjectId; startAt: Date }) => {
+  const claimed = await Shift.findOneAndUpdate(
+    { _id: shift._id, reminderSentAt: null },
+    { reminderSentAt: new Date() },
+  );
+  if (!claimed) return; // another tick/worker already sent it
+  const inMin = Math.round((new Date(shift.startAt).getTime() - Date.now()) / 60000);
+  await sendToStaff(
+    shift.staffId,
+    "SYSTEM",
+    "Upcoming shift",
+    `Your shift starts in about ${Math.max(inMin, 0)} minute(s).`,
+    { screen: "MyShifts", shiftId: String(shift._id) },
+  );
 };
 
 export const tick = async () => {
@@ -129,9 +148,29 @@ export const tick = async () => {
     }
   }
 
-  if (toActivate.length || toComplete.length || toMiss.length) {
+  // Remind assigned staff shortly before their shift starts. reminderSentAt
+  // is claimed atomically per-shift (see remindShift) so this is safe to
+  // just re-query every tick within the window rather than tracking state
+  // here.
+  const toRemind = await Shift.find({
+    status: "scheduled",
+    staffId: { $ne: null },
+    reminderSentAt: null,
+    startAt: { $gt: now, $lte: new Date(now.getTime() + REMINDER_WINDOW_MS) },
+  })
+    .select("_id staffId startAt")
+    .lean();
+  for (const s of toRemind) {
+    try {
+      await remindShift(s as any);
+    } catch (err) {
+      console.error("[Shift] remind failed", s._id, err);
+    }
+  }
+
+  if (toActivate.length || toComplete.length || toMiss.length || toRemind.length) {
     console.log(
-      `[Shift] tick: +${toActivate.length} active  -${toComplete.length} completed  ?${toMiss.length} missed`,
+      `[Shift] tick: +${toActivate.length} active  -${toComplete.length} completed  ?${toMiss.length} missed  🔔${toRemind.length} reminded`,
     );
   }
 };

@@ -22,6 +22,19 @@ export interface IPrescription {
   notes?: string;
 }
 
+// A procedure performed during this encounter (dressing, suturing, minor
+// surgery, catheterization, etc.) — feeds real line items into billing
+// instead of a flat manually-typed amount. `price` is a snapshot of the
+// catalog rate at the time it was picked (see Procedure model /
+// catalog.controller.ts) so later rate changes don't retroactively alter
+// an already-documented encounter; a free-text procedure not in the
+// catalog can still be added with a manual price.
+export interface IProcedureLine {
+  name: string;
+  price?: number;
+  notes?: string;
+}
+
 export interface IVitals {
   bloodPressure?: string; // e.g. "120/80"
   pulse?: number; // bpm
@@ -96,6 +109,7 @@ export interface IEmrEncounter {
   differentialDiagnoses: string[];
   treatmentPlan?: string;
   prescriptions: IPrescription[];
+  procedures: IProcedureLine[];
   labOrders: string[];
   imagingOrders: string[];
   referrals: IReferral[];
@@ -117,6 +131,15 @@ const PrescriptionSchema = new Schema<IPrescription>(
     dosage: { type: String, trim: true },
     frequency: { type: String, trim: true },
     duration: { type: String, trim: true },
+    notes: { type: String, trim: true },
+  },
+  { _id: false },
+);
+
+const ProcedureLineSchema = new Schema<IProcedureLine>(
+  {
+    name: { type: String, required: true, trim: true },
+    price: { type: Number, default: 0 },
     notes: { type: String, trim: true },
   },
   { _id: false },
@@ -199,6 +222,7 @@ const EmrEncounterSchema = new Schema<IEmrEncounter>(
     differentialDiagnoses: { type: [String], default: [] },
     treatmentPlan: { type: String, trim: true },
     prescriptions: { type: [PrescriptionSchema], default: [] },
+    procedures: { type: [ProcedureLineSchema], default: [] },
     labOrders: { type: [String], default: [] },
     imagingOrders: { type: [String], default: [] },
     referrals: {

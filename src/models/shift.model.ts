@@ -38,6 +38,7 @@ const ShiftSchema = new Schema<IShift>(
     },
     clockInAt: Date,
     clockOutAt: Date,
+    reminderSentAt: Date,
     notes: { type: String, trim: true },
     cancelReason: { type: String, trim: true },
     recurrenceId: {

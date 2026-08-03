@@ -5,6 +5,8 @@ import Ward from "../../models/ward.model";
 import HospitalPatient from "../../models/hospital-patient.model";
 import { nextSequence } from "../../models/counter.model";
 import { notifyHospitalPatient } from "../../services/hms-notify.service";
+import { autoDraftInvoiceOnDischarge } from "./billing.controller";
+import { getMarForDate } from "../../services/mar.service";
 
 /**
  * Doctor Panel / HMS — IPD: bed master + admissions (admit, transfer,
@@ -399,6 +401,15 @@ export const discharge = async (
   admission.currentBedId = null;
   await admission.save();
 
+  // Draft a bill from the real bed/pharmacy charges so billing doesn't
+  // depend on a clerk remembering to click "Generate" — never blocks
+  // discharge if this fails (e.g. billing already exists).
+  await autoDraftInvoiceOnDischarge({
+    patientId: admission.patientId,
+    admissionId: admission._id,
+    adminId: (req as any).adminId,
+  }).catch(() => null);
+
   // Notify the patient their discharge summary is available in the app.
   void notifyHospitalPatient(
     admission.patientId,
@@ -486,5 +497,41 @@ export const addLog = async (
   await admission.save();
   req.rData = { admission };
   req.msg = "admission_updated";
+  return next();
+};
+
+/** GET /admin/ipd/admissions/:id/discharge-summary-pdf — streamed PDF, admin side. */
+export const dischargeSummaryPdf = async (req: Request, res: Response) => {
+  const admission = await Admission.findById(req.params.id)
+    .populate("patientId", "patientId fullName phone gender age dateOfBirth")
+    .populate("attendingDoctorId", "fullName")
+    .lean();
+  if (!admission) return res.status(404).json({ code: 5, message: "admission not found" });
+  const { generateDischargeSummaryPDF } = await import("../../services/pdf.service");
+  const buffer = await generateDischargeSummaryPDF(admission);
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="discharge-${admission.admissionNo}.pdf"`);
+  return res.end(buffer);
+};
+
+/**
+ * GET /admin/ipd/admissions/:id/mar?date=YYYY-MM-DD — the day's medication
+ * schedule (defaults to today), derived from the patient's real IPD
+ * prescriptions and cross-referenced against medicationLog. See
+ * services/mar.service.ts.
+ */
+export const mar = async (req: Request, res: Response, next: NextFunction) => {
+  const admission = await Admission.findById(req.params.id).select("_id").lean();
+  if (!admission) {
+    req.rCode = 5;
+    req.msg = "admission_not_found";
+    req.rData = {};
+    return next();
+  }
+  const dateStr = String(req.query.date || "");
+  const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
+  const doses = await getMarForDate(req.params.id as string, date);
+  req.rData = { doses };
+  req.msg = "success";
   return next();
 };

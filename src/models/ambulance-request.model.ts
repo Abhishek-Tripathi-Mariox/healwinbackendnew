@@ -58,6 +58,11 @@ export interface IAmbulanceRequest {
   paidAt?: Date;
   paymentMethod?: string; // ONLINE | CASH | UPI | ...
   patientName?: string;
+  // The hospital patient the crew registered in the field for THIS trip —
+  // links a booked ("Book Ambulance") ride to a real HMS record so admin/
+  // crew see who was actually treated, same as EmergencyDispatch does for
+  // SOS trips. See ambulance-staff-extras.controller.ts#addPatient.
+  hospitalPatientId?: Types.ObjectId;
   notes?: string;
   // "Book for someone else" — the saved contact this ride is for (parcel-style).
   // patientName mirrors the recipient's name for existing admin/driver display.
@@ -99,6 +104,26 @@ export interface IAmbulanceRequest {
   // Live ambulance position (pushed by the assigned driver/staff app).
   driverLocation?: Loc;
   lastLocationAt?: Date;
+  // Actual-route tracking: snapshot of the crew's position on their first
+  // location ping after assignment (the real "trip start", not the pickup
+  // point), plus a running odometer accumulated from every ping since then.
+  // Covers the whole ASSIGNED→ARRIVED→ON_TRIP trail — dispatch point through
+  // pickup through hospital drop — as one continuous distance.
+  tripStartLocation?: Loc;
+  tripStartedTrackingAt?: Date;
+  actualDistanceKm?: number;
+  // Filled in at completion by recalculating fare from the actual distance
+  // covered, alongside (not replacing) the booking-time estimate above.
+  actualDurationMin?: number;
+  actualFareAmount?: number;
+  actualFareBreakdown?: Record<string, any>;
+  // Photos/videos of the patient captured by crew during transport.
+  patientMedia?: {
+    url: string;
+    type: "photo" | "video";
+    uploadedAt: Date;
+    uploadedBy?: Types.ObjectId;
+  }[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -144,6 +169,7 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     paidAt: Date,
     paymentMethod: String,
     patientName: String,
+    hospitalPatientId: { type: Schema.Types.ObjectId, ref: "HospitalPatient", index: true },
     notes: String,
     contactId: { type: Schema.Types.ObjectId, ref: "SavedContact" },
     familyMemberId: { type: Schema.Types.ObjectId, ref: "PatientFamilyMember" },
@@ -191,6 +217,26 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     },
     driverLocation: { type: LocSchema },
     lastLocationAt: Date,
+    tripStartLocation: { type: LocSchema },
+    tripStartedTrackingAt: Date,
+    actualDistanceKm: { type: Number, default: 0 },
+    actualDurationMin: Number,
+    actualFareAmount: Number,
+    actualFareBreakdown: { type: Schema.Types.Mixed },
+    patientMedia: {
+      type: [
+        new Schema(
+          {
+            url: { type: String, required: true },
+            type: { type: String, enum: ["photo", "video"], required: true },
+            uploadedAt: { type: Date, default: Date.now },
+            uploadedBy: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff" },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
   },
   { timestamps: true },
 );

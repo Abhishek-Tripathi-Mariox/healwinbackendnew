@@ -5,6 +5,7 @@ import type {
   BillingSection,
 } from "../../models/hospital-invoice.model";
 import HospitalPatient from "../../models/hospital-patient.model";
+import { Admin } from "../../models/admin.model";
 import Admission from "../../models/admission.model";
 import Bed from "../../models/bed.model";
 import EmrEncounter from "../../models/emr-encounter.model";
@@ -12,6 +13,7 @@ import StockTransaction from "../../models/stock-transaction.model";
 import { BillingAudit } from "../../models/billing-audit.model";
 import { nextSequence } from "../../models/counter.model";
 import { notifyHospitalPatient } from "../../services/hms-notify.service";
+import { autoDraftClaimForInvoice } from "./insurance.controller";
 
 /**
  * Doctor Panel / HMS — Billing: invoices, payments, refunds and financial reports.
@@ -430,6 +432,130 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const daysBetween = (from: Date, to: Date) =>
   Math.max(1, Math.ceil((to.getTime() - from.getTime()) / DAY_MS));
 
+/** Real bed-day charges for an admission's stay so far — bedHistory × each bed's daily charge. */
+const computeBedChargeLines = async (admissionId: any): Promise<IInvoiceLineItem[]> => {
+  const admission = await Admission.findById(admissionId).lean();
+  if (!admission) return [];
+  const now = new Date();
+  const bedIds = (admission.bedHistory || []).map((h) => h.bedId).filter(Boolean);
+  const beds = await Bed.find({ _id: { $in: bedIds as any } }).lean();
+  const rateById = new Map(beds.map((bd) => [String(bd._id), bd.dailyCharge || 0]));
+  const lines: IInvoiceLineItem[] = [];
+  for (const h of admission.bedHistory || []) {
+    const from = new Date(h.fromAt);
+    const to = h.toAt ? new Date(h.toAt) : now;
+    const days = daysBetween(from, to);
+    const rate = h.bedId ? rateById.get(String(h.bedId)) || 0 : 0;
+    lines.push({
+      section: "bed",
+      description: `Bed ${h.ward}/${h.bedNumber} × ${days} day(s)`,
+      quantity: days,
+      unitPrice: rate,
+      amount: Math.round(days * rate * 100) / 100,
+    });
+  }
+  return lines;
+};
+
+/**
+ * Real pharmacy consumption issued against this ref — an admissionId for
+ * IPD dispensing, or a patientId for OPD (see emr.controller.ts#dispense,
+ * which tags issuedToRef with whichever is correct for the encounter).
+ */
+const computePharmacyLines = async (ref: string): Promise<IInvoiceLineItem[]> => {
+  const issued: any[] = await StockTransaction.find({
+    type: "out",
+    issuedToType: "patient",
+    issuedToRef: ref,
+  })
+    .populate("itemId", "name unitCost unit")
+    .lean();
+  const lines: IInvoiceLineItem[] = [];
+  for (const tx of issued) {
+    const item: any = tx.itemId;
+    if (!item) continue;
+    const unit = item.unitCost || 0;
+    lines.push({
+      section: "pharmacy",
+      description: `${item.name} × ${tx.quantity} ${item.unit || ""}`.trim(),
+      quantity: tx.quantity,
+      unitPrice: unit,
+      amount: Math.round(tx.quantity * unit * 100) / 100,
+    });
+  }
+  return lines;
+};
+
+/** Real procedure lines across every IPD encounter documented during an admission's stay so far. */
+const computeProcedureLinesForAdmission = async (patientId: any, admittedAt: Date): Promise<IInvoiceLineItem[]> => {
+  const encounters = await EmrEncounter.find({
+    patientId,
+    encounterType: "IPD",
+    visitDate: { $gte: admittedAt },
+  })
+    .select("procedures")
+    .lean();
+  const lines: IInvoiceLineItem[] = [];
+  for (const enc of encounters) {
+    for (const proc of (enc as any).procedures || []) {
+      const amount = Number(proc.price) || 0;
+      lines.push({
+        section: "procedure",
+        description: proc.name + (proc.notes ? ` (${proc.notes})` : ""),
+        quantity: 1,
+        unitPrice: amount,
+        amount,
+      });
+    }
+  }
+  return lines;
+};
+
+/**
+ * Auto-called on IPD discharge (see ipd.controller.ts#discharge) — drafts an
+ * invoice from the charges that are fully automatic/real-data-driven (bed
+ * days + pharmacy issued to this admission), so billing doesn't depend on a
+ * clerk remembering to click "Generate" after every discharge. Left as
+ * status "draft" — room/nursing/consultation rates and diagnostics still
+ * need a human to fill in and finalize before it's a real bill (those need
+ * judgment `generate` still handles). Skips silently (returns null) if a
+ * bill already exists for this admission or there's nothing to bill yet —
+ * never blocks the discharge itself.
+ */
+export const autoDraftInvoiceOnDischarge = async (opts: {
+  patientId: any;
+  admissionId: any;
+  adminId: any;
+}): Promise<any | null> => {
+  const existing = await HospitalInvoice.findOne({ admissionId: opts.admissionId }).select("_id").lean();
+  if (existing) return null;
+
+  const admission: any = await Admission.findById(opts.admissionId).select("admittedAt").lean();
+  const [bedLines, pharmacyLines, procedureLines] = await Promise.all([
+    computeBedChargeLines(opts.admissionId),
+    computePharmacyLines(String(opts.admissionId)),
+    admission ? computeProcedureLinesForAdmission(opts.patientId, admission.admittedAt) : Promise.resolve([]),
+  ]);
+  const lineItems = [...bedLines, ...pharmacyLines, ...procedureLines];
+  if (lineItems.length === 0) return null;
+
+  const invoice = new HospitalInvoice({
+    invoiceNo: await mintInvoiceNo(),
+    patientId: opts.patientId,
+    admissionId: opts.admissionId,
+    lineItems,
+    taxPercent: 0,
+    gstin: process.env.HOSPITAL_GSTIN || "",
+    discount: 0,
+    status: "draft",
+    payments: [],
+    createdByAdminId: opts.adminId,
+  });
+  recompute(invoice);
+  await invoice.save();
+  return invoice;
+};
+
 /**
  * POST /admin/billing/generate — cross-module invoice generation.
  *
@@ -473,30 +599,10 @@ export const generate = async (
 
   // --- IPD bed-day charges (section "bed") ---
   if (b.admissionId && b.includeBedCharges !== false) {
-    const admission = await Admission.findById(b.admissionId).lean();
+    const admission = await Admission.findById(b.admissionId).select("_id").lean();
     if (admission) {
       admissionId = admission._id;
-      const now = new Date();
-      const bedIds = (admission.bedHistory || [])
-        .map((h) => h.bedId)
-        .filter(Boolean);
-      const beds = await Bed.find({ _id: { $in: bedIds as any } }).lean();
-      const rateById = new Map(
-        beds.map((bd) => [String(bd._id), bd.dailyCharge || 0]),
-      );
-      for (const h of admission.bedHistory || []) {
-        const from = new Date(h.fromAt);
-        const to = h.toAt ? new Date(h.toAt) : now;
-        const days = daysBetween(from, to);
-        const rate = h.bedId ? rateById.get(String(h.bedId)) || 0 : 0;
-        lineItems.push({
-          section: "bed",
-          description: `Bed ${h.ward}/${h.bedNumber} × ${days} day(s)`,
-          quantity: days,
-          unitPrice: rate,
-          amount: Math.round(days * rate * 100) / 100,
-        });
-      }
+      lineItems.push(...(await computeBedChargeLines(b.admissionId)));
     }
   }
 
@@ -530,28 +636,11 @@ export const generate = async (
   // --- Pharmacy consumption (auto-pulled from stock issued to this patient) ---
   if (b.includePharmacy !== false) {
     const ref = String(b.admissionId || b.patientId);
-    const issued: any[] = await StockTransaction.find({
-      type: "out",
-      issuedToType: "patient",
-      issuedToRef: ref,
-    })
-      .populate("itemId", "name unitCost unit")
-      .lean();
-    for (const tx of issued) {
-      const item: any = tx.itemId;
-      if (!item) continue;
-      const unit = item.unitCost || 0;
-      lineItems.push({
-        section: "pharmacy",
-        description: `${item.name} × ${tx.quantity} ${item.unit || ""}`.trim(),
-        quantity: tx.quantity,
-        unitPrice: unit,
-        amount: Math.round(tx.quantity * unit * 100) / 100,
-      });
-    }
+    lineItems.push(...(await computePharmacyLines(ref)));
   }
 
-  // --- Diagnostics + consultation from an EMR encounter ---
+  // --- Diagnostics + procedures from an EMR encounter, real consultation fee ---
+  let resolvedConsultationFee = Number(b.consultationFee) || 0;
   if (b.encounterId) {
     const enc = await EmrEncounter.findById(b.encounterId).lean();
     if (enc) {
@@ -574,18 +663,43 @@ export const generate = async (
             amount: rate,
           });
       }
+
+      // Real procedure lines — the price snapshotted on the encounter when
+      // the doctor picked it from the Procedure catalog (or typed a
+      // free-text one with a manual price), not a flat amount billing
+      // staff has to know/guess after the fact.
+      if (b.includeProcedures !== false) {
+        for (const proc of enc.procedures || []) {
+          const amount = Number(proc.price) || 0;
+          lineItems.push({
+            section: "procedure",
+            description: proc.name + (proc.notes ? ` (${proc.notes})` : ""),
+            quantity: 1,
+            unitPrice: amount,
+            amount,
+          });
+        }
+      }
+
+      // Default the consultation fee to the doctor's real configured rate
+      // (Admin.doctorProfile.consultationFee) when the caller didn't
+      // explicitly override it — real data instead of billing staff typing
+      // a number from memory.
+      if (!b.consultationFee && enc.doctorId) {
+        const doc: any = await Admin.findById(enc.doctorId).select("doctorProfile.consultationFee").lean();
+        resolvedConsultationFee = doc?.doctorProfile?.consultationFee || 0;
+      }
     }
   }
 
-  // --- Flat consultation fee (with or without an encounter) ---
-  if (b.includeConsultation && Number(b.consultationFee) > 0) {
-    const fee = Number(b.consultationFee);
+  // --- Consultation fee (with or without an encounter) ---
+  if (b.includeConsultation !== false && resolvedConsultationFee > 0) {
     lineItems.push({
       section: "consultation",
       description: "Consultation fee",
       quantity: 1,
-      unitPrice: fee,
-      amount: fee,
+      unitPrice: resolvedConsultationFee,
+      amount: resolvedConsultationFee,
     });
   }
 
@@ -598,23 +712,58 @@ export const generate = async (
     return next();
   }
 
-  const invoice = new HospitalInvoice({
-    invoiceNo: await mintInvoiceNo(),
-    patientId: b.patientId,
-    admissionId: admissionId || b.admissionId || undefined,
-    encounterId: b.encounterId || undefined,
-    doctorId: b.doctorId || undefined,
-    departmentId: b.departmentId || undefined,
-    lineItems,
-    taxPercent: Number(b.taxPercent) || 0,
-    gstin: b.gstin || process.env.HOSPITAL_GSTIN || "",
-    discount: Number(b.discount) || 0,
-    status: "unpaid",
-    payments: [],
-    createdByAdminId: adminId,
-  });
-  recompute(invoice);
-  await invoice.save();
+  // A draft may already exist for this admission (auto-created on discharge
+  // — see autoDraftInvoiceOnDischarge). Finalize that one in place instead
+  // of minting a duplicate: replace its lineItems with the freshly computed
+  // set (bed/pharmacy recomputed fresh + whatever manual lines were just
+  // added) and flip it to "unpaid". Any OTHER (non-draft) invoice already on
+  // this admission blocks a second bill outright — real hospitals don't
+  // double-bill a stay.
+  const admissionRef = admissionId || b.admissionId;
+  const existing = admissionRef
+    ? await HospitalInvoice.findOne({ admissionId: admissionRef })
+    : null;
+  if (existing && existing.status !== "draft") {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = {
+      hint: `invoice ${existing.invoiceNo} already exists for this admission (${existing.status}) — edit or pay that one instead`,
+    };
+    return next();
+  }
+
+  let invoice: any;
+  if (existing) {
+    existing.lineItems = lineItems;
+    existing.encounterId = b.encounterId || existing.encounterId;
+    existing.doctorId = b.doctorId || existing.doctorId;
+    existing.departmentId = b.departmentId || existing.departmentId;
+    existing.taxPercent = Number(b.taxPercent) || 0;
+    existing.gstin = b.gstin || existing.gstin || process.env.HOSPITAL_GSTIN || "";
+    existing.discount = Number(b.discount) || 0;
+    existing.status = "unpaid";
+    recompute(existing);
+    await existing.save();
+    invoice = existing;
+  } else {
+    invoice = new HospitalInvoice({
+      invoiceNo: await mintInvoiceNo(),
+      patientId: b.patientId,
+      admissionId: admissionRef || undefined,
+      encounterId: b.encounterId || undefined,
+      doctorId: b.doctorId || undefined,
+      departmentId: b.departmentId || undefined,
+      lineItems,
+      taxPercent: Number(b.taxPercent) || 0,
+      gstin: b.gstin || process.env.HOSPITAL_GSTIN || "",
+      discount: Number(b.discount) || 0,
+      status: "unpaid",
+      payments: [],
+      createdByAdminId: adminId,
+    });
+    recompute(invoice);
+    await invoice.save();
+  }
 
   // Notify the patient a bill is ready (unless still a draft).
   if (invoice.status !== "draft") {
@@ -624,6 +773,10 @@ export const generate = async (
       `Invoice ${invoice.invoiceNo} for ₹${invoice.total} is ready. Balance due ₹${invoice.balanceDue}.`,
       { tab: "bills" },
     );
+    // Draft an insurance claim automatically if this patient holds exactly
+    // one active policy — billing staff previously had to remember to raise
+    // one manually. Never blocks the invoice itself.
+    await autoDraftClaimForInvoice(invoice).catch(() => null);
   }
 
   req.rData = { invoice };

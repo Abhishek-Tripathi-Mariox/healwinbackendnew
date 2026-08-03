@@ -52,6 +52,12 @@ export interface IHrEmployee {
   employmentTypeId?: Types.ObjectId;
   reportingToId?: Types.ObjectId;
   photo?: string;
+  // Links this HR record to the employee's admin-panel login, when they have
+  // one (doctors always do — OPD scheduling keys off the Admin id). Lets
+  // leave/attendance (HR) actually affect OPD slot availability instead of
+  // being two disconnected systems tracking the same person. See
+  // doctor-slots.service.ts#isDoctorOnApprovedLeave.
+  linkedAdminId?: Types.ObjectId;
 
   status: EmployeeStatus;
 
@@ -123,6 +129,7 @@ const HrEmployeeSchema = new Schema<IHrEmployee>(
     employmentTypeId: { type: Schema.Types.ObjectId, ref: "EmploymentType" },
     reportingToId: { type: Schema.Types.ObjectId, ref: "HrEmployee" },
     photo: String,
+    linkedAdminId: { type: Schema.Types.ObjectId, ref: "Admin", index: true },
 
     status: {
       type: String,
