@@ -4,15 +4,19 @@ import mongoose, { Schema, Types } from "mongoose";
  * Patient-app ambulance request — the lightweight, real, persisted record
  * behind "Book Ambulance" / SOS-dispatch in the patient app.
  *
- * Lifecycle: SEARCHING → ASSIGNED → ARRIVED → ON_TRIP → COMPLETED (or CANCELLED).
+ * Lifecycle: SEARCHING → ASSIGNED → ACCEPTED → ARRIVED → ON_TRIP → COMPLETED (or CANCELLED).
  * The admin dispatch screen lists SEARCHING requests and assigns an ambulance +
- * driver; on assignment the backend emits a socket event + FCM push to the user
- * so the app flips from "Finding…" to live tracking.
+ * driver (→ ASSIGNED); the driver/attendant then explicitly accepts on their
+ * app (→ ACCEPTED) — a real, separate, persisted event from admin assignment,
+ * not just a display label (see ambulance-staff-request.controller.ts#accept).
+ * On assignment the backend emits a socket event + FCM push to the user so the
+ * app flips from "Finding…" to live tracking.
  */
 
 export type AmbulanceRequestStatus =
   | "SEARCHING"
   | "ASSIGNED"
+  | "ACCEPTED"
   | "ARRIVED"
   | "ON_TRIP"
   | "COMPLETED"
@@ -83,6 +87,7 @@ export interface IAmbulanceRequest {
   etaMinutes?: number;
   otp?: string;
   assignedAt?: Date;
+  acceptedAt?: Date;
   completedAt?: Date;
   // Patient rating of the completed ride.
   rating?: number;
@@ -177,7 +182,7 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     recipientPhone: String,
     status: {
       type: String,
-      enum: ["SEARCHING", "ASSIGNED", "ARRIVED", "ON_TRIP", "COMPLETED", "CANCELLED"],
+      enum: ["SEARCHING", "ASSIGNED", "ACCEPTED", "ARRIVED", "ON_TRIP", "COMPLETED", "CANCELLED"],
       default: "SEARCHING",
       index: true,
     },
@@ -190,6 +195,7 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     etaMinutes: Number,
     otp: String,
     assignedAt: Date,
+    acceptedAt: Date,
     completedAt: Date,
     rating: { type: Number, min: 1, max: 5 },
     review: String,

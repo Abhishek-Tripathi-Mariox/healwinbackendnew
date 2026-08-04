@@ -43,6 +43,21 @@ export const fetchByQueryToEdit = async (query: any) => {
 };
 
 /**
+ * Clears isSelected on every OTHER address belonging to a user — keeps
+ * "default" a single-address invariant when one is created/updated as
+ * default (mirrors what the dedicated selectAddress endpoint already did).
+ */
+export const unsetOtherDefaults = async (
+  userId: Types.ObjectId | string,
+  keepId: Types.ObjectId | string,
+) => {
+  await UserAddress.updateMany(
+    { userId, _id: { $ne: keepId }, isSelected: true },
+    { $set: { isSelected: false } },
+  );
+};
+
+/**
  * Update address
  */
 export const updateUserAddress = async (

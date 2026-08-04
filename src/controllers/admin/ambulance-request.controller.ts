@@ -16,7 +16,7 @@ import { sendToUser, sendDispatchPush } from "../../services/notification.servic
  * flips from "Finding an ambulance" to live tracking.
  */
 
-const ACTIVE = ["SEARCHING", "ASSIGNED", "ARRIVED", "ON_TRIP"];
+const ACTIVE = ["SEARCHING", "ASSIGNED", "ACCEPTED", "ARRIVED", "ON_TRIP"];
 
 export const list = async (req: Request, _res: Response, next: NextFunction) => {
   // SOS emergencies are handled exclusively by the SOS Dashboard (SOSSubmission

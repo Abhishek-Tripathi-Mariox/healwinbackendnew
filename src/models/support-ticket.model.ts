@@ -24,6 +24,13 @@ export interface ISupportTicket {
   lastMessageAt?: Date;
   rating?: number;
   feedback?: string;
+  // Record-keeping only (no external police API integration) — lets an admin
+  // mark that a genuine police verification has taken place for an
+  // emergency/urgent ticket, with who did it, when, and any note.
+  policeVerified?: boolean;
+  policeVerificationNote?: string;
+  policeVerifiedBy?: Types.ObjectId;
+  policeVerifiedAt?: Date;
 }
 
 export interface ISupportMessage {
@@ -107,6 +114,10 @@ const SupportTicketSchema = new Schema<ISupportTicket>(
     lastMessageAt: Date,
     rating: { type: Number, min: 1, max: 5 },
     feedback: { type: String, trim: true },
+    policeVerified: { type: Boolean, default: false },
+    policeVerificationNote: { type: String, trim: true },
+    policeVerifiedBy: { type: Schema.Types.ObjectId, ref: "Admin" },
+    policeVerifiedAt: Date,
   },
   { timestamps: true },
 );

@@ -69,5 +69,10 @@ export default () => ({
     body("isDutyOn").isBoolean(),
     body("reasonId").optional().isMongoId(),
     body("notes").optional().isString().isLength({ max: 500 }),
+    // Selfie + GPS fix captured client-side when going ON duty (see
+    // ambulance-staff.controller.ts#setDuty) — optional so off-duty (no
+    // photo) and older app builds keep working.
+    body("lat").optional().isFloat({ min: -90, max: 90 }),
+    body("lng").optional().isFloat({ min: -180, max: 180 }),
   ]),
 });

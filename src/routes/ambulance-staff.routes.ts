@@ -24,6 +24,9 @@ router.get(
 router.post(
   "/duty",
   auth.verifyStaffToken,
+  // Multer no-ops on a non-multipart request (going off duty sends plain
+  // JSON, no photo), so this is safe for both content types on one route.
+  upload.single("photo"),
   V.validateDuty,
   ErrorHandlerMiddleware(C.setDuty),
   ResponseMiddleware,

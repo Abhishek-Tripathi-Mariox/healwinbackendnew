@@ -67,6 +67,33 @@ export const assignTicket = async (req: Request, res: Response) => {
 };
 
 /**
+ * Mark/unmark police verification (record-keeping only)
+ */
+export const verifyPolice = async (req: Request, res: Response) => {
+  const { ticketId } = req.params as Record<string, string>;
+  const { verified, note } = req.body;
+
+  const ticket = await SupportService.setPoliceVerified(
+    ticketId,
+    new Types.ObjectId(req.adminId),
+    !!verified,
+    note,
+  );
+
+  if (!ticket) {
+    return res.status(404).json({
+      success: false,
+      message: "Ticket not found",
+    });
+  }
+
+  res.locals.data = {
+    message: verified ? "Marked as police-verified" : "Police verification cleared",
+    ticket,
+  };
+};
+
+/**
  * Update ticket status
  */
 export const updateTicketStatus = async (req: Request, res: Response) => {

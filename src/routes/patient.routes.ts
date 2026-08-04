@@ -1687,13 +1687,13 @@ router.post("/ambulance/apply-promo", verifyUserToken, async (req, res) => {
 // Real, persisted ambulance requests. The admin dispatch screen assigns an
 // ambulance + driver; on assignment the user is pushed (FCM) + socket-notified
 // and the app flips to live tracking. `toApp` shapes the record for the app.
-const ACTIVE_STATUSES = ["SEARCHING", "ASSIGNED", "ARRIVED", "ON_TRIP"];
+const ACTIVE_STATUSES = ["SEARCHING", "ASSIGNED", "ACCEPTED", "ARRIVED", "ON_TRIP"];
 
 // Patient cancellation is FREE while still "Searching" (no ambulance committed
-// yet); once an ambulance is assigned (ASSIGNED/ARRIVED/ON_TRIP), a charge
-// applies. The fee comes from the chosen VehicleType (admin-configurable),
+// yet); once an ambulance is assigned (ASSIGNED/ACCEPTED/ARRIVED/ON_TRIP), a
+// charge applies. The fee comes from the chosen VehicleType (admin-configurable),
 // falling back to the global default.
-const CHARGEABLE_CANCEL_STATUSES = ["ASSIGNED", "ARRIVED", "ON_TRIP"];
+const CHARGEABLE_CANCEL_STATUSES = ["ASSIGNED", "ACCEPTED", "ARRIVED", "ON_TRIP"];
 
 const cancellationFeeFor = async (r: any): Promise<number> => {
   if (!CHARGEABLE_CANCEL_STATUSES.includes(String(r.status))) return 0;

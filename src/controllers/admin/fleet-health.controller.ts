@@ -22,7 +22,7 @@ export const summary = async (req: Request, _res: Response, next: NextFunction) 
       ]),
       AmbulanceStaff.countDocuments({ isDutyOn: true, isDeleted: { $ne: true } }),
       EmergencyDispatch.countDocuments({ status: { $in: ["DISPATCHED", "ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE", "ON_TRIP"] } }),
-      AmbulanceRequest.countDocuments({ status: { $in: ["SEARCHING", "ASSIGNED", "ARRIVED", "ON_TRIP"] } }),
+      AmbulanceRequest.countDocuments({ status: { $in: ["SEARCHING", "ASSIGNED", "ACCEPTED", "ARRIVED", "ON_TRIP"] } }),
       SOSAlert.countDocuments({ status: "ACTIVE" }),
       // Response time = dispatchedAt → acknowledgedAt, over completed/acknowledged
       // dispatches in the last 24h.

@@ -124,6 +124,8 @@ export const attendance = async (req: Request, _res: Response, next: NextFunctio
       status: a?.status || "absent",
       checkIn: a?.checkIn || "",
       checkOut: a?.checkOut || "",
+      checkInPhoto: a?.checkInPhoto || null,
+      checkInWithinGeofence: a?.checkInWithinGeofence ?? null,
     };
   });
   const present = items.filter((i) => i.status === "present").length;

@@ -88,6 +88,14 @@ export const addUserAddress = async (
 
   let address = await UserAddressService.addUserAddress(req.body);
 
+  // A new address created as the default must be the ONLY default — without
+  // this, an old default stays isSelected:true too and the app shows two
+  // "Default" badges (see selectAddress, which already does this correctly
+  // for the explicit "make default" action; create/update skipped it).
+  if (req.body.isSelected) {
+    await UserAddressService.unsetOtherDefaults(userId, address._id);
+  }
+
   req.rData = address;
   req.msg = "success";
   next();
@@ -114,6 +122,13 @@ export const updateUserAddress = async (
     req.rCode = 5;
     req.msg = "address_not_found";
     return next();
+  }
+
+  if (req.body.isSelected) {
+    await UserAddressService.unsetOtherDefaults(
+      (updatedAddress as any).userId,
+      updatedAddress._id,
+    );
   }
 
   req.rData = updatedAddress;

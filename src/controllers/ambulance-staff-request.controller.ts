@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import AmbulanceRequest from "../models/ambulance-request.model";
 import Ambulance from "../models/ambulance.model";
-import { emitToUser } from "../utils/socket.util";
+import { emitToUser, emitToAdmin } from "../utils/socket.util";
 import { sendToUser } from "../services/notification.service";
 import { calculateFare } from "../services/fare.service";
 import { uploadMultipleFilesToAws } from "../utils/s3";
@@ -15,7 +15,7 @@ import { uploadMultipleFilesToAws } from "../utils/s3";
 
 const sid = (req: Request) => String((req as any).staffId);
 
-const ACTIVE = ["ASSIGNED", "ARRIVED", "ON_TRIP"];
+const ACTIVE = ["ASSIGNED", "ACCEPTED", "ARRIVED", "ON_TRIP"];
 
 const notifyPatient = async (
   reqDoc: any,
@@ -25,6 +25,12 @@ const notifyPatient = async (
 ) => {
   const userId = String(reqDoc.userId);
   emitToUser(userId, "booking:status", { requestId: String(reqDoc._id), status });
+  // The admin Ambulance Requests queue previously only refreshed on NEW
+  // bookings (`ambulance-request:new`) — every driver-side transition
+  // (accept/arrived/start/complete) went unnoticed until the 15s poll caught
+  // up, so a just-completed trip could sit showing a stale in-progress status
+  // for up to that long. This closes that gap.
+  emitToAdmin("ambulance-request:status", { requestId: String(reqDoc._id), status });
   await sendToUser(
     reqDoc.userId,
     "BOOKING",
@@ -98,12 +104,25 @@ const guard = (req: Request, next: NextFunction, r: any): boolean => {
   return true;
 };
 
-/** POST /requests/:id/accept — crew acknowledges the dispatch. */
+/**
+ * POST /requests/:id/accept — driver/attendant explicitly accepts the
+ * dispatch. Previously this only fired notifications without persisting
+ * anything, so "assigned by admin" and "accepted by crew" were indistinguishable
+ * — the patient/admin had no way to know the crew had actually seen and taken
+ * the job. This now records a real, separate ACCEPTED status + timestamp.
+ */
 export const accept = async (req: Request, _res: Response, next: NextFunction) => {
   const r = await own(req);
   if (!guard(req, next, r)) return;
-  await notifyPatient(r, "ASSIGNED", "Crew on the way", "Your ambulance crew has acknowledged and is preparing to move.");
-  notifyAttendant(r, "ACKNOWLEDGED");
+  r.status = "ACCEPTED";
+  r.acceptedAt = new Date();
+  r.statusHistory = [
+    ...((r as any).statusHistory || []),
+    { status: "ACCEPTED", at: new Date(), by: "driver", note: "Crew accepted the dispatch" },
+  ];
+  await r.save();
+  await notifyPatient(r, "ACCEPTED", "Accepted and on the way", "Your ambulance crew has accepted and is preparing to move.");
+  notifyAttendant(r, "ACCEPTED");
   req.rData = { request: r };
   req.msg = "success";
   return next();
@@ -234,6 +253,8 @@ export const reject = async (req: Request, _res: Response, next: NextFunction) =
   await r.save();
   // Patient app flips back to "Finding an ambulance".
   emitToUser(userId, "booking:status", { requestId: String(r._id), status: "SEARCHING" });
+  // Admin queue needs to know it's back in the SEARCHING pool for re-dispatch.
+  emitToAdmin("ambulance-request:status", { requestId: String(r._id), status: "SEARCHING" });
   req.rData = { request: r };
   req.msg = "success";
   return next();

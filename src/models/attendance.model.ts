@@ -31,6 +31,12 @@ export interface IAttendance {
   leaveRequestId?: Types.ObjectId;
   remarks?: string;
   markedByAdminId?: Types.ObjectId;
+  // Selfie + geofence result captured at check-in time (ambulance_staff
+  // self-checkin via duty-on toggle only — see ambulance-staff.controller.ts
+  // #setDuty; hr_employee rows stay admin-marked with no photo).
+  checkInPhoto?: string;
+  checkInLocation?: { lat: number; lng: number };
+  checkInWithinGeofence?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -56,6 +62,12 @@ const AttendanceSchema = new Schema<IAttendance>(
     leaveRequestId: { type: Schema.Types.ObjectId, ref: "LeaveRequest" },
     remarks: { type: String, trim: true },
     markedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
+    checkInPhoto: String,
+    checkInLocation: {
+      lat: Number,
+      lng: Number,
+    },
+    checkInWithinGeofence: Boolean,
   },
   { timestamps: true },
 );

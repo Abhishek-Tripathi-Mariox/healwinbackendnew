@@ -1103,6 +1103,12 @@ adminRouter.put(
   ErrorHandlerMiddleware(AdminSupportController.updateTicketStatus),
   ResponseMiddleware,
 );
+adminRouter.put(
+  "/support/tickets/:ticketId/police-verify",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminSupportController.verifyPolice),
+  ResponseMiddleware,
+);
 adminRouter.post(
   "/support/tickets/:ticketId/reply",
   verifyAdminToken,

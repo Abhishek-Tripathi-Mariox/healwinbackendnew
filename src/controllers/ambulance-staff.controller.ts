@@ -3,6 +3,7 @@ import { Types } from "mongoose";
 import AmbulanceStaff from "../models/ambulance-staff.model";
 import Ambulance from "../models/ambulance.model";
 import AmbulanceServiceProvider from "../models/ambulance-service-provider.model";
+import Centre from "../models/centre.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
 import { AmbulanceRequest } from "../models/ambulance-request.model";
 import { Notification } from "../models/notification.model";
@@ -19,6 +20,12 @@ import config from "../config";
 // shift's startAt — matches the state-machine's grace window so a 5-min-
 // early arrival lights the button.
 const CLOCK_IN_LEAD_MS = 15 * 60 * 1000;
+
+// How far (in km) a duty-toggle GPS fix may be from the staff member's
+// anchor Centre before it's flagged as outside the geofence. Informational
+// only (see setDuty) — never blocks the toggle, since crew legitimately
+// start a shift from the field, not always from the hospital gate.
+const GEOFENCE_RADIUS_KM = 0.5;
 
 export const me = async (
   req: Request,
@@ -62,7 +69,13 @@ export const setDuty = async (
   next: NextFunction,
 ) => {
   const staffId = (req as any).staffId;
-  const { isDutyOn, reasonId, notes } = req.body;
+  // Multipart when a photo is attached (going on duty), plain JSON otherwise
+  // (going off duty needs no photo) — both land in req.body the same way.
+  const isDutyOn = req.body.isDutyOn === true || req.body.isDutyOn === "true";
+  const { reasonId, notes } = req.body;
+  const lat = req.body.lat !== undefined ? Number(req.body.lat) : undefined;
+  const lng = req.body.lng !== undefined ? Number(req.body.lng) : undefined;
+  const hasLocation = typeof lat === "number" && !Number.isNaN(lat) && typeof lng === "number" && !Number.isNaN(lng);
 
   // Going OFF duty requires an admin-managed reason. ON duty does not.
   // The validator already enforced the shape; here we just verify the
@@ -97,6 +110,32 @@ export const setDuty = async (
       .json({ rCode: 0, rMsg: "not_found", rData: {} });
   }
 
+  // Selfie, uploaded whenever the app sent one (going on duty). Geofence is
+  // only computable for attendants — they're anchored to a hospital/Centre
+  // (staff.hospitalId); drivers are anchored to their AmbulanceServiceProvider
+  // instead, which has no location field today, so distance/withinGeofence
+  // stay unset for them. This is informational only and never blocks the
+  // toggle — crew legitimately start a shift from the field.
+  let photoUrl: string | undefined;
+  const file = (req as any).file as Express.Multer.File | undefined;
+  if (file) {
+    const { images } = await uploadFileToAws([file]);
+    photoUrl = images as unknown as string;
+  }
+  let distanceMeters: number | undefined;
+  let withinGeofence: boolean | undefined;
+  if (hasLocation && staff.hospitalId) {
+    const centre: any = await Centre.findById(staff.hospitalId).select("location").lean();
+    const coords = centre?.location?.coordinates;
+    if (Array.isArray(coords) && coords.length === 2) {
+      const distanceKm = haversineKm({ lat: lat as number, lng: lng as number }, { lat: coords[1], lng: coords[0] });
+      if (distanceKm != null) {
+        distanceMeters = Math.round(distanceKm * 1000);
+        withinGeofence = distanceKm <= GEOFENCE_RADIUS_KM;
+      }
+    }
+  }
+
   // Going on duty marks the crew "present" for the day in central attendance
   // (one row per staff per day, idempotent) so HR/payroll can count paid days
   // for ambulance crew the same way it does for employees. Check-in stamped on
@@ -110,7 +149,12 @@ export const setDuty = async (
         { ambulanceStaffId: staff._id, date: day },
         {
           $set: { subjectType: "ambulance_staff", status: "present" },
-          $setOnInsert: { checkIn: hhmm },
+          $setOnInsert: {
+            checkIn: hhmm,
+            ...(photoUrl ? { checkInPhoto: photoUrl } : {}),
+            ...(hasLocation ? { checkInLocation: { lat, lng } } : {}),
+            ...(withinGeofence !== undefined ? { checkInWithinGeofence: withinGeofence } : {}),
+          },
         },
         { upsert: true },
       ).catch(() => undefined);
@@ -135,6 +179,10 @@ export const setDuty = async (
     reasonLabel: isDutyOn ? undefined : reasonLabel,
     notes: typeof notes === "string" && notes.trim() ? notes.trim() : undefined,
     at: new Date(),
+    photo: photoUrl,
+    location: hasLocation ? { lat, lng } : undefined,
+    distanceMeters,
+    withinGeofence,
   });
 
   // Vehicle availability requires the FULL crew on duty: an on-duty driver AND,
@@ -161,7 +209,7 @@ export const setDuty = async (
     }
   }
 
-  req.rData = { isDutyOn: staff.isDutyOn };
+  req.rData = { isDutyOn: staff.isDutyOn, distanceMeters, withinGeofence };
   req.msg = "duty_set";
   next();
 };
@@ -308,7 +356,7 @@ export const updateLocation = async (
     const prevReq: any = await AmbulanceRequest.findOne(
       {
         driverStaffId: staff._id,
-        status: { $in: ["ASSIGNED", "ARRIVED", "ON_TRIP"] },
+        status: { $in: ["ASSIGNED", "ACCEPTED", "ARRIVED", "ON_TRIP"] },
       },
       { pickup: 1, driverLocation: 1, tripStartLocation: 1 },
     ).lean();
@@ -334,7 +382,7 @@ export const updateLocation = async (
     const activeReq: any = await AmbulanceRequest.findOneAndUpdate(
       {
         driverStaffId: staff._id,
-        status: { $in: ["ASSIGNED", "ARRIVED", "ON_TRIP"] },
+        status: { $in: ["ASSIGNED", "ACCEPTED", "ARRIVED", "ON_TRIP"] },
       },
       update,
       { returnDocument: "after" },

@@ -215,6 +215,36 @@ export const assignTicket = async (
 };
 
 /**
+ * Mark (or unmark) a ticket as police-verified — record-keeping only, no
+ * external police API. Used for emergency/urgent tickets that required a
+ * real police verification step outside the app.
+ */
+export const setPoliceVerified = async (
+  ticketId: string,
+  adminId: Types.ObjectId,
+  verified: boolean,
+  note?: string,
+) => {
+  return await SupportTicket.findOneAndUpdate(
+    { ticketId },
+    verified
+      ? {
+          policeVerified: true,
+          policeVerificationNote: note,
+          policeVerifiedBy: adminId,
+          policeVerifiedAt: new Date(),
+        }
+      : {
+          policeVerified: false,
+          policeVerificationNote: note,
+          policeVerifiedBy: adminId,
+          policeVerifiedAt: null,
+        },
+    { returnDocument: "after" },
+  );
+};
+
+/**
  * Add message to ticket
  */
 export const addMessage = async (data: {

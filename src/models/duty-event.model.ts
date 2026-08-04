@@ -13,6 +13,15 @@ export interface IDutyEvent extends Document {
   reasonLabel?: string;
   notes?: string;
   at: Date;
+  // Selfie + GPS captured at the moment of toggling duty, and (where the
+  // staff member has a real Centre anchor — see ambulance-staff.controller.ts
+  // #setDuty) whether that position was within the geofence. Attendants are
+  // anchored to their assigned hospital/Centre; drivers have no such anchor
+  // today so these stay unset for them — see the caveat in setDuty.
+  photo?: string;
+  location?: { lat: number; lng: number };
+  distanceMeters?: number;
+  withinGeofence?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -40,6 +49,13 @@ const DutyEventSchema = new Schema<IDutyEvent>(
     reasonLabel: String,
     notes: { type: String, trim: true },
     at: { type: Date, default: Date.now, index: true },
+    photo: String,
+    location: {
+      lat: Number,
+      lng: Number,
+    },
+    distanceMeters: Number,
+    withinGeofence: Boolean,
   },
   { timestamps: true },
 );
