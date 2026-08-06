@@ -9,6 +9,13 @@ import User from "../models/Users";
 import VehicleType from "../models/vehicle-type.model";
 import { calculateFare } from "./fare.service";
 
+// Pickup-verification code, same 4-digit shape as AmbulanceRequest's — the
+// patient reads it out to the crew once they arrive, driver enters it to
+// start the trip. Previously SOS dispatches never minted one (deliberately,
+// for speed), but that's since been reversed — SOS now gets the same real
+// verification step as a booked ride.
+const mintOtp = (): string => String(Math.floor(1000 + Math.random() * 9000));
+
 /**
  * SOS has no patient-selected VehicleType — resolve one from the assigned
  * ambulance's free-form `ambulanceType` (e.g. "BLS") so the trip can be
@@ -408,6 +415,7 @@ export const createDispatch = async (params: {
         },
         roadDistanceKm: params.roadDistanceKm,
         etaMinutes: params.etaMinutes,
+        otp: mintOtp(),
       });
 
       await Ambulance.updateOne(
@@ -494,6 +502,7 @@ export const createDispatch = async (params: {
             roadDistanceKm: params.roadDistanceKm,
             etaMinutes: params.etaMinutes,
             vehicleTypeId: vehicleType?._id,
+            otp: mintOtp(),
           },
         ] as any,
         { session },
@@ -536,10 +545,7 @@ export const createDispatch = async (params: {
   // Link the SOS patient and denormalise their name + pickup address for the
   // driver display — in ONE place so every dispatch path (admin SOS
   // dashboard, sos-alerts, etc.) behaves identically: the patient app flips
-  // to live tracking. SOS trips skip the pickup-OTP step (unlike a proper
-  // "Book Ambulance" request) — no otp is minted here, and
-  // transitionDispatch's OTP check is already conditional on dispatch.otp
-  // being set, so leaving it unset disables that check.
+  // to live tracking.
   const { patientUserId, patientName, pickupAddress } = await resolveSosPatient(params.sosId);
   await EmergencyDispatch.updateOne(
     { _id: dispatchId },
