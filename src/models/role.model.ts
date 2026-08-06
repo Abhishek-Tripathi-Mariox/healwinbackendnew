@@ -867,6 +867,11 @@ export const DEFAULT_ROLES = {
       PERMISSIONS.BEDS_VIEW,
       PERMISSIONS.INVENTORY_VIEW,
       PERMISSIONS.BILLING_VIEW,
+      // Patient-app "Consult a Doctor" bookings — a doctor logging in needs
+      // to see and act on these (write the consultation summary), not just
+      // Admin/Super Admin.
+      PERMISSIONS.PATIENT_COMMERCE_VIEW,
+      PERMISSIONS.PATIENT_COMMERCE_MANAGE,
     ],
     isSystem: true,
   },
@@ -894,6 +899,11 @@ export const DEFAULT_ROLES = {
       PERMISSIONS.IPD_MANAGE,
       PERMISSIONS.BEDS_VIEW,
       PERMISSIONS.BEDS_MANAGE,
+      // Front desk schedules/reschedules patient-app consultations, lab
+      // bookings and pharmacy orders — same page a doctor uses to write
+      // consultation summaries.
+      PERMISSIONS.PATIENT_COMMERCE_VIEW,
+      PERMISSIONS.PATIENT_COMMERCE_MANAGE,
     ],
     isSystem: true,
   },
