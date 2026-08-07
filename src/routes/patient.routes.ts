@@ -1247,6 +1247,26 @@ router.get("/hms/summary", verifyUserToken, async (req, res) => {
   ok(res, { linked: true, appointments, prescriptions, labOrders, invoices, admissions });
 });
 
+// Photos/videos/documents uploaded against the patient's hospital record —
+// by admin desk staff or an ambulance attendant registering them in the field.
+router.get("/hms/documents", verifyUserToken, async (req, res) => {
+  const ids = await myHospitalPatientIds(req);
+  if (ids.length === 0) return ok(res, []);
+  const patients: any[] = await HospitalPatient.find({ _id: { $in: ids } })
+    .select("documents")
+    .lean();
+  const rows = patients
+    .flatMap((p) => p.documents || [])
+    .sort((a: any, b: any) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())
+    .map((d: any) => ({
+      type: d.type || "other",
+      label: d.label || "",
+      url: d.url,
+      uploadedAt: d.uploadedAt,
+    }));
+  ok(res, rows);
+});
+
 // OPD appointments (view).
 router.get("/hms/appointments", verifyUserToken, async (req, res) => {
   const ids = await myHospitalPatientIds(req);

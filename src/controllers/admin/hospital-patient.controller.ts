@@ -262,8 +262,14 @@ export const addDocument = async (
   if (String(req.body.asPhoto) === "true") {
     patient.photo = url as string;
   } else {
+    const mimeType = String(file.mimetype || "");
+    const autoType = mimeType.startsWith("video/")
+      ? "video"
+      : mimeType.startsWith("image/")
+        ? "photo"
+        : undefined;
     patient.documents.push({
-      type: req.body.type || "other",
+      type: req.body.type || autoType || "other",
       label: req.body.label || file.originalname,
       url: url as string,
       uploadedAt: new Date(),

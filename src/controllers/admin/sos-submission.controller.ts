@@ -6,6 +6,8 @@ import Ambulance from "../../models/ambulance.model";
 import AmbulanceStaff from "../../models/ambulance-staff.model";
 import { sendPushNotification } from "../../services/notification.service";
 import { emitToUser } from "../../utils/socket.util";
+import IvrEscalation from "../../models/ivr-escalation.model";
+import { dialTier } from "../ivr-escalation.controller";
 
 /**
  * Wraps up an SOS-linked dispatch when the admin resolves/closes the
@@ -256,6 +258,61 @@ export const getSubmissionDetails = async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       message: error.message || "Failed to fetch submission details",
+    });
+  }
+};
+
+/**
+ * One-click "Call" — places a real call to the SOS submitter (via the
+ * configured IVR provider, ringing the operator/control-room number first
+ * and bridging to them) and journals it as an IvrEscalation, with no manual
+ * "Start Escalation" form. Reuses the submission's existing open escalation
+ * (if any) instead of creating a new one on every click, so repeated Call
+ * presses re-ring the same record's history rather than fragmenting it.
+ */
+export const callSubmitter = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params as Record<string, string>;
+    const submission = await SOSSubmission.findById(id);
+    if (!submission) {
+      return res.status(404).json({
+        success: false,
+        message: "SOS submission not found",
+      });
+    }
+    if (!submission.phone || submission.phone === "N/A") {
+      return res.status(400).json({
+        success: false,
+        message: "This submission has no phone number to call",
+      });
+    }
+
+    let escalation = await IvrEscalation.findOne({
+      sosSubmission: submission._id,
+      status: { $in: ["pending", "in_progress"] },
+    });
+
+    if (!escalation) {
+      escalation = new IvrEscalation({
+        sosSubmission: submission._id,
+        triggerReason: "SOS call button",
+        contacts: [
+          { tier: 1, name: submission.name, phone: submission.phone, role: "SOS caller" },
+        ],
+        status: "in_progress",
+        startedByAdminId: (req as any).admin?._id,
+      });
+    } else {
+      escalation.status = "in_progress";
+    }
+    await dialTier(escalation, 1);
+    await escalation.save();
+
+    res.json({ success: true, data: { escalation } });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to place call",
     });
   }
 };

@@ -56,8 +56,20 @@ const fullSlotLabel = (dateStr: string, time: string): string => {
   return `${slotLabelFor(time)}, ${date}`;
 };
 
+// A doctor may only read/act on their own consultations — everyone else
+// (admin/hospital staff) is unrestricted.
+const doctorScope = (req: Request): { doctorId?: string } =>
+  req.admin?.roleName === "Doctor" ? { doctorId: req.adminId } : {};
+
+const notFoundOrForbidden = (req: Request, next: NextFunction) => {
+  req.rCode = 5;
+  req.msg = "not_found";
+  req.rData = {};
+  return next();
+};
+
 /** Shared reschedule: set scheduledAt/slotTime/slotLabel from a date + slot. */
-const reschedule = (model: any, tab: string) => async (req: Request, _res: Response, next: NextFunction) => {
+const reschedule = (model: any, tab: string, scoped = false) => async (req: Request, _res: Response, next: NextFunction) => {
   const { date, slot } = req.body || {};
   const when = slotToDate(String(date || ""), String(slot || ""));
   if (!when) {
@@ -67,11 +79,13 @@ const reschedule = (model: any, tab: string) => async (req: Request, _res: Respo
     return next();
   }
   const label = fullSlotLabel(String(date), String(slot));
-  const item = await model.findByIdAndUpdate(
-    req.params.id as string,
+  const filter = scoped ? { _id: req.params.id, ...doctorScope(req) } : { _id: req.params.id };
+  const item = await model.findOneAndUpdate(
+    filter,
     { scheduledAt: when, slotTime: String(slot), slotLabel: label },
     { new: true },
   ).lean();
+  if (scoped && !item) return notFoundOrForbidden(req, next);
   if (item?.userId) {
     void sendToUser(item.userId, "BOOKING", "Appointment rescheduled", `Your appointment is now ${label}.`, {
       route: "MyOrders",
@@ -84,7 +98,7 @@ const reschedule = (model: any, tab: string) => async (req: Request, _res: Respo
   return next();
 };
 
-export const rescheduleConsultation = reschedule(Consultation, "consultations");
+export const rescheduleConsultation = reschedule(Consultation, "consultations", true);
 export const rescheduleLabBooking = reschedule(LabBooking, "lab");
 
 /**
@@ -99,11 +113,12 @@ export const setConsultationSummary = async (req: Request, _res: Response, next:
     req.rData = { hint: "summary is required" };
     return next();
   }
-  const item = await Consultation.findByIdAndUpdate(
-    req.params.id as string,
+  const item = await Consultation.findOneAndUpdate(
+    { _id: req.params.id, ...doctorScope(req) },
     { summary, status: "COMPLETED" },
     { new: true },
   ).lean();
+  if (!item) return notFoundOrForbidden(req, next);
   if (item?.userId) {
     void sendToUser(item.userId, "BOOKING", "Consultation summary ready", "Your doctor has added a consultation summary. Tap to view.", {
       route: "MyOrders",
@@ -187,7 +202,14 @@ const statusFilter = (req: Request): any => {
 
 // ----- Consultations -----
 export const listConsultations = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = await Consultation.find(statusFilter(req))
+  const query = statusFilter(req);
+  // A doctor logging in should only see consultations booked with them —
+  // not every doctor's patients. Everyone else (admin/hospital staff) keeps
+  // the full, unscoped view they need for oversight/scheduling.
+  if (req.admin?.roleName === "Doctor") {
+    query.doctorId = req.adminId;
+  }
+  const items = await Consultation.find(query)
     .populate("userId", USER_FIELDS)
     .sort({ createdAt: -1 })
     .lean();
@@ -204,11 +226,12 @@ export const updateConsultationStatus = async (req: Request, _res: Response, nex
     req.rData = { hint: `status must be one of ${CONSULTATION_STATUSES.join(", ")}` };
     return next();
   }
-  const item = await Consultation.findByIdAndUpdate(
-    req.params.id as string,
+  const item = await Consultation.findOneAndUpdate(
+    { _id: req.params.id, ...doctorScope(req) },
     { status },
     { new: true },
   ).lean();
+  if (!item) return notFoundOrForbidden(req, next);
   notifyStatus("consultation", item, status);
   req.rData = { item };
   req.msg = "success";

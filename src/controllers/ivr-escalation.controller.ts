@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { randomUUID } from "crypto";
 import IvrEscalation from "../models/ivr-escalation.model";
 import type { IIvrContact } from "../models/ivr-escalation.model";
 import { placeCall } from "../services/ivr.service";
@@ -19,19 +20,30 @@ const normalizeContacts = (raw: any): IIvrContact[] =>
     }))
     .sort((a, b) => a.tier - b.tier);
 
-/** Places a call to the contact at `tier` and appends an attempt. */
-const dialTier = async (escalation: any, tier: number) => {
+/**
+ * Places a call to the contact at `tier` and appends an attempt.
+ *
+ * `refId` is generated per-attempt (not per-escalation) and handed to the
+ * provider as its reference_id/refid — some providers (MyOperator, MCube)
+ * don't return a usable call ID at placement time, so this is what the
+ * status/recording webhook echoes back to let us match it to this exact
+ * attempt (see `callback` below).
+ */
+export const dialTier = async (escalation: any, tier: number) => {
   const contact = escalation.contacts.find((c: IIvrContact) => c.tier === tier);
   if (!contact) return false;
+  const refId = randomUUID();
   const result = await placeCall(contact.phone, {
     reason: escalation.triggerReason,
     escalationId: String(escalation._id),
+    refId,
   });
   escalation.attempts.push({
     tier,
     phone: contact.phone,
     provider: result.provider,
     providerCallId: result.callId,
+    refId,
     status: result.status === "placed" ? "placed" : "failed",
     note: result.note,
     at: new Date(),
@@ -111,6 +123,40 @@ export const advance = async (
   await dialTier(escalation, nextTier);
   await escalation.save();
 
+  req.rData = { escalation };
+  req.msg = "escalation_updated";
+  return next();
+};
+
+/**
+ * POST /admin/ivr-escalations/:id/call/:tier — place a call to that tier's
+ * contact right now (on demand), independent of the automatic tier
+ * progression. Journals the attempt like any other call.
+ */
+export const callNow = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const escalation = await IvrEscalation.findById(req.params.id);
+  if (!escalation) {
+    req.rCode = 5;
+    req.msg = "escalation_not_found";
+    req.rData = {};
+    return next();
+  }
+  const tier = Number(req.params.tier);
+  const ok = await dialTier(escalation, tier);
+  if (!ok) {
+    req.rCode = 5;
+    req.msg = "tier_not_found";
+    req.rData = {};
+    return next();
+  }
+  if (escalation.status !== "acknowledged" && escalation.status !== "cancelled") {
+    escalation.status = "in_progress";
+  }
+  await escalation.save();
   req.rData = { escalation };
   req.msg = "escalation_updated";
   return next();
@@ -206,8 +252,13 @@ export const detail = async (
 };
 
 /**
- * POST /ivr/callback — public provider webhook. Exotel/Twilio post call status
- * here; we locate the escalation by providerCallId and update the attempt. A
+ * POST /ivr/callback — public provider webhook (Exotel/Twilio/MCube/
+ * MyOperator all post here — point whichever one is active at this URL from
+ * its dashboard). We locate the attempt by providerCallId (if the provider
+ * returned one when the call was placed) or by refId (the UUID we generated
+ * and handed the provider as reference_id/refid — most providers echo this
+ * back even when they don't expose their own call ID). Recording URL field
+ * names vary by provider, so several plausible ones are checked. A
  * "completed"/"answered" status acknowledges the escalation (someone picked up).
  */
 export const callback = async (
@@ -215,23 +266,47 @@ export const callback = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const callId = req.body?.CallSid || req.body?.callId || req.query?.CallSid;
+  const b = req.body || {};
+  const q = req.query || {};
+  const callId =
+    b.CallSid || b.callId || b.call_id || b.callid || q.CallSid || undefined;
+  const refId =
+    b.refId || b.refid || b.reference_id || b.ref_id || q.refId || q.reference_id || undefined;
   const rawStatus = String(
-    req.body?.Status || req.body?.status || "",
+    b.Status || b.status || b.call_status || b.event_type || "",
   ).toLowerCase();
-  if (!callId) {
+  const recordingUrl =
+    b.recording_url ||
+    b.recordingUrl ||
+    b.RecordingUrl ||
+    b.RecordingURL ||
+    b.call_recording_url ||
+    b.recording ||
+    undefined;
+
+  if (!callId && !refId) {
     req.rData = { ok: false };
     req.msg = "success";
     return next();
   }
-  const escalation = await IvrEscalation.findOne({
-    "attempts.providerCallId": callId,
-  });
+
+  const escalation = await IvrEscalation.findOne(
+    callId && refId
+      ? { $or: [{ "attempts.providerCallId": callId }, { "attempts.refId": refId }] }
+      : callId
+        ? { "attempts.providerCallId": callId }
+        : { "attempts.refId": refId },
+  );
   if (escalation) {
     const attempt = escalation.attempts.find(
-      (a) => a.providerCallId === callId,
+      (a) => (callId && a.providerCallId === callId) || (refId && a.refId === refId),
     );
     if (attempt) {
+      // A provider that only echoes refId at placement time may still send
+      // its own call ID in the status webhook — capture it if we don't have
+      // one yet, so a later recording-only webhook keyed on callId can match.
+      if (callId && !attempt.providerCallId) attempt.providerCallId = callId;
+      if (recordingUrl) attempt.recordingUrl = recordingUrl;
       if (["completed", "answered", "in-progress"].includes(rawStatus)) {
         attempt.status = "answered";
         if (escalation.status === "in_progress") {

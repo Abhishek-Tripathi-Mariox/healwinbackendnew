@@ -138,6 +138,7 @@ router.get("/leaves", auth.verifyStaffToken, ErrorHandlerMiddleware(X.listLeaves
 router.post("/leaves", auth.verifyStaffToken, upload.array("attachment", 1), ErrorHandlerMiddleware(X.applyLeave), ResponseMiddleware);
 router.get("/patients", auth.verifyStaffToken, ErrorHandlerMiddleware(X.listPatients), ResponseMiddleware);
 router.post("/patients", auth.verifyStaffToken, ErrorHandlerMiddleware(X.addPatient), ResponseMiddleware);
+router.post("/patients/:id/media", auth.verifyStaffToken, upload.array("media", 10), ErrorHandlerMiddleware(X.addPatientMedia), ResponseMiddleware);
 router.post("/case-notes", auth.verifyStaffToken, ErrorHandlerMiddleware(X.saveCaseNote), ResponseMiddleware);
 router.post("/stock-requests", auth.verifyStaffToken, ErrorHandlerMiddleware(X.createStockRequest), ResponseMiddleware);
 // Ambulance inventory (crew): catalog to pick from, own on-hand stock, and

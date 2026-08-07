@@ -123,12 +123,26 @@ const config = {
   // IVR escalation (automated SOS phone-tree). Falls back to "log" — which
   // records intended calls without dialling — when no provider is configured.
   ivr: {
-    provider: optional("IVR_PROVIDER", "log"), // "exotel" | "log"
+    provider: optional("IVR_PROVIDER", "log"), // "exotel" | "mcube" | "myoperator" | "log"
     exotelSid: optional("EXOTEL_SID"),
     exotelApiKey: optional("EXOTEL_API_KEY"),
     exotelApiToken: optional("EXOTEL_API_TOKEN"),
     exotelCallerId: optional("EXOTEL_CALLER_ID"),
     exotelSubdomain: optional("EXOTEL_SUBDOMAIN", "api.exotel.com"),
+    // MCube click-to-call (bridge): dials the operator/control-room number
+    // first, and on answer connects them to the escalation contact.
+    mcubeApiUrl: optional("MCUBE_API_URL", "https://api.mcube.com/Restmcube-api/outbound-calls"),
+    mcubeApiKey: optional("MCUBE_API_KEY"),
+    // MyOperator OBD (outbound dialer) API — same bridge pattern, different
+    // provider. `callType` defaults to a peer-to-peer bridge; check the
+    // MyOperator dashboard (Manage → API integration) for the exact value
+    // your account expects if calls don't connect.
+    myOperatorApiUrl: optional("MYOPERATOR_API_URL", "https://obd-api.myoperator.co/obd-api-v1"),
+    myOperatorApiKey: optional("MYOPERATOR_API_KEY"), // x-api-key header
+    myOperatorCompanyId: optional("MYOPERATOR_COMPANY_ID"),
+    myOperatorSecretToken: optional("MYOPERATOR_SECRET_TOKEN"),
+    myOperatorCallType: optional("MYOPERATOR_CALL_TYPE", "peer_to_peer"),
+    operatorNumber: optional("IVR_OPERATOR_NUMBER"),
   },
 
   // Payment gateway

@@ -1147,6 +1147,12 @@ adminRouter.put(
   ErrorHandlerMiddleware(SOSSubmissionController.updateSubmissionStatus),
   ResponseMiddleware,
 );
+adminRouter.post(
+  "/sos-submissions/:id/call",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(SOSSubmissionController.callSubmitter),
+  ResponseMiddleware,
+);
 
 // ============ EMERGENCY DISPATCHES ============
 adminRouter.post(

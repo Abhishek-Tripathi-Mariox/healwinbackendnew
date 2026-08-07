@@ -6,7 +6,7 @@ import {
 import LeaveRequest from "../models/leave-request.model";
 import HospitalPatient from "../models/hospital-patient.model";
 import { nextSequence } from "../models/counter.model";
-import { uploadFileToAws } from "../utils/s3";
+import { uploadFileToAws, uploadMultipleFilesToAws } from "../utils/s3";
 import { emitToAdmin } from "../utils/socket.util";
 import AmbulanceStaff from "../models/ambulance-staff.model";
 import Ambulance from "../models/ambulance.model";
@@ -239,6 +239,50 @@ export const addPatient = async (req: Request, _res: Response, next: NextFunctio
   // `linkedToApp` lets the staff app confirm the patient was matched to an
   // existing app account (vs a brand-new walk-in with no app).
   req.rData = { item, linkedToApp: Boolean(linkedUser), linkedToDispatch };
+  req.msg = "success";
+  return next();
+};
+
+/**
+ * POST /ambulance-staff/patients/:id/media — attach photo(s)/video(s) the
+ * crew captured while registering a field patient (e.g. injury photos, scene
+ * video). Stored on the same `documents[]` the admin desk already uses for
+ * ID proofs/reports, so they show up in the patient's real record either way.
+ * Scoped to whichever staff member actually registered this patient.
+ */
+export const addPatientMedia = async (req: Request, _res: Response, next: NextFunction) => {
+  const patient = await HospitalPatient.findOne({
+    _id: req.params.id,
+    registeredByStaffId: sid(req),
+    isDeleted: false,
+  });
+  if (!patient) {
+    req.rCode = 5;
+    req.msg = "not_available";
+    req.rData = {};
+    return next();
+  }
+
+  const files = Array.isArray(req.files) ? req.files : [];
+  if (!files.length) {
+    req.rCode = 0;
+    req.msg = "no_files";
+    req.rData = {};
+    return next();
+  }
+
+  const { images: urls } = await uploadMultipleFilesToAws(files as any);
+  const now = new Date();
+  const docs = (files as Express.Multer.File[]).map((f, i) => ({
+    type: String(f.mimetype || "").startsWith("video/") ? "video" : "photo",
+    label: f.originalname,
+    url: (urls as string[])[i],
+    uploadedAt: now,
+  }));
+  patient.documents = [...(patient.documents || []), ...(docs as any)];
+  await patient.save();
+
+  req.rData = { documents: patient.documents };
   req.msg = "success";
   return next();
 };

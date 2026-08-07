@@ -44,6 +44,14 @@ router.post(
 );
 
 router.post(
+  "/:id/call/:tier",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.IVR_MANAGE),
+  ErrorHandlerMiddleware(C.callNow),
+  ResponseMiddleware,
+);
+
+router.post(
   "/:id/acknowledge",
   auth.verifyAdminToken,
   auth.requirePermission(PERMISSIONS.IVR_MANAGE),
