@@ -31,8 +31,9 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
       .select("fullName email phone roleName isActive doctorProfile.speciality")
       .lean(),
     HrEmployee.find({ isDeleted: { $ne: true } })
-      .select("fullName employeeCode email phone status designationId")
+      .select("fullName employeeCode email phone status designationId linkedAdminId")
       .populate("designationId", "name")
+      .populate("linkedAdminId", "roleName doctorProfile.speciality")
       .lean(),
     AmbulanceStaff.find({ isDeleted: { $ne: true } })
       .select("fullName mobileNumber role isActive")
@@ -56,12 +57,23 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
     });
   }
   for (const e of employees as any[]) {
+    // A staff member with a real admin-panel login (linkedAdminId — always
+    // true for doctors, since OPD scheduling keys off the Admin id) has a
+    // real system role there; that's more meaningful than the HR
+    // designation, which is frequently left unset and used to fall back to
+    // a generic "Employee" even for e.g. doctors.
+    const linkedAdmin = e.linkedAdminId;
+    const linkedRole = linkedAdmin
+      ? linkedAdmin.roleName === "Doctor"
+        ? linkedAdmin.doctorProfile?.speciality || "Doctor"
+        : linkedAdmin.roleName
+      : undefined;
     rows.push({
       type: "hr_employee",
       sourceId: String(e._id),
       name: e.fullName,
       contact: e.phone || e.email || e.employeeCode || "",
-      role: e.designationId?.name || "Employee",
+      role: linkedRole || e.designationId?.name || "Employee",
       status: e.status || "active",
     });
   }
