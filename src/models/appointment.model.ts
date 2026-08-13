@@ -24,6 +24,24 @@ export interface IAppointment {
   reason?: string;
   notes?: string;
   encounterId?: Types.ObjectId; // EMR encounter created during consultation
+  // Consultation invoice raised automatically at booking time, priced from the
+  // doctor's configured fee. Null when the doctor has no fee on file (nothing
+  // to bill) or if invoice creation failed — booking never blocks on billing.
+  invoiceId?: Types.ObjectId;
+  // Vitals taken by the nurse / front desk at check-in. The doctor's encounter
+  // form reads these rather than asking the doctor to type them — in a real
+  // clinic triage records vitals before the consult starts.
+  vitals?: {
+    bloodPressure?: string;
+    pulse?: number;
+    temperature?: number;
+    spo2?: number;
+    respiratoryRate?: number;
+    height?: number;
+    weight?: number;
+  };
+  vitalsRecordedByAdminId?: Types.ObjectId;
+  vitalsRecordedAt?: Date;
   followUpAt?: Date;
   createdByAdminId: Types.ObjectId;
   createdAt: Date;
@@ -66,6 +84,29 @@ const AppointmentSchema = new Schema<IAppointment>(
       ref: "EmrEncounter",
       default: null,
     },
+    invoiceId: {
+      type: Schema.Types.ObjectId,
+      ref: "HospitalInvoice",
+      default: null,
+      index: true,
+    },
+    vitals: {
+      type: new Schema(
+        {
+          bloodPressure: String,
+          pulse: Number,
+          temperature: Number,
+          spo2: Number,
+          respiratoryRate: Number,
+          height: Number,
+          weight: Number,
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    vitalsRecordedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
+    vitalsRecordedAt: Date,
     followUpAt: Date,
     createdByAdminId: {
       type: Schema.Types.ObjectId,

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import Appointment from "../../models/appointment.model";
 import HospitalPatient from "../../models/hospital-patient.model";
+import { createConsultationInvoice } from "./billing.controller";
 
 /**
  * Doctor Panel / HMS — OPD appointments & queue tokens.
@@ -39,6 +40,7 @@ export const list = async (
     .sort({ scheduledAt: 1, tokenNumber: 1 })
     .populate("patientId", "patientId fullName phone gender age")
     .populate("doctorId", "fullName")
+    .populate("invoiceId", "invoiceNo total amountPaid balanceDue status")
     .lean();
 
   req.rData = { date: start, appointments };
@@ -96,7 +98,32 @@ export const create = async (
     createdByAdminId: adminId,
   });
 
-  req.rData = { appointment: appt };
+  // Raise the consultation bill immediately so the front desk can collect at
+  // booking time. Deliberately best-effort: a missing doctor fee or a billing
+  // failure must never lose a confirmed appointment, so we swallow the error
+  // and leave invoiceId null (the OPD board then shows "no bill").
+  try {
+    const invoice = await createConsultationInvoice({
+      patientId: appt.patientId,
+      doctorId: appt.doctorId,
+      appointmentId: appt._id,
+      adminId,
+    });
+    if (invoice) {
+      appt.invoiceId = invoice._id as any;
+      await appt.save();
+    }
+  } catch {
+    /* billing is non-blocking — appointment stands */
+  }
+
+  const created = await Appointment.findById(appt._id)
+    .populate("patientId", "patientId fullName phone gender age")
+    .populate("doctorId", "fullName")
+    .populate("invoiceId", "invoiceNo total amountPaid balanceDue status")
+    .lean();
+
+  req.rData = { appointment: created };
   req.msg = "appointment_created";
   return next();
 };
@@ -141,3 +168,71 @@ export const update = async (
 };
 
 export default { list, create, update };
+
+
+/**
+ * PUT /admin/opd/:id/vitals — nurse / front desk records vitals at check-in.
+ *
+ * Kept off the doctor's encounter form deliberately: in a real clinic triage
+ * takes vitals before the consult, and the doctor reads them. The encounter
+ * form pre-fills from here.
+ */
+export const recordVitals = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const adminId = (req as any).adminId;
+  const b = req.body?.vitals ?? req.body ?? {};
+  const appt = await Appointment.findById(req.params.id as string);
+  if (!appt) {
+    req.rCode = 5;
+    req.msg = "appointment_not_found";
+    req.rData = {};
+    return next();
+  }
+
+  const num = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  appt.vitals = {
+    bloodPressure: b.bloodPressure ? String(b.bloodPressure).trim() : undefined,
+    pulse: num(b.pulse),
+    temperature: num(b.temperature),
+    spo2: num(b.spo2),
+    respiratoryRate: num(b.respiratoryRate),
+    height: num(b.height),
+    weight: num(b.weight),
+  };
+  appt.vitalsRecordedByAdminId = adminId;
+  appt.vitalsRecordedAt = new Date();
+  await appt.save();
+
+  req.rData = { appointment: appt };
+  req.msg = "vitals_recorded";
+  return next();
+};
+
+
+/** GET /admin/opd/:id — one appointment (used by the encounter form to read the nurse's vitals). */
+export const detail = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const appt = await Appointment.findById(req.params.id as string)
+    .populate("patientId", "patientId fullName phone gender age")
+    .populate("doctorId", "fullName")
+    .populate("vitalsRecordedByAdminId", "fullName")
+    .lean();
+  if (!appt) {
+    req.rCode = 5;
+    req.msg = "appointment_not_found";
+    req.rData = {};
+    return next();
+  }
+  req.rData = { appointment: appt };
+  req.msg = "appointment_detail";
+  return next();
+};

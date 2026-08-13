@@ -1,12 +1,14 @@
 import { Request, Response, NextFunction } from "express";
 import EmrEncounter from "../../models/emr-encounter.model";
 import HospitalPatient from "../../models/hospital-patient.model";
-import InventoryItem from "../../models/inventory-item.model";
-import StockTransaction from "../../models/stock-transaction.model";
 import { DiagnosticOrder } from "../../models/diagnostic-order.model";
 import { Appointment } from "../../models/appointment.model";
+import InventoryItem from "../../models/inventory-item.model";
+import LabTest from "../../models/lab-test.model";
+import PharmacyProduct from "../../models/pharmacy-product.model";
+import PharmacyDispense from "../../models/pharmacy-dispense.model";
 import Admission from "../../models/admission.model";
-import { issueFefo } from "../../services/inventory-batch.service";
+import { appendToOpenInvoice } from "./billing.controller";
 
 /**
  * Doctor Panel / HMS — EMR (SOAP) encounters.
@@ -25,7 +27,13 @@ import { issueFefo } from "../../services/inventory-batch.service";
  * relationships (e.g. Amoxicillin as a penicillin derivative). It's a real
  * safety net for the common case, not a substitute for clinical judgment.
  */
-const findAllergyConflicts = (
+/**
+ * Exported so the pharmacy dispense queue can run the SAME check at hand-over
+ * time — that is the moment the drug physically reaches the patient, and it
+ * must not be possible to bypass it by dispensing from the queue instead of
+ * the encounter.
+ */
+export const findAllergyConflicts = (
   allergiesText: string | undefined,
   drugs: string[],
 ): { drug: string; allergyTerm: string }[] => {
@@ -228,6 +236,81 @@ export const create = async (
     console.error("diagnostic auto-create failed:", e);
   }
 
+  // Prescriptions → the pharmacy counter's dispense queue. Only for finalized
+  // encounters: a draft is still being written, and the pharmacy must not start
+  // handing out medicine the doctor hasn't committed to. Best-effort, same as
+  // diagnostics — a pharmacy failure must not lose the clinical record.
+  try {
+    const rx = (Array.isArray(b.prescriptions) ? b.prescriptions : []).filter(
+      (p: any) => p?.drug && String(p.drug).trim(),
+    );
+    if (rx.length && encounter.status === "finalized") {
+      await PharmacyDispense.create({
+        patientId: encounter.patientId,
+        encounterId: encounter._id,
+        doctorId: encounter.doctorId,
+        lines: rx.map((p: any) => ({
+          itemId: p.itemId || undefined,
+          drug: String(p.drug).trim(),
+          dosage: p.dosage || undefined,
+          frequency: p.frequency || undefined,
+          duration: p.duration || undefined,
+          notes: p.notes || undefined,
+          quantity: Number(p.quantity) > 0 ? Number(p.quantity) : 1,
+          dispensedQuantity: 0,
+        })),
+        status: "pending",
+        createdByAdminId: adminId,
+      });
+    }
+  } catch (e) {
+    console.error("pharmacy dispense auto-create failed:", e);
+  }
+
+  // Procedures performed during the visit are billable — put them on the
+  // patient's open bill as soon as the encounter is finalised, rather than
+  // waiting for someone to click Generate. The consultation fee is NOT added
+  // here: OPD already raises it at booking, and adding it again would
+  // double-charge. Stamped so generate() cannot pull them a second time.
+  try {
+    const procs = (Array.isArray(b.procedures) ? b.procedures : []).filter(
+      (p: any) => p?.name && Number(p.price) > 0,
+    );
+    if (procs.length && encounter.status === "finalized") {
+      const active: any =
+        encounter.encounterType === "IPD"
+          ? await Admission.findOne({
+              patientId: encounter.patientId,
+              status: "admitted",
+            })
+              .select("_id")
+              .lean()
+          : null;
+      const invoice = await appendToOpenInvoice({
+        patientId: encounter.patientId,
+        admissionId: active?._id,
+        encounterId: encounter._id,
+        doctorId: encounter.doctorId,
+        adminId,
+        lines: procs.map((p: any) => ({
+          section: "procedure" as const,
+          description: p.name,
+          quantity: 1,
+          unitPrice: Number(p.price),
+          amount: Number(p.price),
+        })),
+      });
+      if (invoice) {
+        await EmrEncounter.updateOne(
+          { _id: encounter._id },
+          { $set: { proceduresInvoiceId: invoice._id } },
+        );
+      }
+    }
+  } catch (e) {
+    console.error("procedure auto-bill failed:", e);
+  }
+
   const allergyWarnings = findAllergyConflicts(
     patient.healthHistory?.allergies,
     (Array.isArray(b.prescriptions) ? b.prescriptions : []).map((p: any) => p.drug),
@@ -311,132 +394,94 @@ export const update = async (
 };
 
 /**
- * POST /admin/emr/:id/dispense — push an encounter's prescriptions into the
- * pharmacy inventory as stock-out movements.
+ * GET /admin/emr/drug-options — medicine picker for the prescription rows.
  *
- * For each prescribed drug we match an active medicine in inventory (by name,
- * case-insensitive) and issue the requested quantity (default 1), journalling
- * a StockTransaction. Non-matching or insufficient-stock drugs are skipped and
- * reported back so the dispensing clerk can act on them. Nothing is issued for
- * drugs already out of stock — the operation is best-effort and per-line.
+ * Unions the two places medicine actually lives, because either can be the
+ * populated one depending on how the hospital was set up:
  *
- * body.items (optional): [{ drug, quantity }] overrides the encounter's
- * prescription list (e.g. partial dispense).
+ *   • InventoryItem (category "medicine") — real HMS stock with FEFO batches.
+ *     Dispensable: the pharmacy queue decrements it on hand-over.
+ *   • PharmacyProduct — the patient-app catalogue. Dispensable only when it
+ *     carries `itemId` (linked to an inventory item on the Catalog screen);
+ *     otherwise it is prescribable by name but nothing is decremented.
+ *
+ * A catalogue product linked to an inventory item is returned once, as the
+ * inventory row, so the doctor never sees the same drug twice.
  */
-export const dispense = async (
+export const drugOptions = async (
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction,
 ) => {
-  const adminId = (req as any).adminId;
-  const encounter = await EmrEncounter.findById(req.params.id).lean();
-  if (!encounter) {
-    req.rCode = 5;
-    req.msg = "encounter_not_found";
-    req.rData = {};
-    return next();
-  }
+  const search = ((req.query.search as string) || "").trim();
+  const rx = search
+    ? new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
+    : null;
 
-  const requested: { drug: string; quantity: number }[] =
-    Array.isArray(req.body?.items) && req.body.items.length
-      ? req.body.items.map((i: any) => ({
-          drug: String(i.drug || "").trim(),
-          quantity: Math.max(1, Number(i.quantity) || 1),
-        }))
-      : (encounter.prescriptions || []).map((p) => ({
-          drug: (p.drug || "").trim(),
-          quantity: 1,
-        }));
+  const invQuery: any = { isDeleted: false, isActive: true, category: "medicine" };
+  if (rx) invQuery.$or = [{ name: rx }, { sku: rx }];
 
-  // Allergy safety gate — this is the actual physical-administration moment
-  // (unlike the prescribe-time warning in create/update, which is advisory),
-  // so a known conflict blocks the dispense outright unless the caller
-  // explicitly overrides with a reason, mirroring how real hospital EMRs
-  // require an acknowledged override rather than silently allowing it.
-  if (!req.body?.overrideAllergyWarning) {
-    const patient = await HospitalPatient.findById(encounter.patientId).select("healthHistory.allergies").lean();
-    const allergyWarnings = findAllergyConflicts(
-      (patient as any)?.healthHistory?.allergies,
-      requested.map((r) => r.drug),
-    );
-    if (allergyWarnings.length > 0) {
-      req.rCode = 0;
-      req.msg = "allergy_warning";
-      req.rData = {
-        allergyWarnings,
-        hint: "Patient has a recorded allergy that may conflict with this drug. Resubmit with overrideAllergyWarning: true (and a documented reason) to proceed.",
-      };
-      return next();
-    }
-  }
+  const prodQuery: any = { isDeleted: { $ne: true }, isActive: true };
+  if (rx) prodQuery.$or = [{ name: rx }, { brand: rx }, { category: rx }];
 
-  // Bill IPD dispensing against the active admission (matches how billing's
-  // pharmacy pull is scoped — see billing.controller.ts#computePharmacyLines
-  // — so it's found when a bill is generated/drafted for THIS stay, not
-  // mixed into the patient's lifetime OPD total or lost entirely).
-  let issuedToRef = String(encounter.patientId);
-  if (encounter.encounterType === "IPD") {
-    const activeAdmission = await Admission.findOne({
-      patientId: encounter.patientId,
-      status: "admitted",
-    })
-      .select("_id")
-      .lean();
-    if (activeAdmission) issuedToRef = String(activeAdmission._id);
-  }
+  const [invItems, products] = await Promise.all([
+    InventoryItem.find(invQuery).select("name sku unit currentStock").sort({ name: 1 }).limit(25).lean(),
+    PharmacyProduct.find(prodQuery).select("name brand stock itemId").sort({ name: 1 }).limit(25).lean(),
+  ]);
 
-  const results: any[] = [];
-  for (const item of requested) {
-    if (!item.drug) continue;
-    const rx = new RegExp(
-      `^${item.drug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
-      "i",
-    );
-    const med = await InventoryItem.findOne({
-      category: "medicine",
-      isDeleted: false,
-      isActive: true,
-      name: rx,
-    })
-      .select("_id currentStock")
-      .lean();
-    if (!med) {
-      results.push({ drug: item.drug, status: "not_found" });
-      continue;
-    }
-    if ((med.currentStock || 0) < item.quantity) {
-      results.push({
-        drug: item.drug,
-        status: "insufficient",
-        available: med.currentStock,
-      });
-      continue;
-    }
-    // Real FEFO batch draw — same ledger ward issue, ambulance stock and
-    // pharmacy-commerce checkout all use, instead of a scalar decrement that
-    // bypassed batch/expiry tracking.
-    const result = await issueFefo({ itemId: med._id, quantity: item.quantity });
-    await StockTransaction.create({
-      itemId: med._id,
-      type: "out",
-      quantity: item.quantity,
-      balanceAfter: result.currentStock,
-      amount: result.costOfGoodsIssued,
-      reason: "EMR dispense",
-      issuedToType: "patient",
-      issuedToRef,
-      performedByAdminId: adminId,
-    });
-    results.push({
-      drug: item.drug,
-      status: "issued",
-      quantity: item.quantity,
-      balanceAfter: result.currentStock,
+  const items: any[] = invItems.map((it: any) => ({
+    key: `hms-${it._id}`,
+    itemId: String(it._id), // dispensable from hospital stock
+    name: it.name,
+    sub: it.sku || "",
+    unit: it.unit || "",
+    currentStock: it.currentStock ?? 0,
+    source: "hms",
+  }));
+
+  // Skip catalogue products already represented by their linked inventory row.
+  const seenItemIds = new Set(items.map((i) => i.itemId));
+  for (const p of products as any[]) {
+    if (p.itemId && seenItemIds.has(String(p.itemId))) continue;
+    items.push({
+      key: `cat-${p._id}`,
+      itemId: p.itemId ? String(p.itemId) : undefined,
+      name: p.name,
+      sub: p.brand || "",
+      unit: "",
+      currentStock: p.stock ?? 0,
+      source: p.itemId ? "hms" : "catalog",
     });
   }
 
-  const issued = results.filter((r) => r.status === "issued").length;
-  req.rData = { results, issued, total: results.length };
-  req.msg = "stock_adjusted";
+  items.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  req.rData = { items: items.slice(0, 25) };
+  req.msg = "success";
+  return next();
+};
+
+/**
+ * GET /admin/emr/lab-test-options — lab/imaging picker for ordering tests.
+ * Sourced from the LabTest catalogue so orders carry real, consistent names
+ * (the diagnostics tracker keys off the name).
+ */
+export const labTestOptions = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const search = ((req.query.search as string) || "").trim();
+  const query: any = { isDeleted: false, isActive: true };
+  if (search) {
+    const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    query.$or = [{ name: rx }, { category: rx }];
+  }
+  const items = await LabTest.find(query)
+    .select("name category price sampleType reportHours")
+    .sort({ name: 1 })
+    .limit(25)
+    .lean();
+  req.rData = { items };
+  req.msg = "success";
   return next();
 };

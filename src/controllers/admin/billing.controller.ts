@@ -13,6 +13,7 @@ import StockTransaction from "../../models/stock-transaction.model";
 import { BillingAudit } from "../../models/billing-audit.model";
 import { nextSequence } from "../../models/counter.model";
 import { notifyHospitalPatient } from "../../services/hms-notify.service";
+import { emitToAdmin } from "../../utils/socket.util";
 import { autoDraftClaimForInvoice } from "./insurance.controller";
 
 /**
@@ -296,6 +297,19 @@ export const recordPayment = async (
     req.rData = {};
     return next();
   }
+  // Reject more than the outstanding balance. Without this a typo (5000 on a
+  // 500 bill) silently produced a negative balanceDue and flipped the invoice
+  // to "paid". Genuine prepayments go through /:id/advance instead.
+  const outstanding = Math.round(((invoice.total || 0) - (invoice.amountPaid || 0)) * 100) / 100;
+  if (amount > outstanding) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = {
+      outstanding,
+      hint: `amount exceeds the balance due (₹${outstanding}). Record a smaller amount, or use the advance endpoint for a prepayment.`,
+    };
+    return next();
+  }
   invoice.payments.push({
     method: b.method,
     amount,
@@ -307,6 +321,18 @@ export const recordPayment = async (
   recompute(invoice);
   await invoice.save();
   await audit(invoice, "payment", amount, b.method, adminId, b.reference);
+  try {
+    emitToAdmin("billing:updated", {
+      invoiceId: String(invoice._id),
+      invoiceNo: invoice.invoiceNo,
+      patientId: String(invoice.patientId),
+      admissionId: invoice.admissionId ? String(invoice.admissionId) : null,
+      total: invoice.total,
+      balanceDue: invoice.balanceDue,
+    });
+  } catch {
+    /* non-fatal */
+  }
 
   req.rData = { invoice };
   req.msg = "payment_recorded";
@@ -467,14 +493,21 @@ const computePharmacyLines = async (ref: string): Promise<IInvoiceLineItem[]> =>
     type: "out",
     issuedToType: "patient",
     issuedToRef: ref,
+    // Already-billed issues are skipped so a charge appended at dispense time
+    // is not pulled in again by a later generate().
+    invoiceId: null,
   })
-    .populate("itemId", "name unitCost unit")
+    .populate("itemId", "name unitCost sellingPrice unit")
     .lean();
   const lines: IInvoiceLineItem[] = [];
   for (const tx of issued) {
     const item: any = tx.itemId;
     if (!item) continue;
-    const unit = item.unitCost || 0;
+    // Charge the patient the SELLING price, not what we paid for it.
+    // unitCost is our purchase cost (used for COGS/wastage reporting) — billing
+    // at it gave the medicine away at zero margin. Fall back to unitCost only
+    // when no selling price is configured, so nothing bills at 0.
+    const unit = item.sellingPrice || item.unitCost || 0;
     lines.push({
       section: "pharmacy",
       description: `${item.name} × ${tx.quantity} ${item.unit || ""}`.trim(),
@@ -492,6 +525,7 @@ const computeProcedureLinesForAdmission = async (patientId: any, admittedAt: Dat
     patientId,
     encounterType: "IPD",
     visitDate: { $gte: admittedAt },
+    proceduresInvoiceId: null,
   })
     .select("procedures")
     .lean();
@@ -509,6 +543,126 @@ const computeProcedureLinesForAdmission = async (patientId: any, admittedAt: Dat
     }
   }
   return lines;
+};
+
+/**
+ * Append charges to the patient's OPEN bill, creating one if there isn't a
+ * suitable one yet.
+ *
+ * This is what makes billing automatic: instead of a clerk remembering to hit
+ * "Generate" after every event, each billable thing that happens (medicine
+ * dispensed, test reported, procedure done) pushes its own line onto the one
+ * bill the counter is collecting against.
+ *
+ * "Open" means draft / unpaid / partial, scoped to the same admission — an IPD
+ * stay accumulates onto its own bill, OPD charges onto the patient's open OPD
+ * bill. A paid or cancelled invoice is never reopened; a new one is started.
+ *
+ * Returns null when there is nothing to add. Callers treat a failure here as
+ * non-fatal — a billing hiccup must never undo the clinical event.
+ */
+export const appendToOpenInvoice = async (opts: {
+  patientId: any;
+  admissionId?: any;
+  encounterId?: any;
+  doctorId?: any;
+  lines: IInvoiceLineItem[];
+  adminId: any;
+}): Promise<any | null> => {
+  const lines = (opts.lines || []).filter((li) => li && li.description);
+  if (lines.length === 0) return null;
+
+  let invoice: any = await HospitalInvoice.findOne({
+    patientId: opts.patientId,
+    admissionId: opts.admissionId || null,
+    status: { $in: ["draft", "unpaid", "partial"] },
+  }).sort({ createdAt: -1 });
+
+  if (!invoice) {
+    invoice = new HospitalInvoice({
+      invoiceNo: await mintInvoiceNo(),
+      patientId: opts.patientId,
+      admissionId: opts.admissionId || undefined,
+      encounterId: opts.encounterId || undefined,
+      doctorId: opts.doctorId || undefined,
+      lineItems: [],
+      gstin: process.env.HOSPITAL_GSTIN || "",
+      status: "unpaid",
+      payments: [],
+      createdByAdminId: opts.adminId,
+    });
+  }
+
+  invoice.lineItems.push(...lines);
+  recompute(invoice);
+  await invoice.save();
+
+  // Push the update so a charges panel someone already has open reflects it
+  // live, rather than only on reopen. Fire-and-forget — billing must not fail
+  // because a socket is down.
+  try {
+    emitToAdmin("billing:updated", {
+      invoiceId: String(invoice._id),
+      invoiceNo: invoice.invoiceNo,
+      patientId: String(opts.patientId),
+      admissionId: opts.admissionId ? String(opts.admissionId) : null,
+      total: invoice.total,
+      balanceDue: invoice.balanceDue,
+      addedLines: lines.length,
+    });
+  } catch {
+    /* non-fatal */
+  }
+  return invoice;
+};
+
+/**
+ * Live running charges for an in-progress admission — the same three sources
+ * the discharge draft uses (bed-days so far, pharmacy issued to this
+ * admission, procedures documented during the stay), but computed on demand
+ * and NOT persisted.
+ *
+ * Exists because an IPD bill previously only became visible at discharge, so
+ * the ward had no idea what a stay had run up, and families could not pay
+ * against it mid-stay. Returns the accrued lines plus the admission's real
+ * invoice (if one exists) so the caller can show accrued-vs-collected.
+ */
+export const computeAdmissionCharges = async (opts: {
+  patientId: any;
+  admissionId: any;
+}) => {
+  const admission: any = await Admission.findById(opts.admissionId)
+    .select("admittedAt")
+    .lean();
+  const [bedLines, pharmacyLines, procedureLines] = await Promise.all([
+    computeBedChargeLines(opts.admissionId),
+    computePharmacyLines(String(opts.admissionId)),
+    admission
+      ? computeProcedureLinesForAdmission(opts.patientId, admission.admittedAt)
+      : Promise.resolve([]),
+  ]);
+  const lineItems = [...bedLines, ...pharmacyLines, ...procedureLines];
+  const accrued =
+    Math.round(lineItems.reduce((sum, li) => sum + (li.amount || 0), 0) * 100) / 100;
+
+  // Advances/part-payments are taken against the admission's invoice, which
+  // may not exist yet during the stay.
+  const invoice: any = await HospitalInvoice.findOne({
+    admissionId: opts.admissionId,
+  })
+    .select("invoiceNo total amountPaid balanceDue status")
+    .lean();
+
+  return {
+    lineItems,
+    accrued,
+    invoice: invoice || null,
+    // What is still uncollected: the real bill's balance if one exists,
+    // otherwise everything accrued so far.
+    outstanding: invoice
+      ? invoice.balanceDue
+      : accrued,
+  };
 };
 
 /**
@@ -553,6 +707,57 @@ export const autoDraftInvoiceOnDischarge = async (opts: {
   });
   recompute(invoice);
   await invoice.save();
+  return invoice;
+};
+
+/**
+ * Raise a one-line consultation invoice for an OPD appointment.
+ *
+ * Called by the OPD booking flow (opd.controller#create) so the front desk has
+ * something to collect against the moment a slot is booked, rather than waiting
+ * for the doctor to finish an encounter and generate a bill after the fact.
+ *
+ * The fee comes from the doctor's own configured rate
+ * (`Admin.doctorProfile.consultationFee`) — the same source
+ * `generate()` falls back to — so OPD and encounter billing never disagree.
+ *
+ * Returns null (never throws) when there is nothing to bill: no fee configured,
+ * or the doctor record is gone. Callers treat that as "no invoice", not an error —
+ * a missing fee must never block a booking.
+ */
+export const createConsultationInvoice = async (params: {
+  patientId: any;
+  doctorId: any;
+  appointmentId: any;
+  adminId: any;
+}) => {
+  const doc: any = await Admin.findById(params.doctorId)
+    .select("fullName doctorProfile.consultationFee")
+    .lean();
+  const fee = Number(doc?.doctorProfile?.consultationFee) || 0;
+  if (fee <= 0) return null;
+
+  const invoice = await HospitalInvoice.create({
+    invoiceNo: await mintInvoiceNo(),
+    patientId: params.patientId,
+    doctorId: params.doctorId,
+    lineItems: [
+      {
+        section: "consultation",
+        description: `Consultation — ${doc?.fullName || "Doctor"}`,
+        quantity: 1,
+        unitPrice: fee,
+        amount: fee,
+      },
+    ],
+    subtotal: fee,
+    total: fee,
+    balanceDue: fee,
+    amountPaid: 0,
+    status: "unpaid",
+    notes: `OPD appointment ${String(params.appointmentId)}`,
+    createdByAdminId: params.adminId,
+  });
   return invoice;
 };
 

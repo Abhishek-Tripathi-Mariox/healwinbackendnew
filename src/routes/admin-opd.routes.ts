@@ -19,6 +19,22 @@ router.get(
   ResponseMiddleware,
 );
 
+router.get(
+  "/:id",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.OPD_VIEW),
+  ErrorHandlerMiddleware(C.detail),
+  ResponseMiddleware,
+);
+
+router.put(
+  "/:id/vitals",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.OPD_MANAGE),
+  ErrorHandlerMiddleware(C.recordVitals),
+  ResponseMiddleware,
+);
+
 router.post(
   "/",
   auth.verifyAdminToken,

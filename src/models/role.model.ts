@@ -267,6 +267,12 @@ export const PERMISSIONS = {
   PHARMACIES_UPDATE: "pharmacies:update",
   PHARMACIES_DELETE: "pharmacies:delete",
   PHARMACIES_APPROVE: "pharmacies:approve",
+  // Diagnostic lab platform (onboarding / listings / locator) — mirrors PHARMACIES_*
+  LABS_VIEW: "labs:view",
+  LABS_CREATE: "labs:create",
+  LABS_UPDATE: "labs:update",
+  LABS_DELETE: "labs:delete",
+  LABS_APPROVE: "labs:approve",
 
   // IVR escalation (SOS phone-tree)
   IVR_VIEW: "ivr:view",
@@ -572,6 +578,13 @@ export const PERMISSION_GROUPS = {
     PERMISSIONS.PHARMACIES_DELETE,
     PERMISSIONS.PHARMACIES_APPROVE,
   ],
+  Labs: [
+    PERMISSIONS.LABS_VIEW,
+    PERMISSIONS.LABS_CREATE,
+    PERMISSIONS.LABS_UPDATE,
+    PERMISSIONS.LABS_DELETE,
+    PERMISSIONS.LABS_APPROVE,
+  ],
   "IVR Escalation": [PERMISSIONS.IVR_VIEW, PERMISSIONS.IVR_MANAGE],
   "HR — Dashboard": [PERMISSIONS.HR_DASHBOARD_VIEW],
   "HR — Employees": [
@@ -657,6 +670,7 @@ export const SIDEBAR_MODULES = {
   ipd: [PERMISSIONS.IPD_VIEW],
   beds: [PERMISSIONS.BEDS_VIEW],
   pharmacies: [PERMISSIONS.PHARMACIES_VIEW],
+  labs: [PERMISSIONS.LABS_VIEW],
   "ivr-escalations": [PERMISSIONS.IVR_VIEW],
   // HR & Payroll
   hr: [PERMISSIONS.HR_DASHBOARD_VIEW],

@@ -13,6 +13,21 @@ const router = Router();
 const auth = AdminAuthMiddleware();
 
 router.get(
+  "/drug-options",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.EMR_CREATE),
+  ErrorHandlerMiddleware(C.drugOptions),
+  ResponseMiddleware,
+);
+router.get(
+  "/lab-test-options",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.EMR_CREATE),
+  ErrorHandlerMiddleware(C.labTestOptions),
+  ResponseMiddleware,
+);
+
+router.get(
   "/patient/:patientId",
   auth.verifyAdminToken,
   auth.requirePermission(PERMISSIONS.EMR_VIEW),
@@ -44,14 +59,10 @@ router.put(
   ResponseMiddleware,
 );
 
-// Dispense an encounter's prescriptions into pharmacy inventory (stock-out).
-// Requires inventory-adjust since it mutates stock levels.
-router.post(
-  "/:id/dispense",
-  auth.verifyAdminToken,
-  auth.requirePermission(PERMISSIONS.INVENTORY_ADJUST),
-  ErrorHandlerMiddleware(C.dispense),
-  ResponseMiddleware,
-);
+// NOTE: the old POST /:id/dispense is gone. Prescriptions now flow to the
+// Pharmacy Dispense queue (admin-pharmacy-dispense.routes.ts), raised
+// automatically when an encounter is finalised. Keeping both meant the same
+// prescription could be dispensed twice — once from here, once from the queue —
+// decrementing stock twice with nothing linking the two.
 
 export default router;

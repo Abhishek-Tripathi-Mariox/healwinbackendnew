@@ -82,7 +82,10 @@ import adminFleetHealthRoutes from "./admin-fleet-health.routes";
 
 // Pharmacy platform + IVR escalation (non-HMS gaps)
 import pharmacyPublicRoutes from "./pharmacy.routes";
+import labPublicRoutes from "./lab.routes";
 import adminPharmaciesRoutes from "./admin-pharmacies.routes";
+import adminPharmacyDispenseRoutes from "./admin-pharmacy-dispense.routes";
+import adminLabsRoutes from "./admin-labs.routes";
 import ivrPublicRoutes from "./ivr-public.routes";
 import adminIvrRoutes from "./admin-ivr.routes";
 
@@ -120,6 +123,7 @@ router.use("/news-gallery", newsGalleryRoutes);
 router.use("/sos-public", sosPublicRoutes);
 router.use("/logo", logoPublicRoutes);
 router.use("/pharmacies", pharmacyPublicRoutes);
+router.use("/labs", labPublicRoutes);
 router.use("/ivr", ivrPublicRoutes);
 
 // ========== Driver ==========
@@ -186,6 +190,8 @@ router.use("/admin/employee-shifts", adminEmployeeShiftsRoutes);
 router.use("/admin/first-aid", adminFirstAidRoutes);
 router.use("/admin/fleet-health", adminFleetHealthRoutes);
 router.use("/admin/pharmacies", adminPharmaciesRoutes);
+router.use("/admin/pharmacy-dispense", adminPharmacyDispenseRoutes);
+router.use("/admin/labs", adminLabsRoutes);
 router.use("/admin/ivr-escalations", adminIvrRoutes);
 
 // HR & Payroll (role-gated inside the routers)

@@ -1296,11 +1296,37 @@ router.get("/hms/prescriptions", verifyUserToken, async (req, res) => {
     .limit(100)
     .populate("doctorId", "fullName doctorProfile.speciality")
     .lean();
+
+  // One query for every visit's tests rather than N.
+  const encounterIds = rows.map((e) => e._id);
+  const orders: any[] = encounterIds.length
+    ? await DiagnosticOrder.find({ encounterId: { $in: encounterIds } })
+        .select("encounterId name category status resultValue")
+        .lean()
+    : [];
+  const testsByEncounter = new Map<string, any[]>();
+  for (const o of orders) {
+    const k = String(o.encounterId);
+    if (!testsByEncounter.has(k)) testsByEncounter.set(k, []);
+    testsByEncounter.get(k)!.push(o);
+  }
+
   ok(res, rows.map((e) => ({
     _id: String(e._id),
     doctorName: e.doctorId?.fullName || "Doctor",
+    doctorSpeciality: e.doctorId?.doctorProfile?.speciality || undefined,
     visitDate: e.visitDate,
     encounterType: e.encounterType,
+    // Why they came, and what the doctor advised in plain language. The
+    // summary field is labelled "shown to the patient" in the admin form —
+    // it was being collected and then never surfaced here.
+    chiefComplaint: e.chiefComplaint || undefined,
+    summary: e.summary || undefined,
+    // Vitals taken at check-in, so the visit record is complete.
+    vitals:
+      e.vitals && Object.values(e.vitals).some((v) => v != null && v !== "")
+        ? e.vitals
+        : undefined,
     // Show structured ICD diagnoses if present, else legacy free-text list.
     diagnoses:
       Array.isArray(e.icdDiagnoses) && e.icdDiagnoses.length
@@ -1314,6 +1340,18 @@ router.get("/hms/prescriptions", verifyUserToken, async (req, res) => {
       dose: p.dosage || p.dose,
       frequency: p.frequency,
       duration: p.duration,
+      // "After food" etc. — part of the instruction, useless if withheld.
+      timing: p.timing || undefined,
+      notes: p.notes || undefined,
+    })),
+    // Tests ordered during this visit, with results once reported — so the
+    // visit reads as one story instead of the patient cross-referencing the
+    // Lab tab by date.
+    tests: (testsByEncounter.get(String(e._id)) || []).map((t: any) => ({
+      name: t.name,
+      category: t.category,
+      status: t.status,
+      resultValue: t.resultValue || undefined,
     })),
   })));
 });
@@ -1373,12 +1411,29 @@ router.get("/hms/invoices", verifyUserToken, async (req, res) => {
       status: inv.status,
       createdAt: inv.createdAt,
       hasActivePolicy,
+      subtotal: inv.subtotal,
+      taxAmount: inv.taxAmount,
+      discount: inv.discount,
       items: (inv.lineItems || []).map((it: any) => ({
         description: it.description,
         section: it.section,
         quantity: it.quantity,
+        unitPrice: it.unitPrice,
         amount: it.amount,
       })),
+      // How the patient actually paid — so the app can show a receipt-style
+      // history ("₹500 cash on 3 Aug") rather than just a balance.
+      payments: (inv.payments || [])
+        .filter((p: any) => !p.isRefund)
+        .map((p: any) => ({
+          amount: p.amount,
+          method: p.method,
+          paidAt: p.paidAt,
+          reference: p.reference || null,
+        })),
+      refunds: (inv.payments || [])
+        .filter((p: any) => p.isRefund)
+        .map((p: any) => ({ amount: p.amount, method: p.method, paidAt: p.paidAt })),
       claim: claim
         ? {
             claimNumber: claim.claimNumber,
@@ -1389,6 +1444,81 @@ router.get("/hms/invoices", verifyUserToken, async (req, res) => {
         : null,
     };
   }));
+});
+
+/**
+ * GET /patient/hms/billing-summary — lifetime totals across every bill.
+ *
+ * Separate from /hms/invoices (which is capped at 100 rows) so the headline
+ * "billed / paid / due" is always the true total, and split by section so the
+ * patient can see WHERE the money went — medicines vs tests vs bed vs
+ * consultation — instead of one opaque number.
+ */
+router.get("/hms/billing-summary", verifyUserToken, async (req, res) => {
+  const ids = await myHospitalPatientIds(req);
+  if (ids.length === 0) {
+    return ok(res, {
+      totalBilled: 0,
+      totalPaid: 0,
+      balanceDue: 0,
+      invoiceCount: 0,
+      unpaidCount: 0,
+      bySection: [],
+    });
+  }
+
+  const [agg, sections] = await Promise.all([
+    HospitalInvoice.aggregate([
+      { $match: { patientId: { $in: ids }, status: { $ne: "cancelled" } } },
+      {
+        $group: {
+          _id: null,
+          totalBilled: { $sum: "$total" },
+          totalPaid: { $sum: "$amountPaid" },
+          balanceDue: { $sum: "$balanceDue" },
+          invoiceCount: { $sum: 1 },
+          unpaidCount: {
+            $sum: {
+              $cond: [{ $in: ["$status", ["unpaid", "partial"]] }, 1, 0],
+            },
+          },
+        },
+      },
+    ]),
+    // What was consumed, grouped by kind of charge.
+    HospitalInvoice.aggregate([
+      { $match: { patientId: { $in: ids }, status: { $ne: "cancelled" } } },
+      { $unwind: "$lineItems" },
+      {
+        $group: {
+          _id: "$lineItems.section",
+          amount: { $sum: "$lineItems.amount" },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { amount: -1 } },
+    ]),
+  ]);
+
+  const t = agg[0] || {
+    totalBilled: 0,
+    totalPaid: 0,
+    balanceDue: 0,
+    invoiceCount: 0,
+    unpaidCount: 0,
+  };
+  ok(res, {
+    totalBilled: Math.round((t.totalBilled || 0) * 100) / 100,
+    totalPaid: Math.round((t.totalPaid || 0) * 100) / 100,
+    balanceDue: Math.round((t.balanceDue || 0) * 100) / 100,
+    invoiceCount: t.invoiceCount || 0,
+    unpaidCount: t.unpaidCount || 0,
+    bySection: sections.map((x: any) => ({
+      section: x._id || "other",
+      amount: Math.round((x.amount || 0) * 100) / 100,
+      count: x.count,
+    })),
+  });
 });
 
 // IPD admissions + discharge summaries.

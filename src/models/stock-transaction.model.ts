@@ -28,6 +28,10 @@ export interface IStockTransaction {
   isWastage?: boolean;
   wastageReason?: "expired" | "damaged" | "lost" | "other";
   batchId?: Types.ObjectId; // the specific InventoryBatch written off, if any
+  // Set once this issue has been put on a bill. computePharmacyLines only
+  // picks up unbilled rows, so appending at dispense time and generating a
+  // bill later can never charge the same medicine twice.
+  invoiceId?: Types.ObjectId;
   // Exactly one of these is set: an admin/staff action (ward issue, dispense,
   // write-off, PO receipt) vs. a patient self-service action (pharmacy
   // commerce checkout draws real HMS stock the same way EMR dispensing does).
@@ -58,6 +62,7 @@ const StockTransactionSchema = new Schema<IStockTransaction>(
     isWastage: { type: Boolean, default: false, index: true },
     wastageReason: { type: String, enum: ["expired", "damaged", "lost", "other"] },
     batchId: { type: Schema.Types.ObjectId, ref: "InventoryBatch" },
+    invoiceId: { type: Schema.Types.ObjectId, ref: "HospitalInvoice", index: true },
     performedByAdminId: {
       type: Schema.Types.ObjectId,
       ref: "Admin",

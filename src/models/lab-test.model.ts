@@ -14,6 +14,9 @@ export interface ILabTest {
   sampleType?: string;
   reportHours: number;
   homeCollection: boolean;
+  // The lab that runs this test. Optional — unset means "any lab / platform
+  // wide", set scopes the test to that facility.
+  labId?: Types.ObjectId;
   isActive: boolean;
   isDeleted: boolean;
   createdAt: Date;
@@ -30,6 +33,7 @@ const LabTestSchema = new Schema<ILabTest>(
     sampleType: { type: String, trim: true, default: "Blood" },
     reportHours: { type: Number, default: 24 },
     homeCollection: { type: Boolean, default: true },
+    labId: { type: Schema.Types.ObjectId, ref: "Lab", index: true },
     isActive: { type: Boolean, default: true, index: true },
     isDeleted: { type: Boolean, default: false, index: true },
   },

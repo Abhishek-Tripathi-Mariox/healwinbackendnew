@@ -33,6 +33,8 @@ export interface IDiagnosticOrder {
   orderedByAdminId: Types.ObjectId;
   orderedAt: Date;
   reportedByAdminId?: Types.ObjectId;
+  /** Set once this test has been billed — prevents double-charging. */
+  invoiceId?: Types.ObjectId;
   reportedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -56,6 +58,7 @@ const DiagnosticOrderSchema = new Schema<IDiagnosticOrder>(
       index: true,
     },
     encounterId: { type: Schema.Types.ObjectId, ref: "EmrEncounter" },
+    invoiceId: { type: Schema.Types.ObjectId, ref: "HospitalInvoice", index: true },
     admissionId: { type: Schema.Types.ObjectId, ref: "Admission" },
     category: {
       type: String,

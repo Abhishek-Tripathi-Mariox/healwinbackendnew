@@ -29,6 +29,20 @@ resource("/products", C.products);
 resource("/lab-tests", C.tests);
 resource("/procedures", C.procedures);
 router.get(
+  "/pharmacies",
+  auth.verifyAdminToken,
+  view,
+  ErrorHandlerMiddleware(C.pharmacyOptions),
+  ResponseMiddleware,
+);
+router.get(
+  "/labs",
+  auth.verifyAdminToken,
+  view,
+  ErrorHandlerMiddleware(C.labOptions),
+  ResponseMiddleware,
+);
+router.get(
   "/inventory-items",
   auth.verifyAdminToken,
   view,

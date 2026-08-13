@@ -115,6 +115,14 @@ router.get(
   ErrorHandlerMiddleware(C.dischargeSummaryPdf),
 );
 router.get(
+  "/admissions/:id/charges",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.IPD_VIEW),
+  ErrorHandlerMiddleware(C.charges),
+  ResponseMiddleware,
+);
+
+router.get(
   "/admissions/:id/mar",
   auth.verifyAdminToken,
   auth.requirePermission(PERMISSIONS.IPD_VIEW),

@@ -19,6 +19,10 @@ export interface IPharmacyProduct {
   // (see catalog.controller.ts#products.list/detail, which overlays it) and
   // this field is no longer written to directly.
   stock: number;
+  // The pharmacy that stocks/sells this product. Optional so the existing
+  // platform-wide catalogue keeps working — an unset pharmacyId means
+  // "available everywhere", a set one scopes the product to that outlet.
+  pharmacyId?: Types.ObjectId;
   // Links this commerce listing to the real HMS stock ledger so a patient
   // checkout draws from the SAME physical stock as EMR/ward dispensing,
   // instead of a second, never-reconciled stock counter.
@@ -41,6 +45,7 @@ const PharmacyProductSchema = new Schema<IPharmacyProduct>(
     image: String,
     stock: { type: Number, default: 0 },
     itemId: { type: Schema.Types.ObjectId, ref: "InventoryItem" },
+    pharmacyId: { type: Schema.Types.ObjectId, ref: "Pharmacy", index: true },
     prescriptionRequired: { type: Boolean, default: false },
     description: { type: String, trim: true },
     isActive: { type: Boolean, default: true, index: true },

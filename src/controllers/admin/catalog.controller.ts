@@ -4,6 +4,8 @@ import LabTest from "../../models/lab-test.model";
 import PharmacyProduct from "../../models/pharmacy-product.model";
 import InventoryItem from "../../models/inventory-item.model";
 import Procedure from "../../models/procedure.model";
+import Pharmacy from "../../models/pharmacy.model";
+import Lab from "../../models/lab.model";
 
 /**
  * Admin CRUD for the patient-app catalog (pharmacy products / lab tests).
@@ -91,17 +93,105 @@ const withLinkedStock = async (rows: any[]) => {
   });
 };
 
+/**
+ * Resolve the owning facility's name onto each row so the catalogue table can
+ * show "which pharmacy / which lab" without a second round-trip. `field` is the
+ * FK on the row; unlinked rows pass through untouched.
+ */
+const withFacilityName = async (
+  rows: any[],
+  field: "pharmacyId" | "labId",
+  model: Model<any>,
+) => {
+  const ids = rows.map((r) => r[field]).filter(Boolean);
+  if (!ids.length) return rows;
+  const facilities = await model
+    .find({ _id: { $in: ids } })
+    .select("name")
+    .lean();
+  const byId = new Map(facilities.map((f: any) => [String(f._id), f.name]));
+  return rows.map((r) =>
+    r[field] ? { ...r, facilityName: byId.get(String(r[field])) || "" } : r,
+  );
+};
+
+const testCrud = makeCrud(LabTest, ["name", "category"]);
+
+/**
+ * A product linked to an HMS inventory item must not keep its own `stock`
+ * number: inventory (with batches and FEFO) is the source of truth, the list
+ * already overlays the real figure, and a leftover copy is a second number
+ * that silently goes stale. Clear it on write.
+ */
+const stripStockWhenLinked = (body: any) => {
+  if (!body) return body;
+  if (body.itemId) return { ...body, stock: 0 };
+  return body;
+};
+
 export const products = {
   ...productCrud,
+  create: async (req: Request, res: Response, next: NextFunction) => {
+    req.body = stripStockWhenLinked(req.body);
+    return productCrud.create(req, res, next);
+  },
+  update: async (req: Request, res: Response, next: NextFunction) => {
+    req.body = stripStockWhenLinked(req.body);
+    return productCrud.update(req, res, next);
+  },
   list: async (req: Request, res: Response, next: NextFunction) => {
     await productCrud.list(req, res, async () => {
       req.rData.items = await withLinkedStock(req.rData.items);
+      req.rData.items = await withFacilityName(
+        req.rData.items,
+        "pharmacyId",
+        Pharmacy,
+      );
       next();
     });
   },
 };
-export const tests = makeCrud(LabTest, ["name", "category"]);
+export const tests = {
+  ...testCrud,
+  list: async (req: Request, res: Response, next: NextFunction) => {
+    await testCrud.list(req, res, async () => {
+      req.rData.items = await withFacilityName(req.rData.items, "labId", Lab);
+      next();
+    });
+  },
+};
 export const procedures = makeCrud(Procedure, ["name", "category"]);
+
+/**
+ * Picker sources for linking a catalogue entry to the facility that provides it.
+ * Only approved + active + non-deleted facilities are offered — you should not
+ * be able to attach a product to a pharmacy that was rejected or removed.
+ */
+const facilityOptions =
+  (model: Model<any>) =>
+  async (req: Request, _res: Response, next: NextFunction) => {
+    const search = ((req.query.search as string) || "").trim();
+    const query: any = { isDeleted: false, isActive: true, status: "approved" };
+    if (search) {
+      const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      query.$or = [{ name: rx }, { address: rx }];
+    }
+    const items = await model
+      .find(query)
+      .select("name address")
+      .sort({ name: 1 })
+      .limit(100)
+      .lean();
+    req.rData = { items };
+    req.msg = "success";
+    return next();
+  };
+
+/** GET /admin/catalog/pharmacies — picker source for scoping a product to an outlet. */
+export const pharmacyOptions = facilityOptions(Pharmacy);
+
+/** GET /admin/catalog/labs — picker source for scoping a test to a lab. */
+export const labOptions = facilityOptions(Lab);
 
 /** GET /admin/catalog/inventory-items — picker source for linking a pharmacy product to real HMS stock. */
 export const inventoryItemOptions = async (req: Request, _res: Response, next: NextFunction) => {

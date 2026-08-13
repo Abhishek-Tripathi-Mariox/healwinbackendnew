@@ -3,6 +3,9 @@ import { DiagnosticOrder } from "../../models/diagnostic-order.model";
 import { HospitalPatient } from "../../models/hospital-patient.model";
 import { uploadFileToAws } from "../../utils/s3";
 import { notifyHospitalPatient } from "../../services/hms-notify.service";
+import LabTest from "../../models/lab-test.model";
+import Admission from "../../models/admission.model";
+import { appendToOpenInvoice } from "./billing.controller";
 
 const CATEGORIES = new Set(["lab", "imaging"]);
 const STATUSES = new Set(["ordered", "collected", "reported"]);
@@ -119,6 +122,52 @@ export const update = async (
   }
 
   await order.save();
+
+  // Bill the test once the report is in — not at order time, so a cancelled or
+  // never-performed test is never charged. Priced from the LabTest catalogue;
+  // skipped silently when the test isn't in the catalogue (nothing to charge)
+  // or when it has already been billed.
+  if (hasResult && !order.invoiceId) {
+    try {
+      const test: any = await LabTest.findOne({
+        name: new RegExp(`^${String(order.name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+        isDeleted: { $ne: true },
+      })
+        .select("price")
+        .lean();
+      const price = Number(test?.price) || 0;
+      if (price > 0) {
+        // An in-patient's tests belong on the stay's bill.
+        const active: any = await Admission.findOne({
+          patientId: order.patientId,
+          status: "admitted",
+        })
+          .select("_id")
+          .lean();
+        const invoice = await appendToOpenInvoice({
+          patientId: order.patientId,
+          admissionId: active?._id,
+          encounterId: order.encounterId,
+          adminId,
+          lines: [
+            {
+              section: "diagnostics",
+              description: `${order.name} (${order.category})`,
+              quantity: 1,
+              unitPrice: price,
+              amount: price,
+            },
+          ],
+        });
+        if (invoice) {
+          order.invoiceId = invoice._id;
+          await order.save();
+        }
+      }
+    } catch (e) {
+      console.error("diagnostics auto-bill failed:", e);
+    }
+  }
 
   // Tell the patient their report is ready (app → Hospital Records → Lab).
   if (hasResult) {

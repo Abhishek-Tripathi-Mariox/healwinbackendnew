@@ -7,6 +7,7 @@ import { nextSequence } from "../../models/counter.model";
 import { notifyHospitalPatient } from "../../services/hms-notify.service";
 import { autoDraftInvoiceOnDischarge } from "./billing.controller";
 import { getMarForDate } from "../../services/mar.service";
+import { computeAdmissionCharges } from "./billing.controller";
 
 /**
  * Doctor Panel / HMS — IPD: bed master + admissions (admit, transfer,
@@ -533,5 +534,37 @@ export const mar = async (req: Request, res: Response, next: NextFunction) => {
   const doses = await getMarForDate(req.params.id as string, date);
   req.rData = { doses };
   req.msg = "success";
+  return next();
+};
+
+
+/**
+ * GET /admin/ipd/admissions/:id/charges — what this stay has run up so far.
+ *
+ * Computed live, nothing persisted: bed-days to date + pharmacy issued to this
+ * admission + procedures documented during it, alongside the admission's real
+ * invoice if one exists. Lets the ward see a running total and take advances
+ * mid-stay instead of the bill only appearing at discharge.
+ */
+export const charges = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const admission: any = await Admission.findById(req.params.id as string)
+    .select("patientId admissionNo admittedAt status")
+    .lean();
+  if (!admission) {
+    req.rCode = 5;
+    req.msg = "admission_not_found";
+    req.rData = {};
+    return next();
+  }
+  const result = await computeAdmissionCharges({
+    patientId: admission.patientId,
+    admissionId: admission._id,
+  });
+  req.rData = { admissionNo: admission.admissionNo, ...result };
+  req.msg = "admission_charges";
   return next();
 };

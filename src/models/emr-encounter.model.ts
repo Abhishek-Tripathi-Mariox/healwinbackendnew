@@ -16,9 +16,16 @@ import mongoose, { Schema, Types } from "mongoose";
 
 export interface IPrescription {
   drug: string;
+  // Set when the drug was picked from HMS inventory rather than typed free-hand.
+  // Drives the pharmacy dispense + FEFO stock decrement.
+  itemId?: Types.ObjectId;
   dosage?: string; // e.g. "500mg"
   frequency?: string; // e.g. "1-0-1"
   duration?: string; // e.g. "5 days"
+  // "before food" / "after food" — part of a normal Indian Rx line.
+  timing?: string;
+  // Units to hand to the pharmacy. Derived from doses/day x days, editable.
+  quantity?: number;
   notes?: string;
 }
 
@@ -119,6 +126,11 @@ export interface IEmrEncounter {
   admissionRecommended?: boolean;
   admissionNote?: string;
   notes?: string;
+  // The doctor's plain-language takeaway — "what was advised" — mirroring
+  // Consultation.summary from the patient-app consult flow.
+  summary?: string;
+  /** Set once this encounter's procedures have been billed. */
+  proceduresInvoiceId?: Types.ObjectId;
   status: "draft" | "finalized";
   createdByAdminId: Types.ObjectId;
   createdAt: Date;
@@ -128,9 +140,12 @@ export interface IEmrEncounter {
 const PrescriptionSchema = new Schema<IPrescription>(
   {
     drug: { type: String, required: true, trim: true },
+    itemId: { type: Schema.Types.ObjectId, ref: "InventoryItem" },
     dosage: { type: String, trim: true },
     frequency: { type: String, trim: true },
     duration: { type: String, trim: true },
+    timing: { type: String, trim: true },
+    quantity: { type: Number, min: 0 },
     notes: { type: String, trim: true },
   },
   { _id: false },
@@ -245,6 +260,8 @@ const EmrEncounterSchema = new Schema<IEmrEncounter>(
     admissionRecommended: { type: Boolean, default: false },
     admissionNote: { type: String, trim: true },
     notes: { type: String, trim: true },
+    summary: { type: String, trim: true },
+    proceduresInvoiceId: { type: Schema.Types.ObjectId, ref: "HospitalInvoice" },
     status: {
       type: String,
       enum: ["draft", "finalized"],
