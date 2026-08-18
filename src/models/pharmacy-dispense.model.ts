@@ -30,6 +30,12 @@ export interface IPharmacyDispense {
   patientId: Types.ObjectId; // ref HospitalPatient
   encounterId?: Types.ObjectId; // ref EmrEncounter
   doctorId?: Types.ObjectId; // ref Admin — who prescribed
+  /**
+   * The pharmacy filling this. Unset = the hospital's own counter (drawing on
+   * HMS inventory); set = a specific partner outlet, whose assigned staff see
+   * only their own queue.
+   */
+  pharmacyId?: Types.ObjectId;
   lines: IDispenseLine[];
   status: "pending" | "partial" | "dispensed" | "cancelled";
   notes?: string;
@@ -68,6 +74,7 @@ const PharmacyDispenseSchema = new Schema<IPharmacyDispense>(
       index: true,
     },
     doctorId: { type: Schema.Types.ObjectId, ref: "Admin", index: true },
+    pharmacyId: { type: Schema.Types.ObjectId, ref: "Pharmacy", index: true },
     lines: { type: [DispenseLineSchema], default: [] },
     status: {
       type: String,

@@ -98,7 +98,7 @@ export const getStaffById = async (req: Request, res: Response) => {
  * Create new staff member
  */
 export const createStaff = async (req: Request, res: Response) => {
-  const { fullName, email, password, phone, roleId, customPermissions, doctorProfile } =
+  const { fullName, email, password, phone, roleId, customPermissions, doctorProfile, labId, pharmacyId } =
     req.body;
 
   // Validate required fields
@@ -150,6 +150,9 @@ export const createStaff = async (req: Request, res: Response) => {
     customPermissions: customPermissions || [],
     // Doctor display profile (only meaningful for the Doctor role).
     ...(role.name === "Doctor" && doctorProfile ? { doctorProfile } : {}),
+    // Facility assignment — scopes this person's worklist to one lab/pharmacy.
+    ...(labId ? { labId } : {}),
+    ...(pharmacyId ? { pharmacyId } : {}),
     createdBy: req.adminId,
   });
 
@@ -168,7 +171,7 @@ export const createStaff = async (req: Request, res: Response) => {
  */
 export const updateStaff = async (req: Request, res: Response) => {
   const { id } = req.params as Record<string, string>;
-  const { fullName, email, phone, roleId, customPermissions, profileImage, doctorProfile } =
+  const { fullName, email, phone, roleId, customPermissions, profileImage, doctorProfile, labId, pharmacyId } =
     req.body;
 
   const staff = await Admin.findOne({ _id: id, isDeleted: false });
@@ -214,6 +217,9 @@ export const updateStaff = async (req: Request, res: Response) => {
   if (phone !== undefined) updateData.phone = phone;
   if (profileImage !== undefined) updateData.profileImage = profileImage;
   if (doctorProfile !== undefined) updateData.doctorProfile = doctorProfile;
+  // Empty string clears the assignment (back to "sees everything").
+  if (labId !== undefined) updateData.labId = labId || null;
+  if (pharmacyId !== undefined) updateData.pharmacyId = pharmacyId || null;
 
   // Update role if provided
   if (roleId) {

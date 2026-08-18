@@ -14,11 +14,22 @@ export interface IAdmin {
   // Doctor display profile — only used when the admin's role is "Doctor".
   // Surfaced to the patient app's "Consult a Doctor" list (single source of
   // truth — the doctor logs into the panel AND is listed in the app).
+  /**
+   * Facility this staff member operates, if any. A lab technician assigned to
+   * a Lab sees and reports only that lab's diagnostic orders; a pharmacist
+   * assigned to a Pharmacy works only that pharmacy's dispense queue.
+   * Unset = not facility-scoped (admins, doctors, front desk) and they see all.
+   * Mirrors the AmbulanceStaff.hospitalId pattern already in use.
+   */
+  labId?: Types.ObjectId;
+  pharmacyId?: Types.ObjectId;
   doctorProfile?: {
     speciality?: string;
     qualification?: string;
     experienceYears?: number;
     consultationFee?: number;
+    /** Medical council registration no. — printed on the prescription. */
+    registrationNumber?: string;
     rating?: number;
     reviewCount?: number;
     hospital?: string;
@@ -87,6 +98,8 @@ const AdminSchema = new Schema<IAdmin>(
       default: [],
     },
     profileImage: String,
+    labId: { type: Schema.Types.ObjectId, ref: "Lab", index: true },
+    pharmacyId: { type: Schema.Types.ObjectId, ref: "Pharmacy", index: true },
     doctorProfile: {
       type: new Schema(
         {
@@ -94,6 +107,7 @@ const AdminSchema = new Schema<IAdmin>(
           qualification: String,
           experienceYears: { type: Number, default: 0 },
           consultationFee: { type: Number, default: 0 },
+          registrationNumber: { type: String, trim: true },
           rating: { type: Number, default: 0 },
           reviewCount: { type: Number, default: 0 },
           hospital: String,

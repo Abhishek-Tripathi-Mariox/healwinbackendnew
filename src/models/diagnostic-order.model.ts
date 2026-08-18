@@ -35,6 +35,12 @@ export interface IDiagnosticOrder {
   reportedByAdminId?: Types.ObjectId;
   /** Set once this test has been billed — prevents double-charging. */
   invoiceId?: Types.ObjectId;
+  /**
+   * The lab that runs this test — resolved from the LabTest catalogue entry at
+   * order time. Lets a lab's own technician see just their worklist; unset
+   * means "any lab / in-house", visible to everyone.
+   */
+  labId?: Types.ObjectId;
   reportedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -59,6 +65,7 @@ const DiagnosticOrderSchema = new Schema<IDiagnosticOrder>(
     },
     encounterId: { type: Schema.Types.ObjectId, ref: "EmrEncounter" },
     invoiceId: { type: Schema.Types.ObjectId, ref: "HospitalInvoice", index: true },
+    labId: { type: Schema.Types.ObjectId, ref: "Lab", index: true },
     admissionId: { type: Schema.Types.ObjectId, ref: "Admission" },
     category: {
       type: String,

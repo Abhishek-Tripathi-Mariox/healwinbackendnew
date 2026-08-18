@@ -1,5 +1,6 @@
 import InventoryItem from "../models/inventory-item.model";
 import { InventoryBatch } from "../models/inventory-batch.model";
+import { allocateFefo } from "./fefo-allocation";
 
 /**
  * Email everyone who can act on it (inventory:approve holders — Super
@@ -167,24 +168,43 @@ export const issueFefo = async (opts: {
     }).sort({ receivedAt: 1 }),
   ]);
 
-  let remaining = requested;
-  let costOfGoodsIssued = 0;
-  const drawn: { batchId: any; batchNo?: string; quantity: number; unitCost?: number }[] = [];
-  for (const batch of [...withExpiry, ...noExpiry]) {
-    if (remaining <= 0) break;
-    const take = Math.min(batch.quantity, remaining);
-    batch.quantity -= take;
-    if (batch.quantity <= 0) {
-      batch.quantity = 0;
-      batch.isDepleted = true;
+  // WHICH batches to draw and what they cost is pure arithmetic, unit-tested
+  // in services/fefo-allocation (see __tests__/fefo-allocation.test.ts). This
+  // function keeps only the IO: applying the decision to the documents.
+  const byId = new Map<string, any>();
+  for (const doc of [...withExpiry, ...noExpiry]) byId.set(String(doc._id), doc);
+
+  const plan = allocateFefo(
+    [...withExpiry, ...noExpiry].map((doc: any) => ({
+      batchId: doc._id,
+      batchNo: doc.batchNo,
+      quantity: doc.quantity,
+      unitCost: doc.unitCost,
+      expiryDate: doc.expiryDate ?? null,
+      receivedAt: doc.receivedAt,
+    })),
+    requested,
+    item.unitCost || 0,
+  );
+
+  for (const d of plan.drawn) {
+    const doc = byId.get(String(d.batchId));
+    if (!doc) continue;
+    doc.quantity -= d.quantity;
+    if (doc.quantity <= 0) {
+      doc.quantity = 0;
+      doc.isDepleted = true;
     }
-    await batch.save();
-    drawn.push({ batchId: batch._id, batchNo: batch.batchNo, quantity: take, unitCost: batch.unitCost });
-    costOfGoodsIssued += take * (batch.unitCost || 0);
-    remaining -= take;
+    await doc.save();
   }
-  const legacyDrawn = remaining; // uncovered by any batch — pre-batch-tracking stock
-  costOfGoodsIssued += legacyDrawn * (item.unitCost || 0);
+  const drawn = plan.drawn.map((d) => ({
+    batchId: d.batchId,
+    batchNo: d.batchNo,
+    quantity: d.quantity,
+    unitCost: d.unitCost,
+  }));
+  const legacyDrawn = plan.legacyDrawn;
+  const costOfGoodsIssued = plan.costOfGoodsIssued;
 
   const previousStock = item.currentStock || 0;
   item.currentStock = Math.max(0, previousStock - requested);

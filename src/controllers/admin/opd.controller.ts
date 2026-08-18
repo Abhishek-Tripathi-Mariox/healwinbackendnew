@@ -80,6 +80,29 @@ export const create = async (
     return next();
   }
 
+  // Slot conflict. The patient app already refuses a taken slot
+  // (patient.routes.ts -> isSlotAvailable) but the admin desk did not, so
+  // reception could double-book a doctor the app would have turned away.
+  // Front desk legitimately overbooks sometimes, so this is an explicit
+  // acknowledgement rather than a hard refusal.
+  if (!b.allowDoubleBooking) {
+    const clash = await Appointment.findOne({
+      doctorId: b.doctorId,
+      scheduledAt,
+      status: { $nin: ["cancelled", "no_show"] },
+    })
+      .select("_id tokenNumber")
+      .lean();
+    if (clash) {
+      req.rCode = 0;
+      req.msg = "slot_taken";
+      req.rData = {
+        hint: "This doctor already has an appointment at that time. Resubmit with allowDoubleBooking: true to book anyway.",
+      };
+      return next();
+    }
+  }
+
   // Token = (count of that doctor's appointments that day) + 1.
   const { start, end } = dayBounds(scheduledAt);
   const todays = await Appointment.countDocuments({

@@ -7,6 +7,7 @@ import InventoryItem from "../../models/inventory-item.model";
 import LabTest from "../../models/lab-test.model";
 import PharmacyProduct from "../../models/pharmacy-product.model";
 import PharmacyDispense from "../../models/pharmacy-dispense.model";
+import config from "../../config";
 import Admission from "../../models/admission.model";
 import { appendToOpenInvoice } from "./billing.controller";
 
@@ -221,12 +222,26 @@ export const create = async (
     ].filter((o) => o.name && String(o.name).trim());
 
     if (orders.length) {
+      // Route each order to the lab that runs that test, so the lab's own
+      // technician sees it on their worklist. Unmatched tests stay unassigned
+      // (in-house / any lab) rather than being dropped.
+      const catalogue = await LabTest.find({
+        name: { $in: orders.map((o) => String(o.name).trim()) },
+        isDeleted: { $ne: true },
+      })
+        .select("name labId")
+        .lean();
+      const labByName = new Map(
+        catalogue.map((t: any) => [String(t.name).toLowerCase(), t.labId]),
+      );
+
       await DiagnosticOrder.insertMany(
         orders.map((o) => ({
           patientId: encounter.patientId,
           encounterId: encounter._id,
           category: o.category,
           name: String(o.name).trim(),
+          labId: labByName.get(String(o.name).trim().toLowerCase()) || undefined,
           orderedByAdminId: adminId,
           orderedAt: new Date(),
         })),
@@ -343,6 +358,20 @@ export const update = async (
     return next();
   }
 
+  // A finalized note is a legal record. Editing it is an AMENDMENT: it needs a
+  // stated reason, and the previous values are preserved. A draft is still
+  // being written, so it edits freely.
+  const isAmendment = encounter.status === "finalized";
+  if (isAmendment && !String(b.amendmentReason || "").trim()) {
+    req.rCode = 0;
+    req.msg = "amendment_reason_required";
+    req.rData = {
+      hint: "This encounter is finalized. Provide amendmentReason to record a tracked correction.",
+    };
+    return next();
+  }
+  const priorValues: Record<string, any> = {};
+
   const fields = [
     "encounterType",
     "chiefComplaint",
@@ -368,7 +397,22 @@ export const update = async (
     "status",
   ];
   for (const f of fields) {
-    if (b[f] !== undefined) (encounter as any)[f] = b[f];
+    if (b[f] === undefined) continue;
+    // Snapshot what we are about to overwrite, so the amendment records the
+    // before-value rather than just "something changed".
+    if (isAmendment) priorValues[f] = (encounter as any)[f];
+    (encounter as any)[f] = b[f];
+  }
+  if (isAmendment && Object.keys(priorValues).length > 0) {
+    encounter.amendments = [
+      ...(encounter.amendments || []),
+      {
+        at: new Date(),
+        byAdminId: (req as any).adminId,
+        reason: String(b.amendmentReason).trim(),
+        changed: priorValues,
+      },
+    ];
   }
   if (b.visitDate !== undefined) {
     const d = new Date(b.visitDate);
@@ -484,4 +528,59 @@ export const labTestOptions = async (
   req.rData = { items };
   req.msg = "success";
   return next();
+};
+
+
+/**
+ * GET /admin/emr/:id/prescription-pdf — the printable OPD prescription.
+ *
+ * Pulls the letterhead from config/env and quotes the patient's most recent
+ * reported lab results as "investigative readings", the way a real
+ * prescription cites the values the plan is based on.
+ */
+export const prescriptionPdf = async (req: Request, res: Response) => {
+  const encounter: any = await EmrEncounter.findById(req.params.id)
+    .populate("patientId", "patientId fullName gender age dateOfBirth phone")
+    .populate("doctorId", "fullName email doctorProfile")
+    .lean();
+  if (!encounter) {
+    return res.status(404).json({ code: 5, message: "encounter not found" });
+  }
+
+  // Recent reported results for this patient — the readings the plan cites.
+  const reported: any[] = await DiagnosticOrder.find({
+    patientId: encounter.patientId?._id || encounter.patientId,
+    status: "reported",
+    resultValue: { $nin: [null, ""] },
+  })
+    .sort({ reportedAt: -1 })
+    .limit(6)
+    .select("name resultValue reportedAt")
+    .lean();
+
+  const { generatePrescriptionPDF } = await import("../../services/pdf.service");
+  const buffer = await generatePrescriptionPDF(encounter, {
+    hospital: {
+      name: process.env.HOSPITAL_NAME || "HealWin Hospital",
+      address: process.env.HOSPITAL_ADDRESS || "",
+      phone: process.env.HOSPITAL_PHONE || config.support.helplineNumber || "",
+      email: process.env.HOSPITAL_EMAIL || config.support.email || "",
+      website: process.env.HOSPITAL_WEBSITE || "",
+    },
+    department: encounter.doctorId?.doctorProfile?.speciality
+      ? `Department Of ${encounter.doctorId.doctorProfile.speciality}`
+      : undefined,
+    readings: reported.map((r) => ({
+      name: r.name,
+      value: r.resultValue,
+      at: r.reportedAt,
+    })),
+  });
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="prescription-${String(encounter._id).slice(-6)}.pdf"`,
+  );
+  return res.end(buffer);
 };

@@ -41,6 +41,7 @@ import { generateSlots, slotToDate, slotLabelFor } from "../utils/slots.util";
 import { emitToAdmin, emitToUser } from "../utils/socket.util";
 import Ambulance from "../models/ambulance.model";
 import config from "../config";
+import jwt from "jsonwebtoken";
 import { Types } from "mongoose";
 import { uploadFileToAws } from "../utils/s3";
 import { InsurancePayer, PatientPolicy, InsuranceClaim } from "../models/insurance.model";
@@ -1519,6 +1520,94 @@ router.get("/hms/billing-summary", verifyUserToken, async (req, res) => {
       count: x.count,
     })),
   });
+});
+
+/**
+ * Patient-facing prescription PDF — the same printable sheet the hospital
+ * prints, in the patient's hands.
+ *
+ * Two steps because the app opens PDFs with Linking.openURL, which cannot send
+ * an Authorization header:
+ *
+ *   1. POST /hms/prescriptions/:id/share-link  (authenticated) mints a
+ *      10-minute, single-purpose token scoped to THAT encounter.
+ *   2. GET  /hms/prescriptions/:id/pdf?t=...   verifies that token and streams.
+ *
+ * Deliberately not the session JWT in the URL: it would end up in device logs
+ * and browser history, and it grants everything. This grants one PDF, briefly.
+ */
+router.post("/hms/prescriptions/:id/share-link", verifyUserToken, async (req, res) => {
+  const ids = await myHospitalPatientIds(req);
+  if (ids.length === 0) {
+    return res.status(404).json({ code: 5, message: "no hospital record" });
+  }
+  const encounterId = String(req.params.id);
+  const enc: any = await EmrEncounter.findOne({
+    _id: encounterId,
+    patientId: { $in: ids },
+  })
+    .select("_id")
+    .lean();
+  if (!enc) return res.status(404).json({ code: 5, message: "prescription not found" });
+
+  const t = jwt.sign(
+    { scope: "rx-pdf", encounterId },
+    config.jwt.secret,
+    { expiresIn: "10m" },
+  );
+  const base = `${req.protocol}://${req.get("host")}`;
+  ok(res, { url: `${base}/v1/api/patient/hms/prescriptions/${encounterId}/pdf?t=${t}` });
+});
+
+router.get("/hms/prescriptions/:id/pdf", async (req, res) => {
+  // Auth is the scoped token in the query string, not the session — see above.
+  let payload: any;
+  try {
+    payload = jwt.verify(String(req.query.t || ""), config.jwt.secret);
+  } catch {
+    return res.status(401).json({ code: 3, message: "link expired — reopen from the app" });
+  }
+  if (payload?.scope !== "rx-pdf" || String(payload.encounterId) !== String(req.params.id)) {
+    return res.status(403).json({ code: 3, message: "invalid link" });
+  }
+
+  const encounter: any = await EmrEncounter.findById(req.params.id)
+    .populate("patientId", "patientId fullName gender age dateOfBirth phone")
+    .populate("doctorId", "fullName email doctorProfile")
+    .lean();
+  if (!encounter) return res.status(404).json({ code: 5, message: "not found" });
+
+  const reported: any[] = await DiagnosticOrder.find({
+    patientId: encounter.patientId?._id || encounter.patientId,
+    status: "reported",
+    resultValue: { $nin: [null, ""] },
+  })
+    .sort({ reportedAt: -1 })
+    .limit(6)
+    .select("name resultValue reportedAt")
+    .lean();
+
+  const { generatePrescriptionPDF } = await import("../services/pdf.service");
+  const buffer = await generatePrescriptionPDF(encounter, {
+    hospital: {
+      name: process.env.HOSPITAL_NAME || "HealWin Hospital",
+      address: process.env.HOSPITAL_ADDRESS || "",
+      phone: process.env.HOSPITAL_PHONE || config.support.helplineNumber || "",
+      email: process.env.HOSPITAL_EMAIL || config.support.email || "",
+      website: process.env.HOSPITAL_WEBSITE || "",
+    },
+    department: encounter.doctorId?.doctorProfile?.speciality
+      ? `Department Of ${encounter.doctorId.doctorProfile.speciality}`
+      : undefined,
+    readings: reported.map((r) => ({ name: r.name, value: r.resultValue, at: r.reportedAt })),
+  });
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `inline; filename="prescription-${String(encounter._id).slice(-6)}.pdf"`,
+  );
+  return res.end(buffer);
 });
 
 // IPD admissions + discharge summaries.

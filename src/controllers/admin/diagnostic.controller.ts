@@ -25,6 +25,14 @@ export const list = async (req: Request, res: Response, next: NextFunction) => {
   if (category) filter.category = category;
   if (status) filter.status = status;
 
+  // Facility scoping: a technician assigned to a lab works only that lab's
+  // orders (plus unassigned/in-house ones, which any lab may pick up).
+  // Unassigned staff — admins, doctors, front desk — see everything.
+  const myLabId = (req as any).admin?.labId;
+  if (myLabId) {
+    filter.$or = [{ labId: myLabId }, { labId: null }, { labId: { $exists: false } }];
+  }
+
   const items = await DiagnosticOrder.find(filter)
     .sort({ createdAt: -1 })
     .populate("orderedByAdminId", "name")

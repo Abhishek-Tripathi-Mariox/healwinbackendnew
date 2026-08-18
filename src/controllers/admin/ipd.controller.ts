@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import Admission from "../../models/admission.model";
+import HospitalInvoice from "../../models/hospital-invoice.model";
 import Bed from "../../models/bed.model";
 import Ward from "../../models/ward.model";
 import HospitalPatient from "../../models/hospital-patient.model";
@@ -269,22 +270,30 @@ export const admit = async (
     req.rData = {};
     return next();
   }
-  const bed = await Bed.findById(b.bedId);
-  if (!bed || !bed.isActive) {
-    req.rCode = 5;
-    req.msg = "bed_not_found";
-    req.rData = {};
-    return next();
-  }
-  if (bed.status !== "available") {
-    req.rCode = 0;
-    req.msg = "not_available";
-    req.rData = { hint: "selected bed is not available" };
+  // Reserve the bed ATOMICALLY. The previous read-check-then-write left a gap
+  // in which a second concurrent admission passed the same "available" check;
+  // both admissions were created and the second overwrote currentAdmissionId,
+  // silently orphaning one patient from their bed (and losing its bed-day
+  // billing). Same pattern the ambulance dispatch already uses.
+  const bed = await Bed.findOneAndUpdate(
+    { _id: b.bedId, isActive: true, status: "available" },
+    { status: "occupied" },
+    { returnDocument: "after" },
+  );
+  if (!bed) {
+    const exists = await Bed.exists({ _id: b.bedId });
+    req.rCode = exists ? 0 : 5;
+    req.msg = exists ? "not_available" : "bed_not_found";
+    req.rData = exists
+      ? { hint: "selected bed was just taken or is not available" }
+      : {};
     return next();
   }
 
   const admittedAt = b.admittedAt ? new Date(b.admittedAt) : new Date();
-  const admission = await Admission.create({
+  let admission;
+  try {
+    admission = await Admission.create({
     admissionNo: await mintAdmissionNo(),
     patientId: b.patientId,
     attendingDoctorId: b.attendingDoctorId,
@@ -298,11 +307,17 @@ export const admit = async (
       { ward: bed.ward, bedNumber: bed.bedNumber, bedId: bed._id, fromAt: admittedAt },
     ],
     createdByAdminId: adminId,
-  });
+    });
+  } catch (e) {
+    // Roll the reservation back — a held bed nobody is in is worse than none.
+    await Bed.updateOne(
+      { _id: bed._id },
+      { status: "available", currentAdmissionId: null },
+    );
+    throw e;
+  }
 
-  bed.status = "occupied";
-  bed.currentAdmissionId = admission._id;
-  await bed.save();
+  await Bed.updateOne({ _id: bed._id }, { currentAdmissionId: admission._id });
 
   req.rData = { admission };
   req.msg = "admission_created";
@@ -330,10 +345,16 @@ export const transfer = async (
     req.rData = {};
     return next();
   }
-  if (newBed.status !== "available") {
+  // Reserve the target bed atomically — same race as admission had.
+  const reserved = await Bed.findOneAndUpdate(
+    { _id: newBed._id, isActive: true, status: "available" },
+    { status: "occupied", currentAdmissionId: admission._id },
+    { returnDocument: "after" },
+  );
+  if (!reserved) {
     req.rCode = 0;
     req.msg = "not_available";
-    req.rData = { hint: "target bed is not available" };
+    req.rData = { hint: "target bed was just taken or is not available" };
     return next();
   }
 
@@ -350,10 +371,7 @@ export const transfer = async (
     if (open) open.toAt = now;
   }
 
-  // Occupy the new bed.
-  newBed.status = "occupied";
-  newBed.currentAdmissionId = admission._id;
-  await newBed.save();
+  // (target bed already reserved above)
 
   admission.currentBedId = newBed._id;
   admission.currentWard = newBed.ward;
@@ -385,6 +403,31 @@ export const discharge = async (
     req.rData = {};
     return next();
   }
+  // Discharge clearance: a stay with money outstanding must not walk out
+  // unnoticed. Not a hard block — a hospital does discharge on credit, against
+  // insurance, or on a waiver — so it requires an explicit acknowledgement
+  // rather than failing outright, and records who allowed it.
+  if (!b.overrideUnpaid) {
+    const openBill: any = await HospitalInvoice.findOne({
+      admissionId: admission._id,
+      status: { $in: ["unpaid", "partial"] },
+    })
+      .select("invoiceNo balanceDue")
+      .lean();
+    if (openBill && openBill.balanceDue > 0) {
+      req.rCode = 0;
+      req.msg = "unpaid_balance";
+      req.rData = {
+        invoiceNo: openBill.invoiceNo,
+        balanceDue: openBill.balanceDue,
+        hint: `₹${openBill.balanceDue} is still due on ${openBill.invoiceNo}. Collect it, or resubmit with overrideUnpaid: true and a reason to discharge on credit.`,
+      };
+      return next();
+    }
+  } else if (b.overrideReason) {
+    admission.dischargeSummary = `${admission.dischargeSummary || ""}\n[Discharged with balance outstanding — ${b.overrideReason}]`.trim();
+  }
+
   const now = b.dischargedAt ? new Date(b.dischargedAt) : new Date();
   if (admission.currentBedId) {
     const bed = await Bed.findById(admission.currentBedId);

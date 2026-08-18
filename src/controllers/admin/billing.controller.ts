@@ -14,6 +14,7 @@ import { BillingAudit } from "../../models/billing-audit.model";
 import { nextSequence } from "../../models/counter.model";
 import { notifyHospitalPatient } from "../../services/hms-notify.service";
 import { emitToAdmin } from "../../utils/socket.util";
+import { recomputeTotals, outstandingOf } from "../../services/billing-math";
 import { autoDraftClaimForInvoice } from "./insurance.controller";
 
 /**
@@ -81,33 +82,8 @@ const normalizeLineItems = (raw: any[]): IInvoiceLineItem[] =>
       };
     });
 
-const recompute = (inv: any) => {
-  inv.subtotal = inv.lineItems.reduce(
-    (s: number, li: IInvoiceLineItem) => s + li.amount,
-    0,
-  );
-  inv.taxAmount =
-    Math.round(((inv.subtotal * (inv.taxPercent || 0)) / 100) * 100) / 100;
-  // Intra-state GST split: CGST = SGST = half of total GST.
-  inv.cgstAmount = Math.round((inv.taxAmount / 2) * 100) / 100;
-  inv.sgstAmount = Math.round((inv.taxAmount - inv.cgstAmount) * 100) / 100;
-  inv.total =
-    Math.round((inv.subtotal + inv.taxAmount - (inv.discount || 0)) * 100) / 100;
-  // amountPaid = sum of non-refund payments minus refunds.
-  inv.amountPaid = inv.payments.reduce(
-    (s: number, p: any) => s + (p.isRefund ? -p.amount : p.amount),
-    0,
-  );
-  inv.amountPaid = Math.round(inv.amountPaid * 100) / 100;
-  inv.balanceDue = Math.round((inv.total - inv.amountPaid) * 100) / 100;
-
-  if (inv.status !== "cancelled" && inv.status !== "draft") {
-    if (inv.payments.some((p: any) => p.isRefund)) inv.status = "refunded";
-    else if (inv.amountPaid <= 0) inv.status = "unpaid";
-    else if (inv.balanceDue > 0) inv.status = "partial";
-    else inv.status = "paid";
-  }
-};
+/** Delegates to the pure, unit-tested money math in services/billing-math. */
+const recompute = (inv: any) => recomputeTotals(inv);
 
 export const list = async (
   req: Request,
@@ -290,7 +266,7 @@ export const recordPayment = async (
     req.rData = { hint: "amount must be a positive number" };
     return next();
   }
-  const invoice = await HospitalInvoice.findById(req.params.id);
+  let invoice: any = await HospitalInvoice.findById(req.params.id);
   if (!invoice) {
     req.rCode = 5;
     req.msg = "invoice_not_found";
@@ -300,7 +276,7 @@ export const recordPayment = async (
   // Reject more than the outstanding balance. Without this a typo (5000 on a
   // 500 bill) silently produced a negative balanceDue and flipped the invoice
   // to "paid". Genuine prepayments go through /:id/advance instead.
-  const outstanding = Math.round(((invoice.total || 0) - (invoice.amountPaid || 0)) * 100) / 100;
+  const outstanding = outstandingOf(invoice);
   if (amount > outstanding) {
     req.rCode = 0;
     req.msg = "validation_failed";
@@ -319,7 +295,43 @@ export const recordPayment = async (
     isRefund: false,
   });
   recompute(invoice);
-  await invoice.save();
+  try {
+    await invoice.save();
+  } catch (e: any) {
+    // VersionError = someone else wrote this invoice between our read and
+    // save. Re-read and re-apply once; a second failure surfaces to the user
+    // rather than looping.
+    if (e?.name !== "VersionError") throw e;
+    const fresh: any = await HospitalInvoice.findById(req.params.id);
+    if (!fresh) {
+      req.rCode = 5;
+      req.msg = "invoice_not_found";
+      req.rData = {};
+      return next();
+    }
+    const stillDue =
+      Math.round(((fresh.total || 0) - (fresh.amountPaid || 0)) * 100) / 100;
+    if (amount > stillDue) {
+      req.rCode = 0;
+      req.msg = "validation_failed";
+      req.rData = {
+        outstanding: stillDue,
+        hint: `Another payment was recorded a moment ago — only ₹${stillDue} is now due.`,
+      };
+      return next();
+    }
+    fresh.payments.push({
+      method: b.method,
+      amount,
+      reference: b.reference || undefined,
+      paidAt: b.paidAt ? new Date(b.paidAt) : new Date(),
+      recordedByAdminId: adminId,
+      isRefund: false,
+    });
+    recompute(fresh);
+    await fresh.save();
+    invoice = fresh;
+  }
   await audit(invoice, "payment", amount, b.method, adminId, b.reference);
   try {
     emitToAdmin("billing:updated", {

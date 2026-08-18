@@ -35,7 +35,6 @@ import * as AdminNotificationController from "../controllers/admin/notification.
 import * as AdminUserController from "../controllers/admin/user.controller";
 import * as AdminSupportController from "../controllers/admin/support.controller";
 import AdminAuthMiddleware from "../middlewares/admin-auth.middleware";
-import activityLogMiddleware from "../middlewares/activity-log.middleware";
 import ErrorHandlerMiddleware from "../middlewares/error-handler.middleware";
 import ResponseMiddleware from "../middlewares/response.middleware";
 import { PERMISSIONS } from "../models/role.model";
@@ -44,11 +43,7 @@ import upload from "../middlewares/upload.middleware";
 const adminRouter = Router();
 const { verifyAdminToken, requirePermission } = AdminAuthMiddleware();
 
-// Activity logging middleware — runs after auth, logs all admin mutations
-adminRouter.use((req, res, next) => {
-  // Only apply after token verification (adminUser is set by verifyAdminToken)
-  activityLogMiddleware(req, res, next);
-});
+// Activity logging is mounted globally for /admin in routes/index.ts.
 
 // ============ AUTH ONLY ============
 adminRouter.post(

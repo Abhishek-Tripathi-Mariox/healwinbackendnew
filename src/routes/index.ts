@@ -1,4 +1,5 @@
 import { Router } from "express";
+import activityLogMiddleware from "../middlewares/activity-log.middleware";
 
 import authRoutes from "./auth.routes";
 import adminRoutes from "./admin.routes";
@@ -105,6 +106,14 @@ import adminHomePromoRoutes from "./admin-home-promo.routes";
 import adminPromoRoutes from "./admin-promo.routes";
 
 const router = Router();
+
+// Audit trail for EVERY /admin mutation, not just the routes in
+// admin.routes.ts. Clinical and financial routers (EMR, IPD, billing,
+// diagnostics, pharmacy) were previously unlogged, so there was no record of
+// who edited a medical record or changed a bill. The middleware reads
+// req.admin lazily when the response finishes, so mounting it ahead of the
+// per-route verifyAdminToken is correct.
+router.use("/admin", activityLogMiddleware);
 
 // ========== Public ==========
 router.use("/auth", authRoutes);

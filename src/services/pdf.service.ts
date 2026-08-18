@@ -745,3 +745,222 @@ export const generateDischargeSummaryPDF = (admission: any): Promise<Buffer> => 
 };
 
 const titleCasePdf = (s: string) => s.replace(/\b\w/g, (c) => c.toUpperCase());
+
+/**
+ * Prescription PDF — laid out like a real hospital OPD prescription
+ * (Medanta/Apollo style) rather than a generic report: letterhead with the
+ * doctor's credentials and registration number, a one-line patient strip,
+ * inline vitals / diagnosis / investigative readings, then the MEDICATION
+ * ADVISE table with per-drug remarks, followed by investigations advised,
+ * notes and advice, and a computer-generated authorisation footer.
+ *
+ * `extras` carries the things that don't live on the encounter: the hospital
+ * letterhead block and the lab readings to quote.
+ */
+export const generatePrescriptionPDF = (
+  encounter: any,
+  extras: {
+    hospital: { name: string; address?: string; phone?: string; email?: string; website?: string };
+    readings?: { name: string; value: string; at?: Date | string }[];
+    department?: string;
+  },
+): Promise<Buffer> => {
+  return new Promise((resolve, reject) => {
+    try {
+      const margin = 40;
+      const doc = new PDFDocument({
+        size: "A4",
+        margin,
+        info: { Title: "Prescription", Author: extras.hospital.name },
+      });
+      const chunks: Buffer[] = [];
+      doc.on("data", (c: Buffer) => chunks.push(c));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      const pageW = doc.page.width - margin * 2;
+      const patient = encounter.patientId || {};
+      const doctor = encounter.doctorId || {};
+      const prof = doctor.doctorProfile || {};
+      const visit = new Date(encounter.visitDate || encounter.createdAt || Date.now());
+
+      // ---------- Letterhead ----------
+      doc.fontSize(18).font("Helvetica-Bold").fillColor("#c0392b")
+        .text(extras.hospital.name, margin, margin, { width: pageW * 0.6 });
+      if (extras.department) {
+        doc.fontSize(10).font("Helvetica-Bold").fillColor("#000")
+          .text(extras.department, margin + pageW * 0.6, margin + 4, {
+            width: pageW * 0.4,
+            align: "right",
+          });
+      }
+      doc.moveDown(0.6);
+
+      const docTop = doc.y;
+      doc.fontSize(12).font("Helvetica-Bold").fillColor("#000")
+        .text(doctor.fullName ? `Dr. ${doctor.fullName}` : "Doctor", margin, docTop);
+      doc.fontSize(8).font("Helvetica").fillColor("#333");
+      if (prof.qualification) doc.text(prof.qualification);
+      if (prof.speciality) doc.text(prof.speciality);
+      if (doctor.email) doc.text(doctor.email);
+      if (prof.registrationNumber) doc.text(`Regd No.- ${prof.registrationNumber}`);
+
+      doc.moveDown(0.6);
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y).lineWidth(1).stroke("#333");
+      doc.moveDown(0.5);
+
+      // ---------- Patient strip ----------
+      const ageStr = patient.age != null ? `${patient.age} YEAR(S)` : "";
+      const y0 = doc.y;
+      doc.fontSize(10).font("Helvetica-Bold").fillColor("#000").text(
+        [String(patient.fullName || "-").toUpperCase(),
+         patient.gender ? String(patient.gender).toUpperCase() : null,
+         ageStr || null].filter(Boolean).join(", "),
+        margin, y0, { width: pageW * 0.65 },
+      );
+      doc.fontSize(9).font("Helvetica").text(
+        visit.toLocaleString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }),
+        margin + pageW * 0.65, y0, { width: pageW * 0.35, align: "right" },
+      );
+      if (patient.patientId) {
+        doc.fontSize(8).font("Helvetica").fillColor("#333")
+          .text(`UHID : ${patient.patientId}`, margin, doc.y);
+      }
+      doc.moveDown(0.4);
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y).lineWidth(0.5).stroke("#999");
+      doc.moveDown(0.5);
+
+      // ---------- Inline label blocks ----------
+      const inline = (label: string, value: string) => {
+        if (!value) return;
+        doc.fontSize(8).font("Helvetica-Bold").fillColor("#000")
+          .text(`${label} : `, { continued: true })
+          .font("Helvetica").text(value);
+        doc.moveDown(0.15);
+      };
+
+      const v = encounter.vitals || {};
+      inline("VITALS", [
+        v.pulse ? `PULSE RATE-${v.pulse}/min` : null,
+        v.height ? `BODY HEIGHT-${v.height}Cms` : null,
+        v.weight && v.height ? `BODY MASS INDEX-${(v.weight / Math.pow(v.height / 100, 2)).toFixed(1)}kg/m2` : null,
+        v.weight ? `BODY WEIGHT-${v.weight}Kgs` : null,
+        v.bloodPressure ? `BP-${v.bloodPressure}mmHg` : null,
+        v.spo2 ? `SpO2-${v.spo2}%` : null,
+        v.temperature ? `TEMP-${v.temperature}F` : null,
+      ].filter(Boolean).join(" | "));
+
+      const dx = (encounter.icdDiagnoses || []).length
+        ? encounter.icdDiagnoses.map((d: any) => (d.code ? `${d.text} (${d.code})` : d.text))
+        : encounter.diagnoses || [];
+      inline("DIAGNOSIS", dx.join(" | "));
+      if (encounter.chiefComplaint) inline("CHIEF COMPLAINT", encounter.chiefComplaint);
+
+      inline("INVESTIGATIVE READINGS", (extras.readings || [])
+        .map((r) => `${r.name.toUpperCase()} : ${r.value}${r.at ? ` - ${new Date(r.at).toLocaleDateString("en-IN")}` : ""}`)
+        .join(" | "));
+
+      doc.moveDown(0.5);
+
+      // ---------- MEDICATION ADVISE table ----------
+      const rx = encounter.prescriptions || [];
+      if (rx.length) {
+        doc.fontSize(10).font("Helvetica-Bold").fillColor("#000")
+          .text("MEDICATION ADVISE", { align: "center", underline: true });
+        doc.moveDown(0.4);
+
+        const cols = [22, 150, 48, 66, 52, pageW - 22 - 150 - 48 - 66 - 52];
+        const heads = ["", "Medications", "Dose", "Frequency", "Duration", "Remarks"];
+        let y = doc.y;
+
+        const drawRow = (cells: string[], bold: boolean, top: number): number => {
+          doc.fontSize(7.5).font(bold ? "Helvetica-Bold" : "Helvetica").fillColor("#000");
+          // tallest cell decides the row height
+          const h = Math.max(...cells.map((c, i) =>
+            doc.heightOfString(c || "", { width: cols[i] - 8 }))) + 8;
+          let x = margin;
+          cells.forEach((c, i) => {
+            doc.rect(x, top, cols[i], h).lineWidth(0.5).strokeColor("#999").stroke();
+            doc.text(c || "", x + 4, top + 4, { width: cols[i] - 8 });
+            x += cols[i];
+          });
+          return top + h;
+        };
+
+        y = drawRow(heads, true, y);
+        rx.forEach((p: any, i: number) => {
+          // page break before a row that would overflow
+          if (y > doc.page.height - 150) {
+            doc.addPage();
+            y = margin;
+            y = drawRow(heads, true, y);
+          }
+          const name = [p.drug, p.strength].filter(Boolean).join(" ");
+          const remarks = [
+            p.notes,
+            p.timing ? `Take ${p.timing.toLowerCase()}.` : null,
+            p.quantity ? `Total ${p.quantity} unit(s).` : null,
+          ].filter(Boolean).join(" ");
+          y = drawRow(
+            [String(i + 1), name, p.dosage || "", [p.frequency, p.timing].filter(Boolean).join("\n"), p.duration || "", remarks],
+            false,
+            y,
+          );
+        });
+        // Reset the cursor: the table wrote cells at explicit x offsets, so
+        // doc.x is parked in the last column. Without this every block below
+        // (investigations, notes, advice) renders indented under "Remarks".
+        doc.x = margin;
+        doc.y = y + 8;
+      }
+
+      // ---------- Advice blocks ----------
+      const orders = [...(encounter.labOrders || []), ...(encounter.imagingOrders || [])];
+      if (orders.length) inline("INVESTIGATION ADVISED", orders.join(" | "));
+      if (encounter.followUpAt) {
+        inline("FOLLOW UP", new Date(encounter.followUpAt).toLocaleDateString("en-IN"));
+      }
+      if (encounter.notes) inline("NOTES", encounter.notes);
+
+      const advice = encounter.summary || encounter.treatmentPlan;
+      if (advice) {
+        doc.moveDown(0.2);
+        doc.fontSize(8).font("Helvetica-Bold").text("ADVICE :");
+        doc.fontSize(8).font("Helvetica").text(`•  ${advice}`, { indent: 8 });
+      }
+
+      // ---------- Footer ----------
+      const footerTop = doc.page.height - 120;
+      doc.y = Math.max(doc.y + 20, footerTop - 40);
+      doc.fontSize(8).font("Helvetica").fillColor("#000")
+        .text(doctor.fullName ? `Dr. ${doctor.fullName}` : "", margin, doc.y, {
+          width: pageW, align: "right",
+        });
+      doc.moveDown(0.3);
+      doc.fontSize(6.5).fillColor("#444").text(
+        `PRESCRIPTION AUTHORIZED BY ${doctor.fullName ? `DR. ${String(doctor.fullName).toUpperCase()}` : "THE DOCTOR"} ON ` +
+        `${visit.toLocaleDateString("en-IN")} ${visit.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}  ` +
+        `(THIS IS A COMPUTER GENERATED REPORT. SIGNATURE IS NOT REQUIRED.)`,
+        margin, doc.y, { width: pageW },
+      );
+
+      doc.moveDown(0.8);
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y).lineWidth(0.5).stroke("#999");
+      doc.moveDown(0.4);
+      doc.fontSize(9).font("Helvetica-Bold").fillColor("#c0392b")
+        .text(extras.hospital.name, { align: "center" });
+      doc.fontSize(7).font("Helvetica").fillColor("#333");
+      if (extras.hospital.address) doc.text(extras.hospital.address, { align: "center" });
+      const contact = [
+        extras.hospital.phone ? `Tel: ${extras.hospital.phone}` : null,
+        extras.hospital.email || null,
+        extras.hospital.website || null,
+      ].filter(Boolean).join("   |   ");
+      if (contact) doc.text(contact, { align: "center" });
+
+      doc.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+};

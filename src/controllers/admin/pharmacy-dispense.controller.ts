@@ -30,6 +30,17 @@ export const list = async (
   query.status = req.query.status || { $in: ["pending", "partial"] };
   if (req.query.patientId) query.patientId = req.query.patientId;
 
+  // A pharmacist assigned to an outlet works only that outlet's queue (plus
+  // requests not tied to any outlet, i.e. the hospital's own counter).
+  const myPharmacyId = (req as any).admin?.pharmacyId;
+  if (myPharmacyId) {
+    query.$or = [
+      { pharmacyId: myPharmacyId },
+      { pharmacyId: null },
+      { pharmacyId: { $exists: false } },
+    ];
+  }
+
   const [items, total] = await Promise.all([
     PharmacyDispense.find(query)
       .sort({ createdAt: 1 })

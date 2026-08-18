@@ -65,4 +65,11 @@ router.put(
 // prescription could be dispensed twice — once from here, once from the queue —
 // decrementing stock twice with nothing linking the two.
 
+router.get(
+  "/:id/prescription-pdf",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.EMR_VIEW),
+  ErrorHandlerMiddleware(C.prescriptionPdf),
+);
+
 export default router;

@@ -131,6 +131,17 @@ export interface IEmrEncounter {
   summary?: string;
   /** Set once this encounter's procedures have been billed. */
   proceduresInvoiceId?: Types.ObjectId;
+  /**
+   * Amendment trail. A finalized clinical note is a legal record — it is
+   * amended, never silently rewritten. Each edit after finalisation appends
+   * the previous values here with who changed them and why.
+   */
+  amendments?: {
+    at: Date;
+    byAdminId: Types.ObjectId;
+    reason: string;
+    changed: Record<string, any>;
+  }[];
   status: "draft" | "finalized";
   createdByAdminId: Types.ObjectId;
   createdAt: Date;
@@ -262,6 +273,20 @@ const EmrEncounterSchema = new Schema<IEmrEncounter>(
     notes: { type: String, trim: true },
     summary: { type: String, trim: true },
     proceduresInvoiceId: { type: Schema.Types.ObjectId, ref: "HospitalInvoice" },
+    amendments: {
+      type: [
+        new Schema(
+          {
+            at: { type: Date, default: Date.now },
+            byAdminId: { type: Schema.Types.ObjectId, ref: "Admin", required: true },
+            reason: { type: String, required: true, trim: true },
+            changed: { type: Schema.Types.Mixed },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     status: {
       type: String,
       enum: ["draft", "finalized"],

@@ -8,6 +8,23 @@ const getModule = (path: string): string => {
   const moduleMap: Record<string, string> = {
     auth: "Auth",
     staff: "Staff",
+    // Clinical + financial modules. These carry the records that matter
+    // legally, so they must read as proper module names in the audit log.
+    emr: "EMR (Clinical Notes)",
+    patients: "Patient Records",
+    ipd: "IPD / Admissions",
+    opd: "OPD",
+    billing: "Billing",
+    diagnostics: "Diagnostics",
+    inventory: "Inventory",
+    "pharmacy-dispense": "Pharmacy Dispense",
+    "ward-stock": "Ward Stock",
+    "ambulance-stock": "Ambulance Stock",
+    procurement: "Procurement",
+    insurance: "Insurance",
+    ot: "Operation Theatre",
+    "doctor-schedules": "Doctor Availability",
+    "doctor-roster": "Doctor Roster",
     roles: "Roles",
     careers: "Careers",
     applications: "Applications",

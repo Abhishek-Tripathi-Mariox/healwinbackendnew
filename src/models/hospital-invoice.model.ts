@@ -155,7 +155,14 @@ const HospitalInvoiceSchema = new Schema<IHospitalInvoice>(
       required: true,
     },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+    // Mongoose bumps __v on array modifications; optimisticConcurrency makes
+    // save() FAIL when the document changed under us instead of silently
+    // clobbering. Two counters recording a payment on one bill would otherwise
+    // both read the same amountPaid and one payment would vanish.
+    optimisticConcurrency: true,
+  },
 );
 
 HospitalInvoiceSchema.index({ createdAt: -1 });
