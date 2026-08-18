@@ -124,9 +124,14 @@ export const listBeds = async (
   const beds = await Bed.find(query)
     .sort({ ward: 1, bedNumber: 1 })
     .populate({
+      // admittedAt + attending doctor so the bed detail can show who is in it
+      // and since when, not just a name.
       path: "currentAdmissionId",
-      select: "admissionNo patientId",
-      populate: { path: "patientId", select: "patientId fullName" },
+      select: "admissionNo patientId admittedAt attendingDoctorId reason",
+      populate: [
+        { path: "patientId", select: "patientId fullName phone gender age" },
+        { path: "attendingDoctorId", select: "fullName" },
+      ],
     })
     .lean();
   req.rData = { beds };
@@ -487,18 +492,40 @@ export const addLog = async (
   }
 
   switch (b.kind) {
-    case "vital":
-      admission.vitalsLog.push({
+    case "vital": {
+      // "" is not null, so the old `!= null` test turned every blank field into
+      // Number("") === 0 — a blank pulse was stored as a real reading of zero.
+      const num = (v: any) => {
+        if (v === undefined || v === null || String(v).trim() === "") return undefined;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : undefined;
+      };
+      const entry = {
         at: new Date(),
-        bloodPressure: b.bloodPressure,
-        pulse: b.pulse != null ? Number(b.pulse) : undefined,
-        temperature: b.temperature != null ? Number(b.temperature) : undefined,
-        spo2: b.spo2 != null ? Number(b.spo2) : undefined,
-        respiratoryRate:
-          b.respiratoryRate != null ? Number(b.respiratoryRate) : undefined,
+        bloodPressure: String(b.bloodPressure ?? "").trim() || undefined,
+        pulse: num(b.pulse),
+        temperature: num(b.temperature),
+        spo2: num(b.spo2),
+        respiratoryRate: num(b.respiratoryRate),
         recordedByAdminId: adminId,
-      });
+      };
+      // Refuse an entirely empty reading rather than storing a blank row.
+      const hasAny = [
+        entry.bloodPressure,
+        entry.pulse,
+        entry.temperature,
+        entry.spo2,
+        entry.respiratoryRate,
+      ].some((x) => x !== undefined);
+      if (!hasAny) {
+        req.rCode = 0;
+        req.msg = "validation_failed";
+        req.rData = { hint: "at least one vital is required" };
+        return next();
+      }
+      admission.vitalsLog.push(entry);
       break;
+    }
     case "medication":
       if (!b.drug) {
         req.rCode = 0;

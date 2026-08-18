@@ -5,6 +5,26 @@ import { IHrEmployee } from "../models/hr-employee.model";
 import https from "https";
 import http from "http";
 
+/**
+ * All generated documents are formatted in IST explicitly.
+ *
+ * `toLocaleString()` without a timeZone uses the SERVER's zone. TZ is unset in
+ * deployment, so a UTC host printed every prescription, discharge summary and
+ * invoice 5h30m behind the real time — correct only on a machine that happened
+ * to be set to IST. Pin it rather than depend on host config.
+ */
+const IST = "Asia/Kolkata";
+export const fmtDateTimeIST = (d: Date | string | number): string =>
+  new Date(d).toLocaleString("en-IN", { timeZone: IST });
+export const fmtDateIST = (d: Date | string | number): string =>
+  new Date(d).toLocaleDateString("en-IN", { timeZone: IST });
+export const fmtTimeIST = (d: Date | string | number): string =>
+  new Date(d).toLocaleTimeString("en-IN", {
+    timeZone: IST,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
 const MONTH_NAMES = [
   "January",
   "February",
@@ -231,7 +251,7 @@ export const generateApplicationPDF = async (
           "04",
           "Date of Birth",
           application.dob
-            ? new Date(application.dob).toLocaleDateString("en-IN")
+            ? fmtDateIST(application.dob)
             : "",
         ],
         ["05", "Gender", application.gender || ""],
@@ -252,7 +272,7 @@ export const generateApplicationPDF = async (
         "03",
         "Applied On",
         application.appliedAt
-          ? new Date(application.appliedAt).toLocaleDateString("en-IN")
+          ? fmtDateIST(application.appliedAt)
           : "",
         y,
       );
@@ -542,17 +562,43 @@ export const generateInvoicePDF = (invoice: any): Promise<Buffer> => {
       const pageW = doc.page.width - margin * 2;
       const patient = invoice.patientId || {};
 
+      // Letterhead: real hospital identity + a rule under it. This used to be
+      // a hardcoded name floating with no address, contact or separator — it
+      // did not read as a document from anywhere in particular.
+      const hospitalName = process.env.HOSPITAL_NAME || "HealWin Hospital";
+      const hospitalAddr = process.env.HOSPITAL_ADDRESS || "";
+      const hospitalContact = [
+        process.env.HOSPITAL_PHONE ? `Tel: ${process.env.HOSPITAL_PHONE}` : null,
+        process.env.HOSPITAL_EMAIL || null,
+        process.env.HOSPITAL_WEBSITE || null,
+      ]
+        .filter(Boolean)
+        .join("   |   ");
+
       doc.fontSize(16).font("Helvetica-Bold").fillColor("#0066cc")
-        .text("HealWin Life Support & Emergency Care", { align: "center" });
-      doc.fontSize(11).font("Helvetica").fillColor("#000")
-        .text("Tax Invoice", { align: "center" });
-      if (invoice.gstin) doc.fontSize(8).fillColor("#666").text(`GSTIN: ${invoice.gstin}`, { align: "center" });
+        .text(hospitalName, { align: "center" });
+      doc.fontSize(8).font("Helvetica").fillColor("#444");
+      if (hospitalAddr) doc.text(hospitalAddr, { align: "center" });
+      if (hospitalContact) doc.text(hospitalContact, { align: "center" });
+      if (invoice.gstin) doc.text(`GSTIN: ${invoice.gstin}`, { align: "center" });
+
+      doc.moveDown(0.4);
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y)
+        .lineWidth(1).strokeColor("#0066cc").stroke();
+      doc.moveDown(0.5);
+
+      doc.fontSize(12).font("Helvetica-Bold").fillColor("#000")
+        .text("TAX INVOICE", { align: "center" });
+      doc.moveDown(0.3);
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y)
+        .lineWidth(0.5).strokeColor("#999").stroke();
+      doc.moveDown(0.5);
       doc.moveDown(1).fillColor("#000");
 
       doc.fontSize(9);
       doc.font("Helvetica-Bold").text(`Invoice No: `, { continued: true }).font("Helvetica").text(invoice.invoiceNo);
       doc.font("Helvetica-Bold").text(`Date: `, { continued: true }).font("Helvetica")
-        .text(new Date(invoice.createdAt).toLocaleString("en-IN"));
+        .text(fmtDateTimeIST(invoice.createdAt));
       doc.font("Helvetica-Bold").text(`Patient: `, { continued: true }).font("Helvetica")
         .text(`${patient.fullName || "-"}${patient.patientId ? ` (${patient.patientId})` : ""}`);
       doc.moveDown(0.5);
@@ -626,7 +672,7 @@ export const generateReceiptPDF = (invoice: any): Promise<Buffer> => {
       for (const p of (invoice.payments || [])) {
         const label = p.isRefund ? "Refund" : p.isAdvance ? "Advance" : "Payment";
         doc.font("Helvetica").fontSize(9).text(
-          `${new Date(p.paidAt).toLocaleString("en-IN")}  -  ${label} (${p.method})  -  ${p.isRefund ? "-" : ""}${INR(p.amount)}`,
+          `${fmtDateTimeIST(p.paidAt)}  -  ${label} (${p.method})  -  ${p.isRefund ? "-" : ""}${INR(p.amount)}`,
         );
       }
       doc.moveDown(0.8);
@@ -690,8 +736,8 @@ export const generateDischargeSummaryPDF = (admission: any): Promise<Buffer> => 
       );
       field("Attending Doctor", doctor.fullName || "-");
       field("Ward / Bed", `${admission.currentWard || admission.ward || "-"} / ${admission.currentBedNumber || admission.bedNumber || "-"}`);
-      field("Admitted", new Date(admission.admittedAt).toLocaleString("en-IN"));
-      field("Discharged", admission.dischargedAt ? new Date(admission.dischargedAt).toLocaleString("en-IN") : "-");
+      field("Admitted", fmtDateTimeIST(admission.admittedAt));
+      field("Discharged", admission.dischargedAt ? fmtDateTimeIST(admission.dischargedAt) : "-");
       if (admission.reason) field("Reason for Admission", admission.reason);
       doc.moveDown(0.8);
 
@@ -819,7 +865,7 @@ export const generatePrescriptionPDF = (
         margin, y0, { width: pageW * 0.65 },
       );
       doc.fontSize(9).font("Helvetica").text(
-        visit.toLocaleString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }),
+        fmtDateTimeIST(visit),
         margin + pageW * 0.65, y0, { width: pageW * 0.35, align: "right" },
       );
       if (patient.patientId) {
@@ -857,7 +903,7 @@ export const generatePrescriptionPDF = (
       if (encounter.chiefComplaint) inline("CHIEF COMPLAINT", encounter.chiefComplaint);
 
       inline("INVESTIGATIVE READINGS", (extras.readings || [])
-        .map((r) => `${r.name.toUpperCase()} : ${r.value}${r.at ? ` - ${new Date(r.at).toLocaleDateString("en-IN")}` : ""}`)
+        .map((r) => `${r.name.toUpperCase()} : ${r.value}${r.at ? ` - ${fmtDateIST(r.at)}` : ""}`)
         .join(" | "));
 
       doc.moveDown(0.5);
@@ -918,7 +964,7 @@ export const generatePrescriptionPDF = (
       const orders = [...(encounter.labOrders || []), ...(encounter.imagingOrders || [])];
       if (orders.length) inline("INVESTIGATION ADVISED", orders.join(" | "));
       if (encounter.followUpAt) {
-        inline("FOLLOW UP", new Date(encounter.followUpAt).toLocaleDateString("en-IN"));
+        inline("FOLLOW UP", fmtDateIST(encounter.followUpAt));
       }
       if (encounter.notes) inline("NOTES", encounter.notes);
 
@@ -939,7 +985,7 @@ export const generatePrescriptionPDF = (
       doc.moveDown(0.3);
       doc.fontSize(6.5).fillColor("#444").text(
         `PRESCRIPTION AUTHORIZED BY ${doctor.fullName ? `DR. ${String(doctor.fullName).toUpperCase()}` : "THE DOCTOR"} ON ` +
-        `${visit.toLocaleDateString("en-IN")} ${visit.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}  ` +
+        `${fmtDateIST(visit)} ${fmtTimeIST(visit)}  ` +
         `(THIS IS A COMPUTER GENERATED REPORT. SIGNATURE IS NOT REQUIRED.)`,
         margin, doc.y, { width: pageW },
       );

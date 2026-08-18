@@ -10,7 +10,7 @@ import LabTest from "../models/lab-test.model";
 import PharmacyProduct from "../models/pharmacy-product.model";
 
 // Note: doctors are NOT seeded here — they are admin users with the "Doctor"
-// role (created in Admin Management), the single source for both panel login
+// role (created in Team Management), the single source for both panel login
 // and the app's doctor listing.
 
 const PRODUCTS = [

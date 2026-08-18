@@ -10,7 +10,7 @@ import Lab from "../../models/lab.model";
 /**
  * Admin CRUD for the patient-app catalog (pharmacy products / lab tests).
  * Doctors are NOT here — a doctor is an admin user with the "Doctor" role
- * (managed in Admin Management), single source of truth for both the panel
+ * (managed in Team Management), single source of truth for both the panel
  * login and the app's "Consult a Doctor" listing.
  *
  * Both resources share the same shape (soft-deletable, searchable by name), so

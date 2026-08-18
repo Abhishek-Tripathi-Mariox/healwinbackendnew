@@ -35,8 +35,12 @@ export const list = async (req: Request, res: Response, next: NextFunction) => {
 
   const items = await DiagnosticOrder.find(filter)
     .sort({ createdAt: -1 })
-    .populate("orderedByAdminId", "name")
-    .populate("reportedByAdminId", "name");
+    // fullName (not "name") — Admin stores fullName, so the old select
+    // returned an object with no usable label and the UI showed nothing for
+    // who ordered/reported a test.
+    .populate("orderedByAdminId", "fullName")
+    .populate("reportedByAdminId", "fullName")
+    .populate("labId", "name");
 
   req.rData = { items };
   req.msg = "diagnostics_listed";
