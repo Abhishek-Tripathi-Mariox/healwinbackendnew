@@ -199,6 +199,10 @@ export const create = async (
     admissionRecommended: !!b.admissionRecommended,
     admissionNote: b.admissionNote || undefined,
     notes: b.notes || undefined,
+    // Was missing entirely: the field exists on the model, in the admin form,
+    // on the prescription PDF and in the patient app — but was never copied
+    // from the body, so the doctor's advice was silently discarded on save.
+    summary: b.summary || undefined,
     status: b.status === "draft" ? "draft" : "finalized",
     createdByAdminId: adminId,
   });
@@ -394,6 +398,7 @@ export const update = async (
     "admissionRecommended",
     "admissionNote",
     "notes",
+    "summary",
     "status",
   ];
   for (const f of fields) {
