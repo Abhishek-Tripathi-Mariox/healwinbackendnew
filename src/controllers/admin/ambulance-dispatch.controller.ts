@@ -283,6 +283,10 @@ export const dispatch = async (
     dispatchId: String(dispatchDoc._id),
     sosId: String((req.params.sosId as string)),
     patientName: dispatchDoc.patientName || "Emergency patient",
+    // The crew rings the PATIENT from the dispatch card, so the payload has to
+    // carry their number. Without this the app fell back to `servicePhone` —
+    // the crew's own mobile — and "Call" dialled the caller themselves.
+    patientPhone: dispatchDoc.patientPhone || "",
     patientLat: lat,
     patientLng: lng,
     address: dispatchDoc.pickupAddress || sos.address || "",

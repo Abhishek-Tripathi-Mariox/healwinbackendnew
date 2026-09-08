@@ -1,9 +1,10 @@
 import { Request, Response } from "express";
-import { Types } from "mongoose";
+import mongoose, { Types } from "mongoose";
 import * as SOSService from "../services/sos.service";
 import { SOSSubmission } from "../models/sos-submission.model";
 import User from "../models/Users";
 import { emitToAdmin } from "../utils/socket.util";
+import PatientFamilyMember from "../models/patient-family-member.model";
 
 /**
  * Get emergency contacts
@@ -134,6 +135,37 @@ export const triggerSOS = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?._id || (req as any).userId;
     const { location, bookingId, address, type, description } = req.body;
+
+    // "Who is this emergency for?" — the account holder, or one of their saved
+    // family members. Scoped by userId so a caller cannot pass someone else's
+    // familyMemberId and have the control room dispatch to a stranger.
+    // This lookup is enrichment, never a gate: a bad id must degrade the alert
+    // to "for the account holder", never reject the emergency. String() blocks
+    // an object being smuggled into the query, and the isValidObjectId check
+    // stops a malformed id throwing a CastError out of the whole handler.
+    let subject: { name?: string; phone?: string; relation?: string } | null = null;
+    const familyMemberId = req.body.familyMemberId
+      ? String(req.body.familyMemberId)
+      : "";
+    if (familyMemberId && mongoose.isValidObjectId(familyMemberId)) {
+      try {
+        const member: any = await PatientFamilyMember.findOne({
+          _id: familyMemberId,
+          userId,
+        })
+          .select("name relation phone")
+          .lean();
+        if (member) {
+          subject = {
+            name: member.name,
+            phone: member.phone,
+            relation: member.relation,
+          };
+        }
+      } catch {
+        subject = null; // never let this block the dispatch
+      }
+    }
     // 'CALL' → SOS Dashboard "SOS Calls" tab (one-tap SOS Call from the app,
     // mirrors a website phone call); anything else → "SOS Forms" tab.
     const submissionType =
@@ -151,7 +183,16 @@ export const triggerSOS = async (req: Request, res: Response) => {
 
     // Fold the emergency type + description into the address text so the
     // dispatcher sees full context even without coordinates.
-    const fullAddress = [type, address, description]
+    const fullAddress = [
+      type,
+      address,
+      description,
+      // Make it unmistakable at the dispatch desk that the patient is not the
+      // account holder — they are two different people to call.
+      subject
+        ? `For ${subject.name}${subject.relation ? ` (${subject.relation})` : ""}`
+        : null,
+    ]
       .filter(Boolean)
       .join(" — ");
 
@@ -188,8 +229,12 @@ export const triggerSOS = async (req: Request, res: Response) => {
       submission = await SOSSubmission.create({
         type: submissionType,
         userId: userId || undefined,
-        name: req.body.name || patient?.fullName || "App SOS",
-        phone: patient?.mobileNumber
+        // The person who needs help. Falls back to the account holder when no
+        // family member was chosen.
+        name: subject?.name || req.body.name || patient?.fullName || "App SOS",
+        phone: subject?.phone
+          ? subject.phone
+          : patient?.mobileNumber
           ? `${patient.countryCode || ""}${patient.mobileNumber}`
           : "N/A",
         address: fullAddress || address || undefined,

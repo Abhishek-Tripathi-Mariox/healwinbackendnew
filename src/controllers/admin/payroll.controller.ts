@@ -5,6 +5,7 @@ import { PayrollRun } from "../../models/payroll-run.model";
 import { Payslip } from "../../models/payslip.model";
 import { LeaveType } from "../../models/leave-type.model";
 import { LeaveRequest } from "../../models/leave-request.model";
+import Attendance from "../../models/attendance.model";
 import {
   buildAttendanceSummary,
   computePayslip,
@@ -36,6 +37,12 @@ export const generate = async (
     return next();
   }
   const tdsMap: Record<string, number> = b.tds || {};
+  // Overtime rate policy is HR's to set (spec §17); the engine's statutory
+  // default applies unless this run overrides it.
+  const overtimeMultiplier =
+    b.overtimeMultiplier !== undefined && Number.isFinite(Number(b.overtimeMultiplier))
+      ? Math.max(0, Number(b.overtimeMultiplier))
+      : undefined;
 
   let run = await PayrollRun.findOne({ month, year });
   if (run && run.status === "finalized") {
@@ -63,10 +70,44 @@ export const generate = async (
     : [];
   const unpaidReqIds = new Set(unpaidReqs.map((r) => String(r._id)));
 
-  const employees = await HrEmployee.find({
-    isDeleted: false,
-    status: { $ne: "terminated" },
-  }).lean();
+  // Who gets paid this cycle. `inactive` and `terminated` are off the payroll;
+  // `on_leave` stays on it (they are still employed, and their leave days are
+  // already reflected in attendance). Anyone who joined after the month ended,
+  // or left before it began, is skipped entirely — buildAttendanceSummary
+  // would return zero service days for them anyway, but excluding them here
+  // keeps them off the run's employee count and out of the payslip list.
+  // Attendance fails OPEN by design: a day with no record is paid, so that
+  // weekends and holidays nobody marks don't dock anyone. The failure mode is
+  // a month where attendance was never marked at all — payroll would then pay
+  // every employee a full month without a word. Refuse that run unless it is
+  // explicitly acknowledged.
+  const markedRows = await Attendance.countDocuments({
+    date: { $gte: monthStart, $lte: monthEnd },
+  });
+  if (markedRows === 0 && b.acknowledgeUnmarked !== true) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = {
+      hint:
+        "No attendance was marked for this month, so every employee would be paid in full. " +
+        "Mark attendance first, or re-submit with acknowledgeUnmarked=true to pay a full month deliberately.",
+      unmarkedMonth: true,
+    };
+    return next();
+  }
+
+  const employees = (
+    await HrEmployee.find({
+      isDeleted: false,
+      status: { $in: ["active", "on_leave"] },
+    }).lean()
+  ).filter((e: any) => {
+    const joined = e.joiningDate ? new Date(e.joiningDate) : null;
+    const exited = e.exitDate ? new Date(e.exitDate) : null;
+    if (joined && joined > monthEnd) return false;
+    if (exited && exited < monthStart) return false;
+    return true;
+  });
 
   if (!run) {
     run = await PayrollRun.create({
@@ -80,6 +121,10 @@ export const generate = async (
   let totalGross = 0;
   let totalDeductions = 0;
   let totalNet = 0;
+  // Employees whose month is largely unmarked — paid in full by the fail-open
+  // rule above. Returned so HR can see who was paid on assumption, not record.
+  const unmarkedWarnings: { name: string; unmarkedDays: number; serviceDays: number }[] = [];
+  let totalOvertimeAmount = 0;
 
   for (const emp of employees) {
     const summary = await buildAttendanceSummary(
@@ -87,14 +132,25 @@ export const generate = async (
       month,
       year,
       unpaidReqIds,
+      "hr_employee",
+      { joiningDate: emp.joiningDate, exitDate: emp.exitDate },
     );
     const computed = computePayslip(salaryOf(emp), summary, {
       tds: tdsMap[String(emp._id)] || 0,
+      overtimeMultiplier,
     });
 
     totalGross += computed.earnings.gross;
     totalDeductions += computed.deductions.total;
     totalNet += computed.netPay;
+    totalOvertimeAmount += computed.earnings.overtime;
+    if (computed.unmarkedDays > 0) {
+      unmarkedWarnings.push({
+        name: emp.fullName,
+        unmarkedDays: computed.unmarkedDays,
+        serviceDays: computed.serviceDays,
+      });
+    }
 
     await Payslip.findOneAndUpdate(
       { employeeId: emp._id, month, year },
@@ -108,6 +164,11 @@ export const generate = async (
           employeeCode: emp.employeeCode,
           employeeName: emp.fullName,
           totalDays: computed.totalDays,
+          serviceDays: computed.serviceDays,
+          unmarkedDays: computed.unmarkedDays,
+          workedMinutes: computed.workedMinutes,
+          overtimeMinutes: computed.overtimeMinutes,
+          overtimeAmount: computed.earnings.overtime,
           paidDays: computed.paidDays,
           lopDays: computed.lopDays,
           leaveDays: computed.leaveDays,
@@ -129,10 +190,14 @@ export const generate = async (
   }).lean();
   for (const s of crew as any[]) {
     const summary = await buildAttendanceSummary(s._id, month, year, unpaidReqIds, "ambulance_staff");
-    const computed = computePayslip(s.salaryStructure, summary, { tds: tdsMap[String(s._id)] || 0 });
+    const computed = computePayslip(s.salaryStructure, summary, {
+      tds: tdsMap[String(s._id)] || 0,
+      overtimeMultiplier,
+    });
     totalGross += computed.earnings.gross;
     totalDeductions += computed.deductions.total;
     totalNet += computed.netPay;
+    totalOvertimeAmount += computed.earnings.overtime;
     await Payslip.findOneAndUpdate(
       { ambulanceStaffId: s._id, month, year },
       {
@@ -146,6 +211,11 @@ export const generate = async (
           employeeName: s.fullName,
           designation: s.role === "attendant" ? "Ambulance Attendant" : "Ambulance Driver",
           totalDays: computed.totalDays,
+          serviceDays: computed.serviceDays,
+          unmarkedDays: computed.unmarkedDays,
+          workedMinutes: computed.workedMinutes,
+          overtimeMinutes: computed.overtimeMinutes,
+          overtimeAmount: computed.earnings.overtime,
           paidDays: computed.paidDays,
           lopDays: computed.lopDays,
           leaveDays: computed.leaveDays,
@@ -163,9 +233,19 @@ export const generate = async (
   run.totalGross = Math.round(totalGross * 100) / 100;
   run.totalDeductions = Math.round(totalDeductions * 100) / 100;
   run.totalNet = Math.round(totalNet * 100) / 100;
+  run.totalOvertimeAmount = Math.round(totalOvertimeAmount * 100) / 100;
+  // Re-generating resets a verified run to draft: the figures just changed,
+  // so the previous sign-off no longer describes what is on the sheet.
+  if (run.status === "verified") {
+    run.status = "draft";
+    run.verifiedByAdminId = undefined;
+    run.verifiedAt = undefined;
+    run.verificationNote = undefined;
+    await Payslip.updateMany({ runId: run._id }, { status: "draft" });
+  }
   await run.save();
 
-  req.rData = { run };
+  req.rData = { run, unmarkedWarnings };
   req.msg = "payroll_generated";
   return next();
 };
@@ -223,11 +303,20 @@ export const payslipDetail = async (
   return next();
 };
 
-export const finalize = async (
+/**
+ * POST /admin/hr/payroll/runs/:id/verify
+ *
+ * HR's sign-off that the computed sheet is correct, before it is locked. The
+ * spec's salary process runs on the 16th after verification, so this is a
+ * deliberate checkpoint rather than a formality: a run cannot be finalized
+ * until someone has verified it, and re-generating clears the sign-off.
+ */
+export const verify = async (
   req: Request,
   _res: Response,
   next: NextFunction,
 ) => {
+  const adminId = (req as any).adminId;
   const run = await PayrollRun.findById(req.params.id);
   if (!run) {
     req.rCode = 5;
@@ -235,7 +324,55 @@ export const finalize = async (
     req.rData = {};
     return next();
   }
+  if (run.status === "finalized") {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "this run is already finalized" };
+    return next();
+  }
+  run.status = "verified";
+  run.verifiedByAdminId = adminId;
+  run.verifiedAt = new Date();
+  run.verificationNote = req.body?.note;
+  await run.save();
+  await Payslip.updateMany({ runId: run._id }, { status: "verified" });
+  req.rData = { run };
+  req.msg = "payrun_verified";
+  return next();
+};
+
+export const finalize = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const adminId = (req as any).adminId;
+  const run = await PayrollRun.findById(req.params.id);
+  if (!run) {
+    req.rCode = 5;
+    req.msg = "payrun_not_found";
+    req.rData = {};
+    return next();
+  }
+  if (run.status === "finalized") {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "this run is already finalized" };
+    return next();
+  }
+  // Finalizing is irreversible and pays people. It must follow a verification,
+  // so the figures have been read by a human before they are locked.
+  if (run.status !== "verified") {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = {
+      hint: "verify this run before finalizing it — payroll must be checked before it is locked",
+      requiresVerification: true,
+    };
+    return next();
+  }
   run.status = "finalized";
+  run.finalizedByAdminId = adminId;
   run.finalizedAt = new Date();
   await run.save();
   await Payslip.updateMany({ runId: run._id }, { status: "finalized" });

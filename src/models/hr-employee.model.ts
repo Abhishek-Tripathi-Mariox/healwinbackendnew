@@ -16,6 +16,39 @@ import mongoose, { Schema, Types } from "mongoose";
 
 export type EmployeeStatus = "active" | "on_leave" | "inactive" | "terminated";
 
+/**
+ * Broad staff category. Drives where a person may mark attendance (§4.4 —
+ * field and ambulance staff report from assigned work locations, not a desk)
+ * and how they are grouped in reports. Kept separate from Department, which
+ * is org structure, and Designation, which is job title.
+ */
+export type EmployeeCategory =
+  | "clinical"
+  | "field"
+  | "ambulance"
+  | "security"
+  | "support"
+  | "administrative";
+
+export const EMPLOYEE_CATEGORIES: EmployeeCategory[] = [
+  "clinical",
+  "field",
+  "ambulance",
+  "security",
+  "support",
+  "administrative",
+];
+
+/** A file held against an employee record (ID proof, certificate, contract). */
+export interface IEmployeeDocument {
+  _id?: Types.ObjectId;
+  name: string;
+  type?: string;
+  url: string;
+  uploadedAt: Date;
+  uploadedByAdminId?: Types.ObjectId;
+}
+
 export interface IOtherAllowance {
   name: string;
   amount: number;
@@ -47,9 +80,14 @@ export interface IHrEmployee {
   joiningDate: Date;
   exitDate?: Date;
 
+  category?: EmployeeCategory;
+  documents?: IEmployeeDocument[];
+
   departmentId?: Types.ObjectId;
   designationId?: Types.ObjectId;
   employmentTypeId?: Types.ObjectId;
+  /** Default shift from the master; per-day overrides live on EmployeeShift. */
+  defaultShiftId?: Types.ObjectId;
   reportingToId?: Types.ObjectId;
   photo?: string;
   // Links this HR record to the employee's admin-panel login, when they have
@@ -124,6 +162,34 @@ const HrEmployeeSchema = new Schema<IHrEmployee>(
     joiningDate: { type: Date, required: true },
     exitDate: Date,
 
+    category: {
+      type: String,
+      enum: [
+        "clinical",
+        "field",
+        "ambulance",
+        "security",
+        "support",
+        "administrative",
+      ],
+      index: true,
+    },
+    documents: {
+      type: [
+        new Schema<IEmployeeDocument>(
+          {
+            name: { type: String, required: true, trim: true },
+            type: { type: String, trim: true },
+            url: { type: String, required: true, trim: true },
+            uploadedAt: { type: Date, default: Date.now },
+            uploadedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
+          },
+          { _id: true },
+        ),
+      ],
+      default: [],
+    },
+    defaultShiftId: { type: Schema.Types.ObjectId, ref: "WorkShift" },
     departmentId: { type: Schema.Types.ObjectId, ref: "Department", index: true },
     designationId: { type: Schema.Types.ObjectId, ref: "Designation" },
     employmentTypeId: { type: Schema.Types.ObjectId, ref: "EmploymentType" },

@@ -23,7 +23,7 @@ export const driverLogin = async (
 
   const { mobileNumber, countryCode = "+91" } = req.body;
 
-  const otp = helpers().generateOTP(6);
+  const otp = helpers().generateOTP();
 
   const driver = await DriverService.getDriverByMobile(
     mobileNumber,
@@ -714,7 +714,7 @@ export const resendDriverOtp = async (
 
   const { mobileNumber, countryCode = "+91" } = req.body;
 
-  const otp = helpers().generateOTP(6);
+  const otp = helpers().generateOTP();
   const newTxnId = uuidv4();
 
   const otpData = {

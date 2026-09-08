@@ -96,6 +96,9 @@ import adminHrAttendanceRoutes from "./admin-hr-attendance.routes";
 import adminHrLeaveRoutes from "./admin-hr-leave.routes";
 import adminHrHolidaysRoutes from "./admin-hr-holidays.routes";
 import adminHrPayrollRoutes from "./admin-hr-payroll.routes";
+import adminHrShiftsRoutes from "./admin-hr-shifts.routes";
+import adminHrReportsRoutes from "./admin-hr-reports.routes";
+import adminHrGeofenceRoutes from "./admin-hr-geofence.routes";
 import adminHrDashboardRoutes from "./admin-hr-dashboard.routes";
 
 // Patient-app catalog (doctors / pharmacy products / lab tests)
@@ -210,6 +213,9 @@ router.use("/admin/hr/leave", adminHrLeaveRoutes);
 router.use("/admin/hr/holidays", adminHrHolidaysRoutes);
 router.use("/admin/hr/payroll", adminHrPayrollRoutes);
 router.use("/admin/hr/dashboard", adminHrDashboardRoutes);
+router.use("/admin/hr/work-shifts", adminHrShiftsRoutes);
+router.use("/admin/hr/reports", adminHrReportsRoutes);
+router.use("/admin/hr/geofences", adminHrGeofenceRoutes);
 
 // Patient-app catalog management
 router.use("/admin/catalog", adminCatalogRoutes);

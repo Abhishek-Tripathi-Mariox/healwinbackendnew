@@ -313,6 +313,33 @@ function getDefaultPlaceholders(type: string): string[] {
         "oldStatusCode",
         "newStatusCode",
       ];
+    case "APPLICATION_INTERVIEW_SCHEDULED":
+      // `when` is the interview time already formatted in IST. Both the online
+      // field (meetingLink) and the walk-in fields (venue*/contact*) are
+      // offered: whichever does not apply to a given interview renders empty,
+      // so one template serves both modes.
+      return [
+        ...common,
+        "when",
+        "durationMinutes",
+        "roundName",
+        "meetingLink",
+        "venueName",
+        "venueAddress",
+        "contactPerson",
+        "contactPhone",
+        "instructions",
+      ];
+    case "APPLICATION_OFFER_LETTER":
+      return [
+        ...common,
+        "designation",
+        "ctc",
+        "joiningDate",
+        "location",
+        "reportingTo",
+        "notes",
+      ];
     default:
       return common;
   }
@@ -392,6 +419,36 @@ export const updateSmtpSettings = async (req: Request, res: Response) => {
     });
   }
 
+  // The SMTP host is a SERVER NAME (smtp.gmail.com), not the mailbox address.
+  // Putting the email address here is the easy mistake to make — the two
+  // fields sit next to each other — and it fails much later with an opaque
+  // "getaddrinfo ENOTFOUND <your email>" from the DNS resolver. Catch it at
+  // the point of entry and say what to type instead.
+  const hostValue = String(host).trim();
+  if (hostValue.includes("@")) {
+    return res.status(400).json({
+      success: false,
+      message:
+        `"${hostValue}" is an email address, not a mail server. The host is the ` +
+        `SMTP server name — for Gmail or Google Workspace use "smtp.gmail.com" ` +
+        `and put the address in the Username field.`,
+    });
+  }
+  if (/\s/.test(hostValue) || !/^[A-Za-z0-9.-]+$/.test(hostValue)) {
+    return res.status(400).json({
+      success: false,
+      message: `"${hostValue}" is not a valid mail server hostname.`,
+    });
+  }
+
+  const portNum = Number(port) || 587;
+  if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+    return res.status(400).json({
+      success: false,
+      message: "Port must be a number between 1 and 65535 (usually 587).",
+    });
+  }
+
   if (purpose === "NOTIFICATIONS") {
     if (parsedHrEmails.length === 0) {
       return res.status(400).json({
@@ -428,8 +485,8 @@ export const updateSmtpSettings = async (req: Request, res: Response) => {
 
   if (settings) {
     settings.purpose = purpose;
-    settings.host = host;
-    settings.port = port || 587;
+    settings.host = hostValue;
+    settings.port = portNum;
     settings.secure = secure ?? false;
     settings.user = user;
     // Only update password if a real value is provided (not the masked value)
@@ -454,8 +511,8 @@ export const updateSmtpSettings = async (req: Request, res: Response) => {
     }
     settings = await SmtpSettings.create({
       purpose,
-      host,
-      port: port || 587,
+      host: hostValue,
+      port: portNum,
       secure: secure ?? false,
       user,
       pass,

@@ -4,6 +4,7 @@ import { LeaveRequest } from "../../models/leave-request.model";
 import { LeaveBalance } from "../../models/leave-balance.model";
 import Attendance from "../../models/attendance.model";
 import { sendToStaff } from "../../services/notification.service";
+import { withTransaction } from "../../utils/txn.util";
 
 const fmtD = (d: Date) => new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
 
@@ -181,58 +182,117 @@ export const approveRequest = async (
     return next();
   }
 
-  lr.status = "approved";
-  lr.approverAdminId = adminId;
-  lr.decisionNote = req.body?.decisionNote;
-  lr.decidedAt = new Date();
-  await lr.save();
-
   // Ambulance staff aren't on HR attendance/payroll balance — just record the
   // decision and notify their app. (Central store, branched handling.)
   if (lr.subjectType === "ambulance_staff") {
+    lr.status = "approved";
+    lr.approverAdminId = adminId;
+    lr.decisionNote = req.body?.decisionNote;
+    lr.decidedAt = new Date();
+    await lr.save();
     notifyStaffDecision(lr, true);
     req.rData = { item: lr };
     req.msg = "leave_request_updated";
     return next();
   }
 
-  // Write leave attendance rows across the range (idempotent upsert).
-  const ops: any[] = [];
-  const cursor = new Date(lr.fromDate);
-  while (cursor <= lr.toDate) {
-    const date = dayStart(cursor);
-    ops.push({
-      updateOne: {
-        filter: { employeeId: lr.employeeId, date },
-        update: {
-          $set: {
-            status: "leave",
-            leaveRequestId: lr._id,
-            markedByAdminId: adminId,
-          },
-        },
-        upsert: true,
-      },
-    });
-    cursor.setDate(cursor.getDate() + 1);
+  // Refuse to approve leave that overlaps leave this employee has already been
+  // granted — approving both would write the same attendance days twice and
+  // decrement the balance twice for one absence.
+  const overlap: any = await LeaveRequest.findOne({
+    _id: { $ne: lr._id },
+    subjectType: "hr_employee",
+    employeeId: lr.employeeId,
+    status: "approved",
+    fromDate: { $lte: lr.toDate },
+    toDate: { $gte: lr.fromDate },
+  })
+    .select("fromDate toDate")
+    .lean();
+  if (overlap) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = {
+      hint: `this employee already has approved leave from ${fmtD(overlap.fromDate)} to ${fmtD(overlap.toDate)}`,
+    };
+    return next();
   }
-  if (ops.length) await Attendance.bulkWrite(ops);
 
-  // Decrement the yearly balance for this employee + type. On first use, seed
-  // `allocated` (and the opening balance) from the leave type's annual quota so
-  // the running balance is meaningful rather than going straight negative.
   const year = lr.fromDate.getFullYear();
   const leaveType = await LeaveType.findById(lr.leaveTypeId).lean();
   const quota = leaveType?.annualQuota || 0;
-  await LeaveBalance.findOneAndUpdate(
-    { employeeId: lr.employeeId, leaveTypeId: lr.leaveTypeId, year },
-    { $setOnInsert: { allocated: quota, used: 0, balance: quota } },
-    { upsert: true },
-  );
-  await LeaveBalance.findOneAndUpdate(
-    { employeeId: lr.employeeId, leaveTypeId: lr.leaveTypeId, year },
-    { $inc: { used: lr.days, balance: -lr.days } },
-  );
+
+  // Don't let a paid-leave approval silently drive the balance negative. HR can
+  // still do it deliberately with overrideBalance — some approvals genuinely
+  // are granted beyond quota — but it becomes a decision, not an accident.
+  if (leaveType?.isPaid) {
+    const existing = await LeaveBalance.findOne({
+      employeeId: lr.employeeId,
+      leaveTypeId: lr.leaveTypeId,
+      year,
+    }).lean();
+    const available = existing ? existing.balance : quota;
+    if (lr.days > available && req.body?.overrideBalance !== true) {
+      req.rCode = 0;
+      req.msg = "validation_failed";
+      req.rData = {
+        hint: `only ${available} day(s) of ${leaveType.name} left for ${year}, but ${lr.days} requested`,
+        available,
+        requested: lr.days,
+        requiresOverride: true,
+      };
+      return next();
+    }
+  }
+
+  // Approval touches three collections. Do it atomically where the deployment
+  // allows; the fallback order (request → attendance → balance) leaves the
+  // recoverable state if a standalone box dies midway — a request marked
+  // approved with a balance still to decrement is visible and fixable, whereas
+  // a decremented balance with no approved request is not.
+  await withTransaction(async (session) => {
+    lr.status = "approved";
+    lr.approverAdminId = adminId;
+    lr.decisionNote = req.body?.decisionNote;
+    lr.decidedAt = new Date();
+    await lr.save({ session });
+
+    // Write leave attendance rows across the range (idempotent upsert).
+    const ops: any[] = [];
+    const cursor = new Date(lr.fromDate);
+    while (cursor <= lr.toDate) {
+      const date = dayStart(cursor);
+      ops.push({
+        updateOne: {
+          filter: { employeeId: lr.employeeId, date },
+          update: {
+            $set: {
+              status: "leave",
+              leaveRequestId: lr._id,
+              markedByAdminId: adminId,
+            },
+          },
+          upsert: true,
+        },
+      });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    if (ops.length) await Attendance.bulkWrite(ops, { session });
+
+    // Decrement the yearly balance for this employee + type. On first use, seed
+    // `allocated` (and the opening balance) from the leave type's annual quota
+    // so the running balance is meaningful rather than going straight negative.
+    await LeaveBalance.updateOne(
+      { employeeId: lr.employeeId, leaveTypeId: lr.leaveTypeId, year },
+      { $setOnInsert: { allocated: quota, used: 0, balance: quota } },
+      { upsert: true, session },
+    );
+    await LeaveBalance.updateOne(
+      { employeeId: lr.employeeId, leaveTypeId: lr.leaveTypeId, year },
+      { $inc: { used: lr.days, balance: -lr.days } },
+      { session },
+    );
+  });
 
   req.rData = { item: lr };
   req.msg = "leave_request_updated";
@@ -266,6 +326,81 @@ export const rejectRequest = async (
   await lr.save();
 
   notifyStaffDecision(lr, false);
+
+  req.rData = { item: lr };
+  req.msg = "leave_request_updated";
+  return next();
+};
+
+/**
+ * POST /admin/hr/leave/requests/:id/cancel
+ *
+ * Reverses a leave decision. Approving wrote attendance rows and spent
+ * balance; cancelling has to undo both, or the employee stays marked absent
+ * for days they actually worked and never gets those days back. Only rows
+ * still marked `leave` for THIS request are removed — if HR has since
+ * re-marked a day (say the employee came in after all), that correction wins.
+ */
+export const cancelRequest = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const adminId = (req as any).adminId;
+  const lr = await LeaveRequest.findById(req.params.id);
+  if (!lr) {
+    req.rCode = 5;
+    req.msg = "leave_request_not_found";
+    req.rData = {};
+    return next();
+  }
+  if (lr.status === "cancelled" || lr.status === "rejected") {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: `request is already ${lr.status}` };
+    return next();
+  }
+
+  const wasApproved = lr.status === "approved";
+  const isHrEmployee = lr.subjectType === "hr_employee";
+
+  await withTransaction(async (session) => {
+    lr.status = "cancelled";
+    lr.approverAdminId = adminId;
+    lr.decisionNote = req.body?.decisionNote || lr.decisionNote;
+    lr.decidedAt = new Date();
+    await lr.save({ session });
+
+    // A pending request never wrote anything, so there is nothing to unwind.
+    if (!wasApproved || !isHrEmployee) return;
+
+    await Attendance.deleteMany(
+      { leaveRequestId: lr._id, status: "leave" },
+      { session },
+    );
+
+    const year = lr.fromDate.getFullYear();
+    await LeaveBalance.updateOne(
+      { employeeId: lr.employeeId, leaveTypeId: lr.leaveTypeId, year },
+      { $inc: { used: -lr.days, balance: lr.days } },
+      { session },
+    );
+  });
+
+  // Tell the crew member their approved leave was withdrawn — they may have
+  // planned around it.
+  if (lr.subjectType === "ambulance_staff" && lr.ambulanceStaffId) {
+    const range = `${fmtD(lr.fromDate)}–${fmtD(lr.toDate)}`;
+    void sendToStaff(
+      lr.ambulanceStaffId,
+      "SYSTEM",
+      "Leave Cancelled",
+      `Your ${lr.leaveTypeName || "leave"} (${range}) has been cancelled.`,
+      { leaveId: String(lr._id), status: "cancelled", route: "Leave" },
+      lr._id,
+      "LeaveRequest",
+    ).catch(() => undefined);
+  }
 
   req.rData = { item: lr };
   req.msg = "leave_request_updated";

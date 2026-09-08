@@ -8,6 +8,7 @@ import StockTransaction from "../../models/stock-transaction.model";
 import { getNearbyAmbulances } from "../../services/ambulance-dispatch.service";
 import { emitToUser } from "../../utils/socket.util";
 import { sendToUser, sendDispatchPush } from "../../services/notification.service";
+import { mintOtp } from "../../services/ambulance-dispatch.service";
 
 /**
  * Admin dispatch for patient ambulance requests. List incoming requests and
@@ -169,7 +170,8 @@ export const assign = async (req: Request, _res: Response, next: NextFunction) =
 
   reqDoc.status = "ASSIGNED";
   reqDoc.assignedAt = new Date();
-  if (!reqDoc.otp) reqDoc.otp = String(Math.floor(1000 + Math.random() * 9000));
+  // Same generator (and length) as every other pickup code.
+  if (!reqDoc.otp) reqDoc.otp = mintOtp();
   reqDoc.statusHistory = [
     ...((reqDoc as any).statusHistory || []),
     {

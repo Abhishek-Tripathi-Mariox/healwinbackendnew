@@ -410,11 +410,17 @@ export const generatePayslipPDF = (
         "Emp Code",
         payslip.employeeCode,
       );
+      // For someone who joined or left mid-cycle, showing "3 / 30" reads as 27
+      // days of loss of pay. Count against the days they were actually on the
+      // rolls and say so.
+      const partMonth =
+        !!payslip.serviceDays && payslip.serviceDays < payslip.totalDays;
       metaRow(
         "Designation",
         payslip.designation || "-",
         "Paid Days",
-        `${payslip.paidDays} / ${payslip.totalDays}`,
+        `${payslip.paidDays} / ${partMonth ? payslip.serviceDays : payslip.totalDays}` +
+          (partMonth ? " (part month)" : ""),
       );
       metaRow(
         "PAN",
@@ -1007,6 +1013,287 @@ export const generatePrescriptionPDF = (
       doc.end();
     } catch (e) {
       reject(e);
+    }
+  });
+};
+
+/**
+ * Offer letter issued to a hired candidate.
+ *
+ * The same buffer is both emailed to the candidate and archived to S3, so the
+ * copy on file is byte-identical to the one they received — which matters if
+ * the terms are ever disputed.
+ */
+export const generateOfferLetterPDF = (data: {
+  candidateName: string;
+  applicationNumber: string;
+  designation: string;
+  department?: string;
+  ctcAnnual: number;
+  joiningDate: Date | string;
+  location?: string;
+  reportingTo?: string;
+  notes?: string;
+  companyName: string;
+}): Promise<Buffer> => {
+  return new Promise((resolve, reject) => {
+    try {
+      const margin = 50;
+      const doc = new PDFDocument({
+        size: "A4",
+        margin,
+        info: {
+          Title: `Offer Letter - ${data.candidateName}`,
+          Author: data.companyName,
+        },
+      });
+      const chunks: Buffer[] = [];
+      doc.on("data", (c: Buffer) => chunks.push(c));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      const pageWidth = doc.page.width - margin * 2;
+
+      // ---- Letterhead ----
+      doc
+        .fontSize(18)
+        .font("Helvetica-Bold")
+        .text(data.companyName, { align: "center" });
+      doc
+        .fontSize(9)
+        .font("Helvetica")
+        .fillColor("#555")
+        .text("Life Support & Emergency Care", { align: "center" });
+      doc.moveDown(0.5);
+      doc
+        .moveTo(margin, doc.y)
+        .lineTo(margin + pageWidth, doc.y)
+        .strokeColor("#0891b2")
+        .lineWidth(2)
+        .stroke();
+      doc.moveDown(1.2);
+
+      doc.fillColor("#000").fontSize(10).font("Helvetica");
+      doc.text(`Date: ${fmtDateIST(new Date())}`, { align: "right" });
+      doc.text(`Ref: ${data.applicationNumber}`, { align: "right" });
+      doc.moveDown(1);
+
+      doc.fontSize(14).font("Helvetica-Bold").text("LETTER OF OFFER", {
+        align: "center",
+      });
+      doc.moveDown(1);
+
+      doc.fontSize(11).font("Helvetica");
+      doc.text(`Dear ${data.candidateName},`);
+      doc.moveDown(0.6);
+      doc.text(
+        `We are pleased to offer you the position of ${data.designation} at ${data.companyName}. ` +
+          `Following your application and interview, we would be glad to have you join us. ` +
+          `The principal terms of your employment are set out below.`,
+        { align: "justify" },
+      );
+      doc.moveDown(1);
+
+      // ---- Terms table ----
+      const rows: Array<[string, string]> = [
+        ["Designation", data.designation],
+        ["Department", data.department || "-"],
+        ["Annual CTC", inr(data.ctcAnnual)],
+        ["Date of Joining", fmtDateIST(data.joiningDate)],
+        ["Place of Posting", data.location || "-"],
+        ["Reporting To", data.reportingTo || "-"],
+      ];
+      const labelW = 150;
+      const valueW = pageWidth - labelW;
+      for (const [label, value] of rows) {
+        const h = Math.max(
+          20,
+          doc.font("Helvetica").fontSize(10).heightOfString(value, {
+            width: valueW - 8,
+          }) + 8,
+        );
+        const top = doc.y;
+        doc.rect(margin, top, labelW, h).fillAndStroke("#f8fafc", "#e5e7eb");
+        doc.rect(margin + labelW, top, valueW, h).strokeColor("#e5e7eb").stroke();
+        doc
+          .fillColor("#000")
+          .font("Helvetica-Bold")
+          .fontSize(10)
+          .text(label, margin + 6, top + 5, { width: labelW - 12 });
+        doc
+          .font("Helvetica")
+          .text(value, margin + labelW + 6, top + 5, { width: valueW - 12 });
+        doc.y = top + h;
+      }
+      // The table wrote cells at explicit x offsets — put the cursor back on
+      // the left margin before any flowing text, or it renders indented.
+      doc.x = margin;
+      doc.moveDown(1.2);
+
+      if (data.notes) {
+        doc.font("Helvetica-Bold").fontSize(10).text("Additional Terms");
+        doc.moveDown(0.3);
+        doc.font("Helvetica").fontSize(10).text(data.notes, { align: "justify" });
+        doc.moveDown(1);
+      }
+
+      doc
+        .font("Helvetica")
+        .fontSize(10)
+        .text(
+          "This offer is subject to verification of the documents and credentials submitted with your " +
+            "application, and to your acceptance of the terms above. Please confirm your acceptance by " +
+            "replying to this email on or before your date of joining.",
+          { align: "justify" },
+        );
+      doc.moveDown(1);
+      doc.text("We look forward to welcoming you to the team.");
+      doc.moveDown(2);
+
+      doc.font("Helvetica-Bold").text("For " + data.companyName);
+      doc.moveDown(2.5);
+      doc.font("Helvetica").text("Authorised Signatory");
+      doc.text("Human Resources");
+
+      doc.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+};
+
+/**
+ * Appointment letter — issued on the joining date once the offer has been
+ * accepted. Deliberately a different document from the offer: the offer is a
+ * proposal, this confirms an employment that has begun.
+ */
+export const generateAppointmentLetterPDF = (data: {
+  candidateName: string;
+  applicationNumber: string;
+  designation: string;
+  department?: string;
+  joiningDate: Date | string;
+  location?: string;
+  reportingTo?: string;
+  ctcAnnual?: number;
+  employeeCode?: string;
+  companyName: string;
+}): Promise<Buffer> => {
+  return new Promise((resolve, reject) => {
+    try {
+      const margin = 50;
+      const doc = new PDFDocument({
+        size: "A4",
+        margin,
+        info: {
+          Title: `Appointment Letter - ${data.candidateName}`,
+          Author: data.companyName,
+        },
+      });
+      const chunks: Buffer[] = [];
+      doc.on("data", (c: Buffer) => chunks.push(c));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      const pageWidth = doc.page.width - margin * 2;
+
+      doc.fontSize(18).font("Helvetica-Bold").text(data.companyName, { align: "center" });
+      doc
+        .fontSize(9)
+        .font("Helvetica")
+        .fillColor("#555")
+        .text("Life Support & Emergency Care", { align: "center" });
+      doc.moveDown(0.5);
+      doc
+        .moveTo(margin, doc.y)
+        .lineTo(margin + pageWidth, doc.y)
+        .strokeColor("#0891b2")
+        .lineWidth(2)
+        .stroke();
+      doc.moveDown(1.2);
+
+      doc.fillColor("#000").fontSize(10).font("Helvetica");
+      doc.text(`Date: ${fmtDateIST(new Date())}`, { align: "right" });
+      doc.text(`Ref: ${data.applicationNumber}`, { align: "right" });
+      doc.moveDown(1);
+
+      doc.fontSize(14).font("Helvetica-Bold").text("LETTER OF APPOINTMENT", {
+        align: "center",
+      });
+      doc.moveDown(1);
+
+      doc.fontSize(11).font("Helvetica");
+      doc.text(`Dear ${data.candidateName},`);
+      doc.moveDown(0.6);
+      doc.text(
+        `Further to your acceptance of our offer, we are pleased to confirm your appointment as ` +
+          `${data.designation} at ${data.companyName} with effect from ${fmtDateIST(data.joiningDate)}. ` +
+          `Your appointment is governed by the terms below and by the company's policies in force from time to time.`,
+        { align: "justify" },
+      );
+      doc.moveDown(1);
+
+      const rows: Array<[string, string]> = [
+        ["Employee Name", data.candidateName],
+        ...(data.employeeCode
+          ? ([["Employee Code", data.employeeCode]] as Array<[string, string]>)
+          : []),
+        ["Designation", data.designation],
+        ["Department", data.department || "-"],
+        ["Date of Joining", fmtDateIST(data.joiningDate)],
+        ["Place of Posting", data.location || "-"],
+        ["Reporting To", data.reportingTo || "-"],
+        ...(data.ctcAnnual
+          ? ([["Annual CTC", inr(data.ctcAnnual)]] as Array<[string, string]>)
+          : []),
+      ];
+      const labelW = 150;
+      const valueW = pageWidth - labelW;
+      for (const [label, value] of rows) {
+        const h = Math.max(
+          20,
+          doc.font("Helvetica").fontSize(10).heightOfString(value, {
+            width: valueW - 8,
+          }) + 8,
+        );
+        const top = doc.y;
+        doc.rect(margin, top, labelW, h).fillAndStroke("#f8fafc", "#e5e7eb");
+        doc.rect(margin + labelW, top, valueW, h).strokeColor("#e5e7eb").stroke();
+        doc
+          .fillColor("#000")
+          .font("Helvetica-Bold")
+          .fontSize(10)
+          .text(label, margin + 6, top + 5, { width: labelW - 12 });
+        doc
+          .font("Helvetica")
+          .text(value, margin + labelW + 6, top + 5, { width: valueW - 12 });
+        doc.y = top + h;
+      }
+      // Reset after the explicit-x table so flowing text isn't indented.
+      doc.x = margin;
+      doc.moveDown(1.2);
+
+      doc
+        .font("Helvetica")
+        .fontSize(10)
+        .text(
+          "You are required to comply with the organisation's code of conduct, confidentiality obligations " +
+            "and patient-privacy policies at all times. Please report to Human Resources on your date of " +
+            "joining with the original documents submitted during recruitment.",
+          { align: "justify" },
+        );
+      doc.moveDown(1);
+      doc.text("We warmly welcome you to the team and look forward to working with you.");
+      doc.moveDown(2);
+
+      doc.font("Helvetica-Bold").text("For " + data.companyName);
+      doc.moveDown(2.5);
+      doc.font("Helvetica").text("Authorised Signatory");
+      doc.text("Human Resources");
+
+      doc.end();
+    } catch (err) {
+      reject(err);
     }
   });
 };

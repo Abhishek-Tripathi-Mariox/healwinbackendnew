@@ -8,13 +8,20 @@ import { EmergencyDispatch } from "../models/emergency-dispatch.model";
 import User from "../models/Users";
 import VehicleType from "../models/vehicle-type.model";
 import { calculateFare } from "./fare.service";
+import { OTP_LENGTH } from "../utils/helpers";
 
-// Pickup-verification code, same 4-digit shape as AmbulanceRequest's — the
-// patient reads it out to the crew once they arrive, driver enters it to
-// start the trip. Previously SOS dispatches never minted one (deliberately,
-// for speed), but that's since been reversed — SOS now gets the same real
-// verification step as a booked ride.
-const mintOtp = (): string => String(Math.floor(1000 + Math.random() * 9000));
+// Pickup-verification code — the patient reads it out to the crew once they
+// arrive, driver enters it to start the trip. Previously SOS dispatches never
+// minted one (deliberately, for speed), but that's since been reversed — SOS
+// now gets the same real verification step as a booked ride. Length comes from
+// the shared OTP_LENGTH so it stays in step with the driver app's input.
+export const mintOtp = (): string =>
+  String(
+    Math.floor(
+      10 ** (OTP_LENGTH - 1) +
+        Math.random() * 9 * 10 ** (OTP_LENGTH - 1),
+    ),
+  );
 
 /**
  * SOS has no patient-selected VehicleType — resolve one from the assigned
@@ -49,33 +56,63 @@ const resolveVehicleTypeForAmbulance = async (ambulanceType?: string) => {
  */
 const resolveSosPatient = async (
   sosId: Types.ObjectId,
-): Promise<{ patientUserId?: Types.ObjectId; patientName?: string; pickupAddress?: string }> => {
+): Promise<{
+  patientUserId?: Types.ObjectId;
+  patientName?: string;
+  patientPhone?: string;
+  pickupAddress?: string;
+}> => {
   const sub: any = await SOSSubmission.findById(sosId)
-    .select("userId name address")
+    .select("userId name phone address")
     .lean();
   if (sub) {
-    return { patientUserId: sub.userId, patientName: sub.name, pickupAddress: sub.address };
+    return {
+      patientUserId: sub.userId,
+      patientName: sub.name,
+      patientPhone: sub.phone,
+      pickupAddress: sub.address,
+    };
   }
   const alert: any = await SOSAlert.findById(sosId)
     .select("userId name address")
     .lean();
   if (alert) {
     // Older SOSAlerts may not carry a name — fall back to the linked User so
-    // the dispatch shows the patient's name, never a bare id.
+    // the dispatch shows the patient's name, never a bare id. The same lookup
+    // yields the callback number, which a SOSAlert never stores itself.
     let patientName: string | undefined = alert.name;
-    if (!patientName && alert.userId) {
-      const u: any = await User.findById(alert.userId).select("fullName").lean();
-      patientName = u?.fullName;
+    let patientPhone: string | undefined;
+    if (alert.userId) {
+      const u: any = await User.findById(alert.userId)
+        .select("fullName mobileNumber")
+        .lean();
+      if (!patientName) patientName = u?.fullName;
+      patientPhone = u?.mobileNumber;
     }
-    return { patientUserId: alert.userId, patientName, pickupAddress: alert.address };
+    return {
+      patientUserId: alert.userId,
+      patientName,
+      patientPhone,
+      pickupAddress: alert.address,
+    };
   }
   const reqDoc: any = await AmbulanceRequest.findById(sosId)
-    .select("userId patientName pickup")
+    .select("userId patientName recipientPhone pickup")
     .lean();
   if (reqDoc) {
+    // "Booked for someone else" — ring the person being picked up, falling
+    // back to the account holder who raised the request.
+    let patientPhone: string | undefined = reqDoc.recipientPhone;
+    if (!patientPhone && reqDoc.userId) {
+      const u: any = await User.findById(reqDoc.userId)
+        .select("mobileNumber")
+        .lean();
+      patientPhone = u?.mobileNumber;
+    }
     return {
       patientUserId: reqDoc.userId,
       patientName: reqDoc.patientName,
+      patientPhone,
       pickupAddress: reqDoc.pickup?.address,
     };
   }
@@ -546,12 +583,14 @@ export const createDispatch = async (params: {
   // driver display — in ONE place so every dispatch path (admin SOS
   // dashboard, sos-alerts, etc.) behaves identically: the patient app flips
   // to live tracking.
-  const { patientUserId, patientName, pickupAddress } = await resolveSosPatient(params.sosId);
+  const { patientUserId, patientName, patientPhone, pickupAddress } =
+    await resolveSosPatient(params.sosId);
   await EmergencyDispatch.updateOne(
     { _id: dispatchId },
     {
       patientUserId: patientUserId || undefined,
       patientName: patientName || undefined,
+      patientPhone: patientPhone || undefined,
       pickupAddress: pickupAddress || undefined,
     },
   );

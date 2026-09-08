@@ -1,5 +1,6 @@
 import { body, validationResult } from "express-validator";
 import { Request, Response, NextFunction } from "express";
+import { OTP_LENGTH } from "../utils/helpers";
 
 export default () => {
   return {
@@ -30,8 +31,8 @@ export default () => {
       body("otp")
         .notEmpty()
         .withMessage("OTP is required")
-        .isLength({ min: 4, max: 6 })
-        .withMessage("OTP must be 4-6 digits"),
+        .isLength({ min: OTP_LENGTH, max: OTP_LENGTH })
+        .withMessage(`OTP must be ${OTP_LENGTH} digits`),
       body("txnId").notEmpty().withMessage("Transaction ID is required"),
       (req: Request, res: Response, next: NextFunction) => {
         const errors = validationResult(req);

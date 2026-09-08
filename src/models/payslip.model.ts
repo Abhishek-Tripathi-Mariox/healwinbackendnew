@@ -14,6 +14,7 @@ export interface IPayslipEarnings {
   medical: number;
   specialAllowance: number;
   otherAllowances: number;
+  overtime: number;
   gross: number;
 }
 
@@ -41,13 +42,22 @@ export interface IPayslip {
   designation?: string;
   // Attendance basis.
   totalDays: number;
+  // Days on the rolls this month (the month clipped to joining/exit dates) and
+  // how many of those carried no attendance record — a payslip should show
+  // what it was computed from, including what was assumed.
+  serviceDays: number;
+  unmarkedDays: number;
+  /** Working-hours roll-up for the month (§5). */
+  workedMinutes: number;
+  overtimeMinutes: number;
+  overtimeAmount: number;
   paidDays: number;
   lopDays: number;
   leaveDays: number;
   earnings: IPayslipEarnings;
   deductions: IPayslipDeductions;
   netPay: number;
-  status: "draft" | "finalized";
+  status: "draft" | "verified" | "finalized";
   createdAt: Date;
   updatedAt: Date;
 }
@@ -60,6 +70,7 @@ const EarningsSchema = new Schema<IPayslipEarnings>(
     medical: { type: Number, default: 0 },
     specialAllowance: { type: Number, default: 0 },
     otherAllowances: { type: Number, default: 0 },
+    overtime: { type: Number, default: 0 },
     gross: { type: Number, default: 0 },
   },
   { _id: false },
@@ -100,6 +111,11 @@ const PayslipSchema = new Schema<IPayslip>(
     employeeName: { type: String, required: true },
     designation: String,
     totalDays: { type: Number, default: 0 },
+    serviceDays: { type: Number, default: 0 },
+    unmarkedDays: { type: Number, default: 0 },
+    workedMinutes: { type: Number, default: 0 },
+    overtimeMinutes: { type: Number, default: 0 },
+    overtimeAmount: { type: Number, default: 0 },
     paidDays: { type: Number, default: 0 },
     lopDays: { type: Number, default: 0 },
     leaveDays: { type: Number, default: 0 },
@@ -108,15 +124,42 @@ const PayslipSchema = new Schema<IPayslip>(
     netPay: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ["draft", "finalized"],
+      enum: ["draft", "verified", "finalized"],
       default: "draft",
     },
   },
   { timestamps: true },
 );
 
-PayslipSchema.index({ employeeId: 1, month: 1, year: 1 }, { unique: true, sparse: true });
-PayslipSchema.index({ ambulanceStaffId: 1, month: 1, year: 1 }, { unique: true, sparse: true });
+/**
+ * One payslip per subject per cycle.
+ *
+ * These must be PARTIAL, not sparse. A payslip carries exactly one of
+ * `employeeId` (HR employee) or `ambulanceStaffId` (crew) and the other is
+ * written as null — and a sparse index skips only ABSENT fields, not null
+ * ones. Under `sparse` the second HR-employee payslip in a month collided
+ * with the first on {ambulanceStaffId: null, month, year}, so payroll could
+ * never process more than one employee.
+ *
+ * `$type: "objectId"` indexes only the rows where the id is really set.
+ *
+ * Changing an index declaration does NOT alter an index that already exists
+ * in the database — run `npm run migrate:payslip-indexes` to replace them.
+ */
+PayslipSchema.index(
+  { employeeId: 1, month: 1, year: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { employeeId: { $type: "objectId" } },
+  },
+);
+PayslipSchema.index(
+  { ambulanceStaffId: 1, month: 1, year: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { ambulanceStaffId: { $type: "objectId" } },
+  },
+);
 
 export const Payslip = mongoose.model<IPayslip>("Payslip", PayslipSchema);
 

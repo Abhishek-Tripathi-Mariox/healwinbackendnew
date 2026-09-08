@@ -5,6 +5,12 @@ import {
   buildAttendanceSummary,
   daysInMonth,
 } from "../../services/payroll.service";
+import {
+  resolveShiftFor,
+  applyDayComputation,
+  applyHolidaysToAttendance,
+} from "../../services/attendance.service";
+import { formatDuration } from "../../services/working-hours";
 
 /**
  * HR — Attendance. Marking is idempotent via upsert on {employeeId, date}.
@@ -44,7 +50,12 @@ export const byDate = async (
     .sort({ fullName: 1 })
     .lean();
 
-  const records = await Attendance.find({ date }).lean();
+  // Scope to HR employees — ambulance crew mark their own attendance against
+  // ambulanceStaffId and would otherwise be pulled into this roster's map.
+  const records = await Attendance.find({
+    date,
+    subjectType: "hr_employee",
+  }).lean();
   const byEmp = new Map(records.map((r) => [String(r.employeeId), r]));
 
   const roster = employees.map((e) => ({
@@ -82,13 +93,30 @@ export const byEmployeeMonth = async (
     .sort({ date: 1 })
     .lean();
 
+  // Use the same employment window payroll uses, so what HR reads here and
+  // what the payslip is computed from cannot drift apart.
+  const emp = await HrEmployee.findById(req.params.id as string)
+    .select("joiningDate exitDate")
+    .lean();
   const summary = await buildAttendanceSummary(
     String(req.params.id),
     month,
     year,
+    new Set(),
+    "hr_employee",
+    { joiningDate: emp?.joiningDate, exitDate: emp?.exitDate },
   );
 
-  req.rData = { month, year, records, summary };
+  req.rData = {
+    month,
+    year,
+    records,
+    summary: {
+      ...summary,
+      workedLabel: formatDuration(summary.workedMinutes),
+      overtimeLabel: formatDuration(summary.overtimeMinutes),
+    },
+  };
   req.msg = "attendance_list";
   return next();
 };
@@ -115,21 +143,55 @@ export const markBulk = async (
     return next();
   }
 
+  // Resolve each employee's shift once for the day, then compute hours from
+  // the punches (§5). Without a shift we still record the punches but leave
+  // hours at zero rather than measuring against a shift they don't work.
+  const uniqueIds: string[] = [
+    ...new Set(
+      entries
+        .filter((en: any) => en.employeeId && VALID.includes(en.status))
+        .map((en: any) => String(en.employeeId)) as string[],
+    ),
+  ];
+  const shiftByEmployee = new Map<string, any>();
+  await Promise.all(
+    uniqueIds.map(async (id) => {
+      shiftByEmployee.set(id, await resolveShiftFor(id, date));
+    }),
+  );
+
   const ops = [];
+  const missedPunches: string[] = [];
   for (const en of entries) {
     if (!en.employeeId || !VALID.includes(en.status)) continue;
+    const shift = shiftByEmployee.get(String(en.employeeId));
+    const computed = applyDayComputation(en.checkIn, en.checkOut, shift);
+    // One punch but not the other: record it, but say so — that day needs a
+    // regularization, not a silent zero.
+    if (!computed && (en.checkIn || en.checkOut)) {
+      missedPunches.push(String(en.employeeId));
+    }
+    const update: any = {
+      $set: {
+        status: en.status,
+        remarks: en.remarks,
+        checkIn: en.checkIn,
+        checkOut: en.checkOut,
+        markedByAdminId: adminId,
+        shiftId: shift?._id,
+        workedMinutes: computed?.workedMinutes || 0,
+        overtimeMinutes: computed?.overtimeMinutes || 0,
+        isLate: computed?.isLate || false,
+      },
+    };
+    // Re-marking a leave day as present/absent detaches it from the leave
+    // request, so a later cancellation of that leave doesn't delete this
+    // correction along with the rows it actually created.
+    if (en.status !== "leave") update.$unset = { leaveRequestId: "" };
     ops.push({
       updateOne: {
         filter: { employeeId: en.employeeId, date },
-        update: {
-          $set: {
-            status: en.status,
-            remarks: en.remarks,
-            checkIn: en.checkIn,
-            checkOut: en.checkOut,
-            markedByAdminId: adminId,
-          },
-        },
+        update,
         upsert: true,
       },
     });
@@ -143,7 +205,33 @@ export const markBulk = async (
   }
 
   await Attendance.bulkWrite(ops);
-  req.rData = { count: ops.length, date };
+  req.rData = { count: ops.length, date, missedPunches };
+  req.msg = "attendance_marked";
+  return next();
+};
+
+/**
+ * POST /admin/hr/attendance/apply-holidays  body: { month, year }
+ *
+ * Fills the month's holidays into attendance for every employee on the rolls,
+ * skipping days that already carry a decision (§7).
+ */
+export const applyHolidays = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const adminId = (req as any).adminId;
+  const month = parseInt(req.body?.month, 10);
+  const year = parseInt(req.body?.year, 10);
+  if (!(month >= 1 && month <= 12) || !year) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "valid month (1-12) and year are required" };
+    return next();
+  }
+  const result = await applyHolidaysToAttendance(month, year, adminId);
+  req.rData = result;
   req.msg = "attendance_marked";
   return next();
 };
@@ -169,14 +257,17 @@ export const monthlySummary = async (
     isDeleted: false,
     status: { $ne: "terminated" },
   })
-    .select("fullName employeeCode")
+    .select("fullName employeeCode joiningDate exitDate")
     .sort({ fullName: 1 })
     .lean();
 
   const rows = await Promise.all(
     employees.map(async (e) => ({
       employee: e,
-      summary: await buildAttendanceSummary(e._id, month, year),
+      summary: await buildAttendanceSummary(e._id, month, year, new Set(), "hr_employee", {
+        joiningDate: e.joiningDate,
+        exitDate: e.exitDate,
+      }),
     })),
   );
 

@@ -70,5 +70,14 @@ router.post(
   ErrorHandlerMiddleware(C.rejectRequest),
   ResponseMiddleware,
 );
+// Reversing an approval is an approval-level decision — it hands back balance
+// and rewrites attendance — so it sits behind LEAVE_APPROVE, not LEAVE_MANAGE.
+router.post(
+  "/requests/:id/cancel",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.LEAVE_APPROVE),
+  ErrorHandlerMiddleware(C.cancelRequest),
+  ResponseMiddleware,
+);
 
 export default router;

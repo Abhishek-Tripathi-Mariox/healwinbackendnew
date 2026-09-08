@@ -33,6 +33,10 @@ export interface IEmergencyDispatch {
     | "CANCELLED";
   patientUserId?: Types.ObjectId; // SOS patient (for notify + live tracking)
   patientName?: string; // denormalised for driver display (avoids a populate)
+  // The PATIENT's callback number — never the crew's. `servicePhone` above is
+  // the assigned driver/attendant's own mobile, so it must never be used as
+  // the number the crew rings to reach the patient.
+  patientPhone?: string;
   // The hospital patient the crew registered in the field for THIS dispatch —
   // links the SOS journey to a real HMS record so admin/crew see who was treated.
   hospitalPatientId?: Types.ObjectId;
@@ -151,6 +155,7 @@ const EmergencyDispatchSchema = new Schema<IEmergencyDispatch>(
     },
     patientUserId: { type: Schema.Types.ObjectId, ref: "User", index: true },
     patientName: String,
+    patientPhone: String,
     hospitalPatientId: { type: Schema.Types.ObjectId, ref: "HospitalPatient", index: true },
     pickupAddress: String,
     otp: String,

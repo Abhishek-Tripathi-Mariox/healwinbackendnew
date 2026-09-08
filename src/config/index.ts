@@ -184,14 +184,26 @@ const config = {
     apiKey: optional("GOOGLE_MAPS_API_KEY"),
   },
 
-  // SMTP Email Configuration
+  // SMTP Email Configuration.
+  //
+  // SENDER_EMAIL + APP_PASSWORD are the Gmail account and app password the
+  // system sends from; they take precedence over the older SMTP_USER/SMTP_PASS
+  // names, which remain as a fallback for existing deployments.
+  //
+  // There is deliberately NO hardcoded password default any more. A committed
+  // app password is a live credential in the repo, and a default also hides
+  // misconfiguration: mail appears to work while going out from the wrong
+  // account. With no credential configured, sendEmail now fails loudly.
   smtp: {
     host: optional("SMTP_HOST", "smtp.gmail.com"),
     port: Number(process.env.SMTP_PORT) || 587,
     secure: process.env.SMTP_SECURE === "true",
-    user: optional("SMTP_USER", "hr@healwin.in"),
-    pass: optional("SMTP_PASS", "dyzc bnix uxdi jbwh"),
-    fromEmail: optional("SMTP_FROM_EMAIL", "hr@healwin.in"),
+    user: optional("SENDER_EMAIL", optional("SMTP_USER", "")),
+    pass: optional("APP_PASSWORD", optional("SMTP_PASS", "")),
+    fromEmail: optional(
+      "SMTP_FROM_EMAIL",
+      optional("SENDER_EMAIL", "hr@healwin.in"),
+    ),
     fromName: optional("SMTP_FROM_NAME", "Healwin HR"),
     hrEmail: optional("SMTP_HR_EMAIL", "hr@healwin.in"),
     hrEmails: optional("SMTP_HR_EMAILS", ""),
@@ -206,11 +218,17 @@ const config = {
     secure:
       process.env.SMTP_OTP_SECURE === "true" ||
       process.env.SMTP_SECURE === "true",
-    user: optional("SMTP_OTP_USER", optional("SMTP_USER", "hr@healwin.in")),
-    pass: optional("SMTP_OTP_PASS", optional("SMTP_PASS", "dyzc bnix uxdi jbwh")),
+    user: optional(
+      "SMTP_OTP_USER",
+      optional("SENDER_EMAIL", optional("SMTP_USER", "")),
+    ),
+    pass: optional(
+      "SMTP_OTP_PASS",
+      optional("APP_PASSWORD", optional("SMTP_PASS", "")),
+    ),
     fromEmail: optional(
       "SMTP_OTP_FROM_EMAIL",
-      optional("SMTP_FROM_EMAIL", "hr@healwin.in"),
+      optional("SMTP_FROM_EMAIL", optional("SENDER_EMAIL", "hr@healwin.in")),
     ),
     fromName: optional(
       "SMTP_OTP_FROM_NAME",

@@ -12,6 +12,12 @@ export interface IEmployeeShift {
   _id: Types.ObjectId;
   employeeId: Types.ObjectId; // ref HrEmployee
   date: string; // "YYYY-MM-DD"
+  /**
+   * The shift master this day was assigned from (§3). Timings now come from
+   * there; the legacy `shift`/`startTime`/`endTime` below are kept so existing
+   * rows still render and so an ad-hoc shift can still be typed by hand.
+   */
+  workShiftId?: Types.ObjectId;
   shift: EmployeeShiftType;
   startTime?: string; // "HH:mm"
   endTime?: string; // "HH:mm"
@@ -26,6 +32,7 @@ const EmployeeShiftSchema = new Schema<IEmployeeShift>(
   {
     employeeId: { type: Schema.Types.ObjectId, ref: "HrEmployee", required: true, index: true },
     date: { type: String, required: true, index: true },
+    workShiftId: { type: Schema.Types.ObjectId, ref: "WorkShift", index: true },
     shift: { type: String, enum: ["morning", "evening", "night", "general"], default: "general" },
     startTime: String,
     endTime: String,

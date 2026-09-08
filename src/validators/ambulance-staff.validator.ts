@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { body, validationResult } from "express-validator";
+import { OTP_LENGTH } from "../utils/helpers";
 
 const run =
   (checks: any[]) =>
@@ -52,7 +53,7 @@ export default () => ({
   ]),
   validateVerifyOtp: run([
     body("mobileNumber").matches(/^[6-9]\d{9}$/),
-    body("otp").isString().isLength({ min: 4, max: 6 }),
+    body("otp").isString().isLength({ min: OTP_LENGTH, max: OTP_LENGTH }),
     body("txnId").isString().notEmpty(),
     body("fcmToken").optional().isString(),
   ]),

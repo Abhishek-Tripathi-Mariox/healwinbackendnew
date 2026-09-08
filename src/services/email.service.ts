@@ -7,11 +7,6 @@ import {
 import { SmtpPurpose, SmtpSettings } from "../models/smtp-settings.model";
 import { LogoSettings } from "../models/logo-settings.model";
 
-// 'host' => 'smtp.gmail.com',
-// 'username' => 'hr@healwin.in',
-// 'password' => 'dyzc bnix uxdi jbwh',
-// 'port' => 587,
-// 'encryption' => PHPMailer::ENCRYPTION_STARTTLS
 
 /**
  * Get SMTP settings — reads from DB first, falls back to env config
@@ -243,6 +238,18 @@ export const sendEmail = async (options: {
 }) => {
   try {
     const smtp = await getSmtpConfig(options.purpose || "NOTIFICATIONS");
+
+    // No credential configured anywhere (env or the admin SMTP settings). Say
+    // so plainly instead of handing nodemailer empty auth and reporting a
+    // confusing gateway error — the fix is a config change, not a retry.
+    if (!smtp.user || !smtp.pass) {
+      const msg =
+        "SMTP is not configured — set SENDER_EMAIL and APP_PASSWORD in the backend .env, " +
+        "or save SMTP settings in the admin panel.";
+      console.error(`❌ Email to ${options.to} not sent: ${msg}`);
+      return { success: false, error: msg };
+    }
+
     const transporter = await createTransporter(smtp);
 
     const mailOptions = {
@@ -486,6 +493,9 @@ const STATUS_LABELS: Record<string, string> = {
   NEW: "New",
   IN_REVIEW: "In Review",
   SHORTLISTED: "Shortlisted",
+  INTERVIEW_SCHEDULED: "Interview Scheduled",
+  OFFER_ACCEPTED: "Offer Accepted",
+  APPOINTED: "Appointed",
   ONHOLD: "On Hold",
   REJECTED: "Rejected",
   HIRED: "Hired",
@@ -574,6 +584,312 @@ export const sendApplicationStatusUpdate = async (data: {
     to: data.candidateEmail,
     subject,
     html,
+  });
+};
+
+/**
+ * Interview invitation — online or walk-in.
+ *
+ * The two modes carry genuinely different information: an online candidate
+ * needs a join link, a walk-in candidate needs an address, a contact person to
+ * ask for at reception, and a phone number for when they cannot find the
+ * building. Sending one generic "you have an interview" mail and leaving them
+ * to work out the rest is how candidates end up at the wrong place.
+ */
+export const sendInterviewInvite = async (data: {
+  candidateName: string;
+  candidateEmail: string;
+  position: string;
+  department?: string;
+  applicationNumber?: string;
+  mode: "ONLINE" | "WALK_IN";
+  scheduledAt: Date;
+  durationMinutes?: number;
+  roundName?: string;
+  meetingLink?: string;
+  venueName?: string;
+  venueAddress?: string;
+  contactPerson?: string;
+  contactPhone?: string;
+  instructions?: string;
+}) => {
+  const smtp = await getSmtpConfig();
+  const logoUrl = await getLogoUrl();
+  const logoHeader = buildLogoHeader(logoUrl, smtp.companyName);
+  const isOnline = data.mode === "ONLINE";
+
+  // Always IST — the server's zone is not the candidate's concern, and an
+  // interview time printed in UTC is an interview the candidate misses.
+  const when = new Date(data.scheduledAt).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;font-weight:bold;width:38%;">${label}</td><td style="padding:10px;border:1px solid #e5e7eb;">${value}</td></tr>`;
+
+  const modeRows = isOnline
+    ? row("Mode", "Online (video interview)") +
+      row(
+        "Joining Link",
+        data.meetingLink
+          ? `<a href="${data.meetingLink}" style="color:#0891b2;">${data.meetingLink}</a>`
+          : "Will be shared shortly",
+      )
+    : row("Mode", "Walk-in (in person)") +
+      row("Venue", data.venueName || `${smtp.companyName} Centre`) +
+      row("Address", data.venueAddress || "-") +
+      (data.contactPerson ? row("Ask for", data.contactPerson) : "") +
+      (data.contactPhone
+        ? row(
+            "Contact",
+            `<a href="tel:${data.contactPhone}" style="color:#0891b2;">${data.contactPhone}</a>`,
+          )
+        : "");
+
+  const fallbackTemplate = {
+    subject: `Interview ${isOnline ? "Invitation" : "Call"} - {{position}} | {{companyName}}`,
+    body: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        ${logoHeader}
+        <p>Dear <strong>{{candidateName}}</strong>,</p>
+        <p>Thank you for applying for the position of <strong>{{position}}</strong>. We are pleased to invite you for an interview.</p>
+        <table style="width:100%;border-collapse:collapse;margin:20px 0;">
+          ${row("Position", "{{position}}")}
+          ${data.department ? row("Department", "{{department}}") : ""}
+          ${data.roundName ? row("Round", "{{roundName}}") : ""}
+          ${row("Date &amp; Time", "{{when}} IST")}
+          ${data.durationMinutes ? row("Duration", "{{durationMinutes}} minutes") : ""}
+          ${modeRows}
+          ${data.applicationNumber ? row("Application No.", "{{applicationNumber}}") : ""}
+        </table>
+        ${
+          data.instructions
+            ? `<p style="background:#f0f9ff;border-left:4px solid #0891b2;padding:12px;"><strong>Please note:</strong><br/>{{instructions}}</p>`
+            : ""
+        }
+        <p>${
+          isOnline
+            ? "Please join a few minutes early and make sure your camera and microphone are working."
+            : "Please carry a printed copy of your resume and the original documents you uploaded with your application."
+        }</p>
+        <p>If this time does not suit you, reply to this email and we will try to reschedule.</p>
+        <p style="margin-top:30px;">Best regards,<br/><strong>{{companyName}}</strong> Recruitment Team</p>
+      </div>
+    `,
+  };
+
+  const template =
+    (await getActiveTemplate("APPLICATION_INTERVIEW_SCHEDULED")) ||
+    fallbackTemplate;
+
+  const placeholderData: Record<string, string> = {
+    candidateName: data.candidateName,
+    candidateEmail: data.candidateEmail,
+    position: data.position,
+    department: data.department || "",
+    roundName: data.roundName || "",
+    when,
+    durationMinutes: String(data.durationMinutes || 30),
+    meetingLink: data.meetingLink || "",
+    venueName: data.venueName || "",
+    venueAddress: data.venueAddress || "",
+    contactPerson: data.contactPerson || "",
+    contactPhone: data.contactPhone || "",
+    instructions: data.instructions || "",
+    applicationNumber: data.applicationNumber || "",
+    companyName: smtp.companyName,
+    companyEmail: smtp.fromEmail,
+    logoUrl,
+  };
+
+  return sendEmail({
+    to: data.candidateEmail,
+    subject: replacePlaceholders(template.subject, placeholderData),
+    html: replacePlaceholders(template.body, placeholderData),
+    bcc: smtp.hrEmails.join(",") || smtp.hrEmail,
+  });
+};
+
+/**
+ * Offer letter — the generated PDF is attached, and HR is BCC'd so the sent
+ * copy is on the record.
+ */
+export const sendOfferLetter = async (data: {
+  candidateName: string;
+  candidateEmail: string;
+  applicationNumber?: string;
+  designation: string;
+  department?: string;
+  ctcAnnual: number;
+  joiningDate: Date;
+  location?: string;
+  reportingTo?: string;
+  notes?: string;
+  pdfBuffer?: Buffer;
+}) => {
+  const smtp = await getSmtpConfig();
+  const logoUrl = await getLogoUrl();
+  const logoHeader = buildLogoHeader(logoUrl, smtp.companyName);
+
+  const joining = new Date(data.joiningDate).toLocaleDateString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
+  const ctc = `Rs. ${(data.ctcAnnual || 0).toLocaleString("en-IN")}`;
+
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;font-weight:bold;width:38%;">${label}</td><td style="padding:10px;border:1px solid #e5e7eb;">${value}</td></tr>`;
+
+  const fallbackTemplate = {
+    subject: "Offer of Employment - {{designation}} | {{companyName}}",
+    body: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        ${logoHeader}
+        <p>Dear <strong>{{candidateName}}</strong>,</p>
+        <p>Congratulations! Following your interview, we are delighted to offer you a position at <strong>{{companyName}}</strong>.</p>
+        <table style="width:100%;border-collapse:collapse;margin:20px 0;">
+          ${row("Designation", "{{designation}}")}
+          ${data.department ? row("Department", "{{department}}") : ""}
+          ${row("Annual CTC", "{{ctc}}")}
+          ${row("Date of Joining", "{{joiningDate}}")}
+          ${data.location ? row("Place of Posting", "{{location}}") : ""}
+          ${data.reportingTo ? row("Reporting To", "{{reportingTo}}") : ""}
+          ${data.applicationNumber ? row("Reference", "{{applicationNumber}}") : ""}
+        </table>
+        <p>Your formal offer letter is attached to this email as a PDF. Please review it and confirm your acceptance by replying to this email.</p>
+        ${data.notes ? `<p style="background:#f0f9ff;border-left:4px solid #0891b2;padding:12px;">{{notes}}</p>` : ""}
+        <p>We look forward to welcoming you to the team.</p>
+        <p style="margin-top:30px;">Best regards,<br/><strong>{{companyName}}</strong> Human Resources</p>
+      </div>
+    `,
+  };
+
+  const template =
+    (await getActiveTemplate("APPLICATION_OFFER_LETTER")) || fallbackTemplate;
+
+  const placeholderData: Record<string, string> = {
+    candidateName: data.candidateName,
+    candidateEmail: data.candidateEmail,
+    designation: data.designation,
+    department: data.department || "",
+    ctc,
+    joiningDate: joining,
+    location: data.location || "",
+    reportingTo: data.reportingTo || "",
+    notes: data.notes || "",
+    applicationNumber: data.applicationNumber || "",
+    companyName: smtp.companyName,
+    companyEmail: smtp.fromEmail,
+    logoUrl,
+  };
+
+  return sendEmail({
+    to: data.candidateEmail,
+    subject: replacePlaceholders(template.subject, placeholderData),
+    html: replacePlaceholders(template.body, placeholderData),
+    bcc: smtp.hrEmails.join(",") || smtp.hrEmail,
+    attachments: data.pdfBuffer
+      ? [
+          {
+            filename: `Offer-Letter-${data.candidateName.replace(/\s+/g, "-")}.pdf`,
+            content: data.pdfBuffer,
+            contentType: "application/pdf",
+          },
+        ]
+      : undefined,
+  });
+};
+
+/**
+ * Appointment letter — sent once the candidate has accepted and joined.
+ */
+export const sendAppointmentLetter = async (data: {
+  candidateName: string;
+  candidateEmail: string;
+  applicationNumber?: string;
+  designation: string;
+  department?: string;
+  joiningDate: Date;
+  location?: string;
+  reportingTo?: string;
+  employeeCode?: string;
+  pdfBuffer?: Buffer;
+}) => {
+  const smtp = await getSmtpConfig();
+  const logoUrl = await getLogoUrl();
+  const logoHeader = buildLogoHeader(logoUrl, smtp.companyName);
+
+  const joining = new Date(data.joiningDate).toLocaleDateString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;font-weight:bold;width:38%;">${label}</td><td style="padding:10px;border:1px solid #e5e7eb;">${value}</td></tr>`;
+
+  const fallbackTemplate = {
+    subject: "Appointment Letter - {{designation}} | {{companyName}}",
+    body: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        ${logoHeader}
+        <p>Dear <strong>{{candidateName}}</strong>,</p>
+        <p>Welcome to <strong>{{companyName}}</strong>. Your appointment is confirmed and your letter of appointment is attached.</p>
+        <table style="width:100%;border-collapse:collapse;margin:20px 0;">
+          ${row("Designation", "{{designation}}")}
+          ${data.department ? row("Department", "{{department}}") : ""}
+          ${data.employeeCode ? row("Employee Code", "{{employeeCode}}") : ""}
+          ${row("Date of Joining", "{{joiningDate}}")}
+          ${data.location ? row("Place of Posting", "{{location}}") : ""}
+          ${data.reportingTo ? row("Reporting To", "{{reportingTo}}") : ""}
+        </table>
+        <p>Please report to Human Resources on your joining date with the original documents you submitted during recruitment.</p>
+        <p style="margin-top:30px;">Best regards,<br/><strong>{{companyName}}</strong> Human Resources</p>
+      </div>
+    `,
+  };
+  const template =
+    (await getActiveTemplate("APPLICATION_APPOINTMENT_LETTER")) ||
+    fallbackTemplate;
+
+  const placeholderData: Record<string, string> = {
+    candidateName: data.candidateName,
+    candidateEmail: data.candidateEmail,
+    designation: data.designation,
+    department: data.department || "",
+    employeeCode: data.employeeCode || "",
+    joiningDate: joining,
+    location: data.location || "",
+    reportingTo: data.reportingTo || "",
+    applicationNumber: data.applicationNumber || "",
+    companyName: smtp.companyName,
+    companyEmail: smtp.fromEmail,
+    logoUrl,
+  };
+
+  return sendEmail({
+    to: data.candidateEmail,
+    subject: replacePlaceholders(template.subject, placeholderData),
+    html: replacePlaceholders(template.body, placeholderData),
+    bcc: smtp.hrEmails.join(",") || smtp.hrEmail,
+    attachments: data.pdfBuffer
+      ? [
+          {
+            filename: `Appointment-Letter-${data.candidateName.replace(/\s+/g, "-")}.pdf`,
+            content: data.pdfBuffer,
+            contentType: "application/pdf",
+          },
+        ]
+      : undefined,
   });
 };
 

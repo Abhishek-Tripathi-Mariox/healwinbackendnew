@@ -4,6 +4,15 @@ import messages, { MessageKey, Lang } from "./messages";
 import { Response } from "express";
 import config from "../config";
 
+/**
+ * How many digits every OTP in the system has — login (patient, driver,
+ * ambulance staff), careers verification and the ambulance pickup code.
+ * Single source of truth: the generators, the request validators and the
+ * apps' OTP input boxes all derive their length from this, so the backend
+ * and the four front-ends cannot drift out of step again.
+ */
+export const OTP_LENGTH = 4;
+
 export default function helpers() {
   /**
    * Standard API response
@@ -54,7 +63,7 @@ export default function helpers() {
   /**
    * Generate OTP
    */
-  const generateOTP = (length: number = 4): number => {
+  const generateOTP = (length: number = OTP_LENGTH): number => {
     return Math.floor(
       Math.pow(10, length - 1) + Math.random() * 9 * Math.pow(10, length - 1),
     );

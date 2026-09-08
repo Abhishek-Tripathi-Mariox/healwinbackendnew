@@ -29,6 +29,16 @@ export interface IAttendance {
   checkIn?: string; // "HH:mm"
   checkOut?: string; // "HH:mm"
   leaveRequestId?: Types.ObjectId;
+  /** Shift this day was worked against — drives hours and overtime (§5). */
+  shiftId?: Types.ObjectId;
+  /** Computed on save from checkIn/checkOut, minus the shift's break. */
+  workedMinutes?: number;
+  /** Minutes beyond the shift length, past its overtimeAfterMinutes buffer. */
+  overtimeMinutes?: number;
+  /** Arrived after startTime + graceMinutes. */
+  isLate?: boolean;
+  /** Set when an approved regularization rewrote this day. */
+  regularizationId?: Types.ObjectId;
   remarks?: string;
   markedByAdminId?: Types.ObjectId;
   // Selfie + geofence result captured at check-in time (ambulance_staff
@@ -60,6 +70,14 @@ const AttendanceSchema = new Schema<IAttendance>(
     checkIn: String,
     checkOut: String,
     leaveRequestId: { type: Schema.Types.ObjectId, ref: "LeaveRequest" },
+    shiftId: { type: Schema.Types.ObjectId, ref: "WorkShift" },
+    workedMinutes: { type: Number, default: 0 },
+    overtimeMinutes: { type: Number, default: 0 },
+    isLate: { type: Boolean, default: false },
+    regularizationId: {
+      type: Schema.Types.ObjectId,
+      ref: "AttendanceRegularization",
+    },
     remarks: { type: String, trim: true },
     markedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
     checkInPhoto: String,

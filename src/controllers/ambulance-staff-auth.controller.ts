@@ -30,7 +30,7 @@ export const login = async (
     });
   }
 
-  const otp = helpers().generateOTP(6);
+  const otp = helpers().generateOTP();
   const txnId = uuidv4();
   const record = {
     txnId,

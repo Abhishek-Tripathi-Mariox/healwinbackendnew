@@ -4,6 +4,8 @@ import Attendance from "../../models/attendance.model";
 import { LeaveRequest } from "../../models/leave-request.model";
 import { Payslip } from "../../models/payslip.model";
 import { nextSequence } from "../../models/counter.model";
+import { EMPLOYEE_CATEGORIES } from "../../models/hr-employee.model";
+import { uploadFileToAws } from "../../utils/s3";
 
 /**
  * HR — Employee CRUD. Employee codes are minted atomically as HWE-000123.
@@ -22,6 +24,7 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
   const query: any = { isDeleted: false };
   if (req.query.status) query.status = req.query.status;
   if (req.query.departmentId) query.departmentId = req.query.departmentId;
+  if (req.query.category) query.category = String(req.query.category);
   if (search) {
     const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
     query.$or = [{ fullName: rx }, { employeeCode: rx }, { email: rx }];
@@ -92,6 +95,8 @@ export const detail = async (
 };
 
 const ASSIGNABLE = [
+  "category",
+  "defaultShiftId",
   "fullName",
   "email",
   "phone",
@@ -228,5 +233,104 @@ export const remove = async (
   await employee.save();
   req.rData = {};
   req.msg = "employee_deleted";
+  return next();
+};
+
+/**
+ * POST /admin/hr/employees/:id/documents  (multipart: file)
+ *
+ * Employee documents (§2). Candidate paperwork is already handled on the
+ * recruitment side; once someone is hired there was nowhere to keep their ID
+ * proof, certificates or contract. Files go to the same S3 bucket as every
+ * other upload.
+ */
+export const addDocument = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const adminId = (req as any).adminId;
+  const file = (req as any).file as Express.Multer.File | undefined;
+  const name = String(req.body?.name || "").trim();
+
+  if (!file) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "a file is required" };
+    return next();
+  }
+  if (!name) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "a document name is required" };
+    return next();
+  }
+
+  const employee = await HrEmployee.findOne({
+    _id: req.params.id as string,
+    isDeleted: false,
+  });
+  if (!employee) {
+    req.rCode = 5;
+    req.msg = "employee_not_found";
+    req.rData = {};
+    return next();
+  }
+
+  const { images } = await uploadFileToAws([file]);
+  const url = images as unknown as string;
+
+  employee.documents = [
+    ...(employee.documents || []),
+    {
+      name,
+      type: req.body?.type,
+      url,
+      uploadedAt: new Date(),
+      uploadedByAdminId: adminId,
+    },
+  ];
+  await employee.save();
+
+  req.rData = { documents: employee.documents };
+  req.msg = "saved";
+  return next();
+};
+
+/** DELETE /admin/hr/employees/:id/documents/:docId */
+export const removeDocument = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const employee = await HrEmployee.findOne({
+    _id: req.params.id as string,
+    isDeleted: false,
+  });
+  if (!employee) {
+    req.rCode = 5;
+    req.msg = "employee_not_found";
+    req.rData = {};
+    return next();
+  }
+  // The S3 object is deliberately left in place: an employment document that
+  // was removed from the record by mistake should still be recoverable.
+  employee.documents = (employee.documents || []).filter(
+    (d: any) => String(d._id) !== String(req.params.docId),
+  );
+  await employee.save();
+  req.rData = { documents: employee.documents };
+  req.msg = "deleted";
+  return next();
+};
+
+/** GET /admin/hr/employees/meta — the pick-lists the employee form needs. */
+export const meta = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  req.rData = { categories: EMPLOYEE_CATEGORIES };
+  req.msg = "success";
   return next();
 };

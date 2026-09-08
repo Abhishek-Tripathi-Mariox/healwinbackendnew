@@ -7,7 +7,14 @@ import mongoose, { Schema, Types } from "mongoose";
  * once `finalized`.
  */
 
-export type PayrollRunStatus = "draft" | "finalized";
+/**
+ * draft → verified → finalized.
+ *
+ * `verified` is the checkpoint the spec asks for: HR reviews the computed
+ * sheet and signs it off BEFORE it is locked, so the salary run on the 16th
+ * is a deliberate two-person act rather than one irreversible click.
+ */
+export type PayrollRunStatus = "draft" | "verified" | "finalized";
 
 export interface IPayrollRun {
   _id: Types.ObjectId;
@@ -18,7 +25,12 @@ export interface IPayrollRun {
   totalGross: number;
   totalDeductions: number;
   totalNet: number;
+  totalOvertimeAmount: number;
   runByAdminId: Types.ObjectId;
+  verifiedByAdminId?: Types.ObjectId;
+  verifiedAt?: Date;
+  verificationNote?: string;
+  finalizedByAdminId?: Types.ObjectId;
   finalizedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -30,7 +42,7 @@ const PayrollRunSchema = new Schema<IPayrollRun>(
     year: { type: Number, required: true },
     status: {
       type: String,
-      enum: ["draft", "finalized"],
+      enum: ["draft", "verified", "finalized"],
       default: "draft",
       index: true,
     },
@@ -38,7 +50,12 @@ const PayrollRunSchema = new Schema<IPayrollRun>(
     totalGross: { type: Number, default: 0 },
     totalDeductions: { type: Number, default: 0 },
     totalNet: { type: Number, default: 0 },
+    totalOvertimeAmount: { type: Number, default: 0 },
     runByAdminId: { type: Schema.Types.ObjectId, ref: "Admin", required: true },
+    verifiedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
+    verifiedAt: Date,
+    verificationNote: { type: String, trim: true },
+    finalizedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
     finalizedAt: Date,
   },
   { timestamps: true },

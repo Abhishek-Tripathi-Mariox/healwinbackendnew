@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { SOSSubmission } from "../models/sos-submission.model";
 import { emitToAdmin } from "../utils/socket.util";
+import { reverseGeocode } from "../services/geocode.service";
 
 /** Raise the admin alarm modal for a website/public SOS submission. */
 const alertAdmin = (submission: any) => {
@@ -41,6 +42,23 @@ export const submitSOSCall = async (req: Request, res: Response) => {
     }
     const { name, phone, latitude, longitude, address } = body;
 
+    // Resolve a readable address server-side. A guest (not logged in) cannot
+    // call /patient/geocode/reverse — it requires a user token — so without
+    // this the control room would only ever see raw coordinates for an
+    // anonymous SOS. The server key is here anyway; never block on it.
+    let resolvedAddress = address;
+    if (!resolvedAddress && latitude && longitude) {
+      // reverseGeocode returns a STRUCTURED object ({line1, city, formatted…}),
+      // not a string. Assigning it raw made SOSSubmission.address fail its cast
+      // and rejected the whole emergency with a 500 — take `formatted`.
+      const geo: any = await reverseGeocode(
+        Number(latitude),
+        Number(longitude),
+      ).catch(() => null);
+      resolvedAddress =
+        (typeof geo === "string" ? geo : geo?.formatted) || undefined;
+    }
+
     const submission = await SOSSubmission.create({
       type: "CALL",
       name: name || "Anonymous Caller",
@@ -52,7 +70,7 @@ export const submitSOSCall = async (req: Request, res: Response) => {
               coordinates: [longitude, latitude],
             }
           : undefined,
-      address,
+      address: resolvedAddress,
       ipAddress: req.ip,
       userAgent: req.get("User-Agent"),
     });

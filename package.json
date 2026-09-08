@@ -22,6 +22,9 @@
     "seed:fleet": "ts-node src/seeds/ambulance-fleet.seed.ts",
     "seed:hr": "ts-node src/seeds/hr.seed.ts",
     "seed:catalog": "ts-node src/seeds/catalog.seed.ts",
+    "seed:email-templates": "ts-node src/seeds/email-templates.seed.ts",
+    "e2e:hrms": "ts-node src/scripts/e2e-hrms.ts",
+    "migrate:payslip-indexes": "ts-node src/scripts/migrate-payslip-indexes.ts",
     "seed:inventory-from-catalog": "ts-node src/scripts/seed-inventory-from-catalog.ts",
     "test": "jest",
     "test:watch": "jest --watch"

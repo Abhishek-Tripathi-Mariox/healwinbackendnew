@@ -78,9 +78,9 @@
  *                 example: "+919876543210"
  *               otp:
  *                 type: string
- *                 example: "123456"
- *                 minLength: 6
- *                 maxLength: 6
+ *                 example: "1234"
+ *                 minLength: 4
+ *                 maxLength: 4
  *               deviceToken:
  *                 type: string
  *                 description: FCM token for push notifications

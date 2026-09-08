@@ -78,7 +78,38 @@ export const uploadMultipleFilesToAws = async (
   };
 };
 
+/**
+ * Upload a buffer we generated ourselves (a rendered PDF, say) rather than a
+ * file someone uploaded. Both helpers above take multer files, which a
+ * generated document never is.
+ *
+ * `keyPrefix` groups documents in the bucket (e.g. "offer-letters"), so
+ * generated paperwork doesn't land loose at the root next to candidate
+ * uploads.
+ */
+export const uploadBufferToAws = async (
+  buffer: Buffer,
+  fileName: string,
+  contentType: string,
+  keyPrefix = "",
+): Promise<string> => {
+  const key = `${keyPrefix ? `${keyPrefix}/` : ""}${Date.now()}_${fileName}`;
+  const upload = new Upload({
+    client: s3Client,
+    params: {
+      Bucket: config.aws.bucket,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType,
+    },
+    queueSize: 3,
+  });
+  const data = await upload.done();
+  return data.Location as string;
+};
+
 export default {
   uploadFileToAws,
   uploadMultipleFilesToAws,
+  uploadBufferToAws,
 };

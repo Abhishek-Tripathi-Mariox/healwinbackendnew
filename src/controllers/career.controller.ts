@@ -11,6 +11,7 @@ import {
 import { sendOtpSms } from "../services/sms.service";
 import { generateApplicationPDF } from "../services/pdf.service";
 import crypto from "crypto";
+import { OTP_LENGTH } from "../utils/helpers";
 
 const INDIAN_MOBILE_REGEX = /^[6-9]\d{9}$/;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
@@ -86,8 +87,12 @@ export const sendOtp = async (req: Request, res: Response) => {
     }
   }
 
-  // Generate 6-digit OTP
-  const otp = crypto.randomInt(100000, 999999).toString();
+  // Same length as every other OTP in the system (see OTP_LENGTH). randomInt's
+  // upper bound is exclusive, so this yields 1000-9999 — no leading zero to be
+  // lost when the code is compared as a string.
+  const otp = crypto
+    .randomInt(10 ** (OTP_LENGTH - 1), 10 ** OTP_LENGTH)
+    .toString();
 
   // Remove old OTPs for this identifier+type
   await Otp.deleteMany({ identifier, type });

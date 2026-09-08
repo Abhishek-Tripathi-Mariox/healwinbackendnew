@@ -4,9 +4,93 @@ export type ApplicationStatus =
   | "NEW"
   | "IN_REVIEW"
   | "SHORTLISTED"
+  | "INTERVIEW_SCHEDULED"
+  | "OFFER_ACCEPTED"
+  | "APPOINTED"
   | "ONHOLD"
   | "REJECTED"
   | "HIRED";
+
+/** Online (video call) or in person at a Healwin centre. */
+export type InterviewMode = "ONLINE" | "WALK_IN";
+
+/**
+ * A scheduled interview. Only ever one "current" interview per application —
+ * rescheduling overwrites it, and every version is kept in `interviewHistory`
+ * so HR can see what the candidate was told before.
+ */
+export interface IInterview {
+  mode: InterviewMode;
+  scheduledAt: Date;
+  durationMinutes?: number;
+  roundName?: string;
+  /** ONLINE: the video-call link the candidate joins. */
+  meetingLink?: string;
+  /** WALK_IN: where to physically turn up. */
+  venueName?: string;
+  venueAddress?: string;
+  contactPerson?: string;
+  contactPhone?: string;
+  /** Free text: what to bring, parking, dress code, panel names… */
+  instructions?: string;
+  scheduledByAdminId?: Types.ObjectId;
+  scheduledAt_recordedAt?: Date;
+
+  /* ── Post-interview evaluation (§9.3) ── */
+  /** Panel's written assessment. */
+  evaluationRemarks?: string;
+  /** Out of 10, so candidates can be compared. */
+  rating?: number;
+  interviewerName?: string;
+  /** Recommendation from the panel; the decision itself is the status. */
+  recommendation?: "SELECT" | "REJECT" | "HOLD" | "NEXT_ROUND";
+  hrReview?: string;
+  managementReview?: string;
+  evaluatedByAdminId?: Types.ObjectId;
+  evaluatedAt?: Date;
+}
+
+/** What the candidate is being offered, and what goes on the offer letter. */
+export interface IOffer {
+  designation: string;
+  department?: string;
+  ctcAnnual: number;
+  joiningDate: Date;
+  location?: string;
+  reportingTo?: string;
+  /** Offer letter PDF archived to S3 — the same file the candidate received. */
+  offerLetterUrl?: string;
+  notes?: string;
+  issuedByAdminId?: Types.ObjectId;
+  issuedAt?: Date;
+
+  /* ── Acceptance (§9.5) ── */
+  /** Set when the candidate confirms; drives the appointment letter. */
+  acceptedAt?: Date;
+  /** Countersigned copy the candidate returned, archived to S3. */
+  signedOfferUrl?: string;
+  acceptanceNote?: string;
+  declinedAt?: Date;
+  declineReason?: string;
+}
+
+/**
+ * Appointment letter — issued on the joining date, AFTER the offer has been
+ * accepted. Kept separate from the offer so the two documents can carry
+ * different dates and terms, which is how they work in practice.
+ */
+export interface IAppointment {
+  issuedAt: Date;
+  joiningDate: Date;
+  designation: string;
+  department?: string;
+  reportingTo?: string;
+  location?: string;
+  appointmentLetterUrl?: string;
+  /** The HR employee record created from this hire, when one has been made. */
+  employeeId?: Types.ObjectId;
+  issuedByAdminId?: Types.ObjectId;
+}
 
 export interface ICareerApplication {
   _id: Types.ObjectId;
@@ -46,12 +130,83 @@ export interface ICareerApplication {
   experience?: string;
   coverLetter?: string;
 
+  /* ── Hiring pipeline ── */
+  interview?: IInterview | null;
+  interviewHistory?: IInterview[];
+  offer?: IOffer | null;
+  appointment?: IAppointment | null;
+
   /* ── Meta ── */
   status: ApplicationStatus;
   appliedAt: Date;
   createdAt: Date;
   updatedAt: Date;
 }
+
+const InterviewSchema = new Schema<IInterview>(
+  {
+    mode: { type: String, enum: ["ONLINE", "WALK_IN"], required: true },
+    scheduledAt: { type: Date, required: true },
+    durationMinutes: { type: Number, default: 30 },
+    roundName: { type: String, trim: true },
+    meetingLink: { type: String, trim: true },
+    venueName: { type: String, trim: true },
+    venueAddress: { type: String, trim: true },
+    contactPerson: { type: String, trim: true },
+    contactPhone: { type: String, trim: true },
+    instructions: { type: String, trim: true },
+    scheduledByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
+    scheduledAt_recordedAt: { type: Date, default: Date.now },
+    evaluationRemarks: { type: String, trim: true },
+    rating: { type: Number, min: 0, max: 10 },
+    interviewerName: { type: String, trim: true },
+    recommendation: {
+      type: String,
+      enum: ["SELECT", "REJECT", "HOLD", "NEXT_ROUND"],
+    },
+    hrReview: { type: String, trim: true },
+    managementReview: { type: String, trim: true },
+    evaluatedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
+    evaluatedAt: Date,
+  },
+  { _id: false },
+);
+
+const OfferSchema = new Schema<IOffer>(
+  {
+    designation: { type: String, required: true, trim: true },
+    department: { type: String, trim: true },
+    ctcAnnual: { type: Number, required: true },
+    joiningDate: { type: Date, required: true },
+    location: { type: String, trim: true },
+    reportingTo: { type: String, trim: true },
+    offerLetterUrl: { type: String, trim: true },
+    notes: { type: String, trim: true },
+    issuedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
+    issuedAt: { type: Date, default: Date.now },
+    acceptedAt: Date,
+    signedOfferUrl: { type: String, trim: true },
+    acceptanceNote: { type: String, trim: true },
+    declinedAt: Date,
+    declineReason: { type: String, trim: true },
+  },
+  { _id: false },
+);
+
+const AppointmentSchema = new Schema<IAppointment>(
+  {
+    issuedAt: { type: Date, default: Date.now },
+    joiningDate: { type: Date, required: true },
+    designation: { type: String, required: true, trim: true },
+    department: { type: String, trim: true },
+    reportingTo: { type: String, trim: true },
+    location: { type: String, trim: true },
+    appointmentLetterUrl: { type: String, trim: true },
+    employeeId: { type: Schema.Types.ObjectId, ref: "HrEmployee" },
+    issuedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
+  },
+  { _id: false },
+);
 
 const CareerApplicationSchema = new Schema<ICareerApplication>(
   {
@@ -94,10 +249,26 @@ const CareerApplicationSchema = new Schema<ICareerApplication>(
     experience: { type: String, trim: true },
     coverLetter: { type: String, trim: true },
 
+    /* Hiring pipeline */
+    interview: { type: InterviewSchema, default: null },
+    interviewHistory: { type: [InterviewSchema], default: [] },
+    offer: { type: OfferSchema, default: null },
+    appointment: { type: AppointmentSchema, default: null },
+
     /* Meta */
     status: {
       type: String,
-      enum: ["NEW", "IN_REVIEW", "SHORTLISTED", "ONHOLD", "REJECTED", "HIRED"],
+      enum: [
+        "NEW",
+        "IN_REVIEW",
+        "SHORTLISTED",
+        "INTERVIEW_SCHEDULED",
+        "OFFER_ACCEPTED",
+        "APPOINTED",
+        "ONHOLD",
+        "REJECTED",
+        "HIRED",
+      ],
       default: "NEW",
       index: true,
     },

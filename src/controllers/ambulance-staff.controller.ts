@@ -15,6 +15,7 @@ import Attendance from "../models/attendance.model";
 import DutyEvent from "../models/duty-event.model";
 import { uploadFileToAws } from "../utils/s3";
 import config from "../config";
+import { evaluateGeofence } from "../services/attendance.service";
 
 // Drivers/attendants are allowed to clock in this many ms before their
 // shift's startAt — matches the state-machine's grace window so a 5-min-
@@ -124,14 +125,25 @@ export const setDuty = async (
   }
   let distanceMeters: number | undefined;
   let withinGeofence: boolean | undefined;
-  if (hasLocation && staff.hospitalId) {
-    const centre: any = await Centre.findById(staff.hospitalId).select("location").lean();
-    const coords = centre?.location?.coordinates;
-    if (Array.isArray(coords) && coords.length === 2) {
-      const distanceKm = haversineKm({ lat: lat as number, lng: lng as number }, { lat: coords[1], lng: coords[0] });
-      if (distanceKm != null) {
-        distanceMeters = Math.round(distanceKm * 1000);
-        withinGeofence = distanceKm <= GEOFENCE_RADIUS_KM;
+  if (hasLocation) {
+    // Configured attendance locations first (§4.2): each has its own radius,
+    // and the nearest matching one wins. This replaced a single hardcoded
+    // 0.5 km radius that applied to a hospital campus and a parking bay alike.
+    const verdict = await evaluateGeofence(lat as number, lng as number, "ambulance");
+    if (verdict) {
+      distanceMeters = verdict.distanceMeters;
+      withinGeofence = verdict.withinGeofence;
+    } else if (staff.hospitalId) {
+      // No fence configured yet — fall back to the anchoring Centre so crew
+      // attendance keeps working until HR sets the locations up.
+      const centre: any = await Centre.findById(staff.hospitalId).select("location").lean();
+      const coords = centre?.location?.coordinates;
+      if (Array.isArray(coords) && coords.length === 2) {
+        const distanceKm = haversineKm({ lat: lat as number, lng: lng as number }, { lat: coords[1], lng: coords[0] });
+        if (distanceKm != null) {
+          distanceMeters = Math.round(distanceKm * 1000);
+          withinGeofence = distanceKm <= GEOFENCE_RADIUS_KM;
+        }
       }
     }
   }
@@ -582,17 +594,26 @@ export const activeDispatch = async (
     .populate("ambulanceId")
     // The patient the crew registered in the field for this dispatch (if any).
     .populate("hospitalPatientId", "patientId fullName phone gender dateOfBirth")
+    // Fallback contact for dispatches created before patientPhone was
+    // denormalised — without it those live cases have no number to ring.
+    .populate("sosSubmission", "name phone address")
     .lean();
   // Expose the denormalised patient name + pickup address so the driver app
   // shows a real name + location (not an id / raw coordinates). `address` is
   // the key the app's dispatch mapper reads. `hospitalPatient` carries the
   // field-registered patient's details so the crew sees who they added.
   const hp: any = d?.hospitalPatientId;
+  const sub: any = d?.sosSubmission || {};
   const dispatch = d
     ? {
         ...d,
-        patientName: d.patientName || "Emergency patient",
-        address: d.pickupAddress || "",
+        patientName: d.patientName || sub.name || "Emergency patient",
+        // Who the crew rings for THIS case, in order of who is most certainly
+        // the patient in front of them: the person they registered in the
+        // field, then the number the dispatch was raised with. `servicePhone`
+        // is deliberately absent — it is the crew's own mobile.
+        patientPhone: hp?.phone || d.patientPhone || sub.phone || "",
+        address: d.pickupAddress || sub.address || "",
         hospitalPatient: hp && typeof hp === "object"
           ? {
               _id: String(hp._id),
@@ -789,7 +810,8 @@ export const dispatchHistory = async (
       ref: String(d._id).slice(-6).toUpperCase(),
       status: d.status,
       patientName: d.patientName || sub.name || "Emergency patient",
-      patientPhone: d.servicePhone || sub.phone || null,
+      // NOT servicePhone — that is the crew's own mobile, not the patient's.
+      patientPhone: d.patientPhone || sub.phone || null,
       address: d.pickupAddress || sub.address || "",
       vehicle: d.ambulanceId?.registrationNumber || d.serviceName || null,
       distanceKm: d.roadDistanceKm ?? 0,

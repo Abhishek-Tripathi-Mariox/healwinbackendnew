@@ -291,9 +291,16 @@ export const PERMISSIONS = {
   SALARY_STRUCTURE_VIEW: "salary_structure:view",
   SALARY_STRUCTURE_MANAGE: "salary_structure:manage",
 
+  // Shifts (HR shift master — distinct from ambulance fleet shifts)
+  SHIFTS_VIEW: "shifts:view",
+  SHIFTS_MANAGE: "shifts:manage",
+
   // Attendance
   ATTENDANCE_VIEW: "attendance:view",
   ATTENDANCE_MANAGE: "attendance:manage",
+  // Deciding a regularization rewrites a past day and therefore someone's
+  // pay — a heavier act than marking today, so it gets its own permission.
+  ATTENDANCE_APPROVE: "attendance:approve",
 
   // Leave
   LEAVE_VIEW: "leave:view",
@@ -307,6 +314,8 @@ export const PERMISSIONS = {
   // Payroll
   PAYROLL_VIEW: "payroll:view",
   PAYROLL_PROCESS: "payroll:process",
+  // Sign-off before the run is locked (the 16th-of-month check).
+  PAYROLL_VERIFY: "payroll:verify",
   PAYROLL_FINALIZE: "payroll:finalize",
 
   // Patient-app catalog (doctors / pharmacy products / lab tests)
@@ -595,9 +604,11 @@ export const PERMISSION_GROUPS = {
     PERMISSIONS.SALARY_STRUCTURE_VIEW,
     PERMISSIONS.SALARY_STRUCTURE_MANAGE,
   ],
+  "HR — Shifts": [PERMISSIONS.SHIFTS_VIEW, PERMISSIONS.SHIFTS_MANAGE],
   "HR — Attendance": [
     PERMISSIONS.ATTENDANCE_VIEW,
     PERMISSIONS.ATTENDANCE_MANAGE,
+    PERMISSIONS.ATTENDANCE_APPROVE,
   ],
   "HR — Leave": [
     PERMISSIONS.LEAVE_VIEW,
@@ -608,6 +619,7 @@ export const PERMISSION_GROUPS = {
   "HR — Payroll": [
     PERMISSIONS.PAYROLL_VIEW,
     PERMISSIONS.PAYROLL_PROCESS,
+    PERMISSIONS.PAYROLL_VERIFY,
     PERMISSIONS.PAYROLL_FINALIZE,
   ],
   "Patient Catalog": [PERMISSIONS.CATALOG_VIEW, PERMISSIONS.CATALOG_MANAGE],
@@ -675,7 +687,11 @@ export const SIDEBAR_MODULES = {
   // HR & Payroll
   hr: [PERMISSIONS.HR_DASHBOARD_VIEW],
   employees: [PERMISSIONS.EMPLOYEES_VIEW],
+  // "shifts" is already the ambulance fleet roster; the HR shift master is a
+  // separate module and needs its own id.
+  "work-shifts": [PERMISSIONS.SHIFTS_VIEW],
   attendance: [PERMISSIONS.ATTENDANCE_VIEW],
+  "attendance-regularization": [PERMISSIONS.ATTENDANCE_VIEW],
   leave: [PERMISSIONS.LEAVE_VIEW],
   holidays: [PERMISSIONS.HOLIDAYS_VIEW],
   payroll: [PERMISSIONS.PAYROLL_VIEW],

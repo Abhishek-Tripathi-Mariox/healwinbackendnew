@@ -296,6 +296,55 @@ adminRouter.put(
   ResponseMiddleware,
 );
 
+// Scheduling an interview and issuing an offer both move the application
+// forward and email the candidate, so they sit behind the same permission as
+// any other status change.
+adminRouter.post(
+  "/applications/:id/interview",
+  verifyAdminToken,
+  requirePermission(PERMISSIONS.APPLICATIONS_UPDATE),
+  ErrorHandlerMiddleware(ApplicationController.scheduleInterview),
+  ResponseMiddleware,
+);
+adminRouter.post(
+  "/applications/:id/offer",
+  verifyAdminToken,
+  requirePermission(PERMISSIONS.APPLICATIONS_UPDATE),
+  ErrorHandlerMiddleware(ApplicationController.issueOffer),
+  ResponseMiddleware,
+);
+// Panel evaluation after the interview (§9.3).
+adminRouter.post(
+  "/applications/:id/evaluation",
+  verifyAdminToken,
+  requirePermission(PERMISSIONS.APPLICATIONS_UPDATE),
+  ErrorHandlerMiddleware(ApplicationController.saveEvaluation),
+  ResponseMiddleware,
+);
+// Did the candidate accept? Gates the appointment letter (§9.5).
+adminRouter.post(
+  "/applications/:id/offer-response",
+  verifyAdminToken,
+  requirePermission(PERMISSIONS.APPLICATIONS_UPDATE),
+  ErrorHandlerMiddleware(ApplicationController.recordOfferResponse),
+  ResponseMiddleware,
+);
+adminRouter.post(
+  "/applications/:id/signed-offer",
+  verifyAdminToken,
+  requirePermission(PERMISSIONS.APPLICATIONS_UPDATE),
+  upload.single("file"),
+  ErrorHandlerMiddleware(ApplicationController.uploadSignedOffer),
+  ResponseMiddleware,
+);
+adminRouter.post(
+  "/applications/:id/appointment",
+  verifyAdminToken,
+  requirePermission(PERMISSIONS.APPLICATIONS_UPDATE),
+  ErrorHandlerMiddleware(ApplicationController.issueAppointment),
+  ResponseMiddleware,
+);
+
 // ============ TEAM MEMBERS ============
 adminRouter.get(
   "/team/divisions",

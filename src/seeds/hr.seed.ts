@@ -10,10 +10,23 @@ import config from "../config";
 import { Role, DEFAULT_ROLES } from "../models/role.model";
 import { Admin } from "../models/admin.model";
 import { LeaveType } from "../models/leave-type.model";
+import WorkShift from "../models/work-shift.model";
 import { Holiday } from "../models/holiday.model";
 
 const HR_EMAIL = "hr@healwin.com";
 const HR_PASSWORD = "Hr@12345";
+
+/**
+ * The shift structure named in the HRMS spec (§3). HR confirm the final
+ * department-wise timings; these are the discussed starting point.
+ * fullDay/halfDay are the shift's own paid length and half of it.
+ */
+const WORK_SHIFTS = [
+  { name: "General Shift", code: "GEN", startTime: "09:00", endTime: "17:00", breakMinutes: 30, fullDayMinutes: 450, halfDayMinutes: 225 },
+  { name: "Morning Shift", code: "MRN", startTime: "07:00", endTime: "13:00", breakMinutes: 30, fullDayMinutes: 330, halfDayMinutes: 165 },
+  { name: "Evening Shift", code: "EVE", startTime: "13:00", endTime: "19:00", breakMinutes: 30, fullDayMinutes: 330, halfDayMinutes: 165 },
+  { name: "Night Shift", code: "NGT", startTime: "19:00", endTime: "07:00", breakMinutes: 60, fullDayMinutes: 660, halfDayMinutes: 330 },
+];
 
 const LEAVE_TYPES = [
   { name: "Casual Leave", code: "CL", annualQuota: 12, isPaid: true, color: "#3b82f6" },
@@ -38,6 +51,21 @@ const seedHr = async () => {
       await hrRole.save();
       console.log("  ⏭️  HR Manager role exists (permissions synced)");
     }
+
+    // Shift master — idempotent on code, so re-running never clobbers timings
+    // HR has since adjusted.
+    for (const s of WORK_SHIFTS) {
+      const exists = await WorkShift.findOne({ code: s.code });
+      if (exists) continue;
+      await WorkShift.create({
+        ...s,
+        graceMinutes: 10,
+        overtimeAfterMinutes: 30,
+        departmentIds: [],
+        isActive: true,
+      });
+    }
+    console.log(`  ✅ Seeded ${WORK_SHIFTS.length} work shifts`);
 
     // Leave types.
     for (const lt of LEAVE_TYPES) {

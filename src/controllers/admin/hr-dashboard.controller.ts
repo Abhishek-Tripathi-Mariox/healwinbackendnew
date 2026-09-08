@@ -37,8 +37,19 @@ export const summary = async (
   ] = await Promise.all([
     HrEmployee.countDocuments({ isDeleted: false }),
     HrEmployee.countDocuments({ isDeleted: false, status: "active" }),
-    Attendance.countDocuments({ date: today, status: "leave" }),
-    Attendance.countDocuments({ date: today, status: "present" }),
+    // Scoped to hr_employee: these sit beside `headcount`, which counts only
+    // HrEmployee. Counting ambulance crew here too let "present today" exceed
+    // the headcount it is read against.
+    Attendance.countDocuments({
+      date: today,
+      status: "leave",
+      subjectType: "hr_employee",
+    }),
+    Attendance.countDocuments({
+      date: today,
+      status: "present",
+      subjectType: "hr_employee",
+    }),
     canSeeLeave ? LeaveRequest.countDocuments({ status: "pending" }) : Promise.resolve(null),
     HrEmployee.aggregate([
       { $match: { isDeleted: false } },

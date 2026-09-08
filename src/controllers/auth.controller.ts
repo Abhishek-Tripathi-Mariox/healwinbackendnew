@@ -16,7 +16,7 @@ export const login = async (
 
   const { mobileNumber } = req.body;
 
-  const otp = helpers().generateOTP(6);
+  const otp = helpers().generateOTP();
   const mobileQuery = { mobileNumber };
 
   const user = await UserService.fetchByQuery(mobileQuery);
@@ -147,7 +147,7 @@ export const resendOtp = async (
 
   const { countryCode, mobileNumber } = req.body;
 
-  const otp = helpers().generateOTP(6);
+  const otp = helpers().generateOTP();
   const user = await UserService.fetchByQuery({ countryCode, mobileNumber });
 
   const newTxnId = uuidv4();

@@ -33,6 +33,15 @@ router.get(
   ResponseMiddleware,
 );
 
+// HR signs the sheet off before it can be locked (§8).
+router.post(
+  "/runs/:id/verify",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.PAYROLL_VERIFY),
+  ErrorHandlerMiddleware(C.verify),
+  ResponseMiddleware,
+);
+
 router.post(
   "/runs/:id/finalize",
   auth.verifyAdminToken,
