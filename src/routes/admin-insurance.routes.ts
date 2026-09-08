@@ -27,4 +27,22 @@ router.get("/claims", auth.verifyAdminToken, view, ErrorHandlerMiddleware(C.list
 router.post("/claims", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.createClaim), ResponseMiddleware);
 router.post("/claims/:id/status", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.updateClaimStatus), ResponseMiddleware);
 
+// Verifying a policy is what makes it spendable, so it sits behind the
+// manage permission rather than plain view.
+router.put(
+  "/policies/:id/approval",
+  auth.verifyAdminToken,
+  manage,
+  ErrorHandlerMiddleware(C.setPolicyApproval),
+  ResponseMiddleware,
+);
+// Which policies could pay this patient's bill, with live balances.
+router.get(
+  "/patients/:patientId/payable",
+  auth.verifyAdminToken,
+  view,
+  ErrorHandlerMiddleware(C.payableForPatient),
+  ResponseMiddleware,
+);
+
 export default router;

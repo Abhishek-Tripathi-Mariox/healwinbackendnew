@@ -87,8 +87,8 @@ import labPublicRoutes from "./lab.routes";
 import adminPharmaciesRoutes from "./admin-pharmacies.routes";
 import adminPharmacyDispenseRoutes from "./admin-pharmacy-dispense.routes";
 import adminLabsRoutes from "./admin-labs.routes";
-import ivrPublicRoutes from "./ivr-public.routes";
-import adminIvrRoutes from "./admin-ivr.routes";
+import webhooksRoutes from "./webhooks.routes";
+import adminCallsRoutes from "./admin-calls.routes";
 
 // HR & Payroll
 import adminHrEmployeesRoutes from "./admin-hr-employees.routes";
@@ -136,7 +136,7 @@ router.use("/sos-public", sosPublicRoutes);
 router.use("/logo", logoPublicRoutes);
 router.use("/pharmacies", pharmacyPublicRoutes);
 router.use("/labs", labPublicRoutes);
-router.use("/ivr", ivrPublicRoutes);
+router.use("/webhooks", webhooksRoutes);
 
 // ========== Driver ==========
 router.use("/driver-auth", driverAuthRoutes);
@@ -204,7 +204,7 @@ router.use("/admin/fleet-health", adminFleetHealthRoutes);
 router.use("/admin/pharmacies", adminPharmaciesRoutes);
 router.use("/admin/pharmacy-dispense", adminPharmacyDispenseRoutes);
 router.use("/admin/labs", adminLabsRoutes);
-router.use("/admin/ivr-escalations", adminIvrRoutes);
+router.use("/admin/calls", adminCallsRoutes);
 
 // HR & Payroll (role-gated inside the routers)
 router.use("/admin/hr/employees", adminHrEmployeesRoutes);

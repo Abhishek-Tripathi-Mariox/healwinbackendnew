@@ -25,6 +25,10 @@ import { PharmacyOrder, LabBooking, Consultation } from "../models/patient-comme
 import HomePromo from "../models/home-promo.model";
 import FirstAidGuide from "../models/first-aid-guide.model";
 import { MembershipPlan, UserMembership } from "../models/membership.model";
+import {
+  getActiveMembership,
+  getMembershipConcession,
+} from "../services/membership.service";
 import { Appointment } from "../models/appointment.model";
 import { getDoctorSlots, isSlotAvailable } from "../services/doctor-slots.service";
 import DoctorSchedule from "../models/doctor-schedule.model";
@@ -44,7 +48,12 @@ import config from "../config";
 import jwt from "jsonwebtoken";
 import { Types } from "mongoose";
 import { uploadFileToAws } from "../utils/s3";
-import { InsurancePayer, PatientPolicy, InsuranceClaim } from "../models/insurance.model";
+import {
+  InsurancePayer,
+  PatientPolicy,
+  InsuranceClaim,
+  type PolicyDocumentKind,
+} from "../models/insurance.model";
 
 const router = Router();
 const { verifyUserToken } = AuthMiddleware();
@@ -131,6 +140,22 @@ router.get("/family-members", verifyUserToken, async (req, res) => {
 
 router.post("/family-members", verifyUserToken, familyUpload.single("photo"), async (req, res) => {
   const b = req.body ?? {};
+
+  // A plan that advertises "covers 4 family members" has to actually stop at
+  // four, or the number on the plan card is decoration. 0 means unlimited,
+  // and someone with no membership is not capped at all — the limit is a plan
+  // benefit, not a restriction on non-members.
+  const membership = await getActiveMembership(uid(req));
+  if (membership && membership.maxFamilyMembers > 0) {
+    const current = await PatientFamilyMember.countDocuments({ userId: uid(req) });
+    if (current >= membership.maxFamilyMembers) {
+      return res.status(400).json({
+        success: false,
+        message: `Your ${membership.planName} plan covers ${membership.maxFamilyMembers} family members. Upgrade your plan to add more.`,
+      });
+    }
+  }
+
   const photo = servedUrl(req, "family", req.file);
   const member = await PatientFamilyMember.create({
     userId: uid(req),
@@ -1003,6 +1028,7 @@ router.get("/membership/plans", async (_req, res) => {
       price: p.price,
       durationMonths: p.durationMonths,
       concessionPercent: p.concessionPercent ?? 0,
+      maxFamilyMembers: p.maxFamilyMembers ?? 0,
       bullets: p.bullets || [],
     })),
     message: "ok",
@@ -1012,31 +1038,58 @@ router.get("/membership/plans", async (_req, res) => {
 // The user's current active membership (null if none) — drives the "active
 // plan" card with real enrolment/validity + live family-member count.
 router.get("/membership", verifyUserToken, async (req, res) => {
-  const m: any = await UserMembership.findOne({ userId: uid(req), status: "active" })
-    .sort({ createdAt: -1 })
-    .lean();
+  // Resolved through the service so a lapsed plan reads as gone here and in
+  // the fare engine alike, rather than only wherever someone remembered to
+  // compare validUpto.
+  const m = await getActiveMembership(uid(req));
   if (!m) return ok(res, null);
   const familyCount = await PatientFamilyMember.countDocuments({ userId: uid(req) });
   ok(res, {
     _id: String(m._id),
+    // The app marks the current plan in the list, so it needs the id.
+    planId: String(m.planId),
     planName: m.planName,
     tier: m.tier,
     enrolledAt: m.enrolledAt,
     validUpto: m.validUpto,
+    daysRemaining: m.daysRemaining,
+    concessionPercent: m.concessionPercent,
+    maxFamilyMembers: m.maxFamilyMembers,
     familyCount,
-    status: m.status,
+    status: "active",
   });
 });
 
-// Enroll into a plan. Payment is handled separately (mock for now); this records
-// the membership with a real validity window derived from the plan duration.
+/**
+ * Enroll into a plan.
+ *
+ * Payment is NOT taken here — the gateway is still mock across the app — so
+ * the price is recorded as owed rather than paid, and the response says so.
+ * Writing `paid` for money nobody collected would make the membership report
+ * a revenue figure that does not exist.
+ *
+ * Re-enrolling while already a member EXTENDS from the current expiry rather
+ * than restarting today, so nobody loses the remainder of what they paid for.
+ */
 router.post("/membership/enroll", verifyUserToken, async (req, res) => {
   const planId = (req.body?.planId as string) || "";
-  const plan: any = await MembershipPlan.findOne({ _id: planId, isActive: true, isDeleted: { $ne: true } }).lean();
+  const plan: any = await MembershipPlan.findOne({
+    _id: planId,
+    isActive: true,
+    isDeleted: { $ne: true },
+  }).lean();
   if (!plan) return res.status(404).json({ success: false, message: "Plan not found" });
+
+  const existing = await getActiveMembership(uid(req));
   const enrolledAt = new Date();
-  const validUpto = new Date(enrolledAt);
+  // Extend from whichever is later: today, or the end of the current plan.
+  const base =
+    existing && new Date(existing.validUpto) > enrolledAt
+      ? new Date(existing.validUpto)
+      : enrolledAt;
+  const validUpto = new Date(base);
   validUpto.setMonth(validUpto.getMonth() + (plan.durationMonths || 12));
+
   // One active membership per user — supersede any prior active one.
   await UserMembership.updateMany(
     { userId: uid(req), status: "active" },
@@ -1049,9 +1102,20 @@ router.post("/membership/enroll", verifyUserToken, async (req, res) => {
     tier: plan.tier,
     enrolledAt,
     validUpto,
+    amountDue: plan.price || 0,
+    amountPaid: 0,
+    paymentStatus: "pending",
     status: "active",
   });
-  ok(res, m);
+  ok(res, {
+    ...m.toObject(),
+    concessionPercent: plan.concessionPercent || 0,
+    extendedFromExisting: !!existing,
+    message:
+      plan.price > 0
+        ? "Membership activated. Payment is collected separately — it is recorded as pending."
+        : "Membership activated.",
+  });
 });
 
 // ================== Hospital (HMS) patient portal ==================
@@ -1753,6 +1817,17 @@ router.get("/insurance", verifyUserToken, async (req, res) => {
         validFrom: p.validFrom || null,
         validTo: p.validTo || null,
         isActive: p.isActive,
+        approvalStatus: p.approvalStatus || "pending",
+        reviewNote: p.reviewNote || "",
+        // Only an approved policy can actually settle a bill.
+        usableForPayment: p.approvalStatus === "approved" && p.isActive !== false,
+        documents: (p.documents || []).map((d: any) => ({
+          _id: String(d._id),
+          kind: d.kind || "other",
+          name: d.name,
+          url: d.url,
+          mimeType: d.mimeType || "",
+        })),
         claims: pClaims.map((c) => ({
           _id: String(c._id),
           claimNumber: c.claimNumber,
@@ -1769,28 +1844,124 @@ router.get("/insurance", verifyUserToken, async (req, res) => {
 // Self-service "add my insurance" — same PatientPolicy hospital billing staff
 // create, just patient-originated. Links to (or creates) the patient's
 // HospitalPatient record the same way OPD booking does.
-router.post("/insurance", verifyUserToken, async (req, res) => {
-  const b = req.body || {};
-  const payerId = String(b.payerId || "");
-  const policyNumber = String(b.policyNumber || "").trim();
-  if (!payerId || !policyNumber) {
-    return res.status(400).json({ success: false, message: "payerId and policyNumber are required" });
-  }
-  const payer = await InsurancePayer.findOne({ _id: payerId, isActive: true, isDeleted: { $ne: true } }).lean();
-  if (!payer) return res.status(400).json({ success: false, message: "Invalid insurer selected" });
+//
+// Multipart: a photo or scan of the policy is REQUIRED. A self-reported policy
+// number with nothing behind it cannot be verified at the billing desk and
+// cannot support a claim, so the document is the point of the record rather
+// than an optional extra. Sent as `documents` (up to 3 — card front/back,
+// schedule) alongside the text fields.
+router.post(
+  "/insurance",
+  verifyUserToken,
+  // Two named fields rather than one bag, so the server can tell which is
+  // which — the policy document is required, the card is not.
+  recordsUpload.fields([
+    { name: "policyDocument", maxCount: 2 },
+    { name: "card", maxCount: 2 },
+  ]),
+  async (req, res) => {
+    const b = req.body || {};
+    const payerId = String(b.payerId || "");
+    const policyNumber = String(b.policyNumber || "").trim();
+    if (!payerId || !policyNumber) {
+      return res
+        .status(400)
+        .json({ success: false, message: "payerId and policyNumber are required" });
+    }
 
-  const hp = await ensureHospitalPatient(req);
-  const policy = await PatientPolicy.create({
-    patientId: hp._id,
-    payerId,
-    policyNumber,
-    holderName: b.holderName ? String(b.holderName).trim() : undefined,
-    sumInsured: Number(b.sumInsured) || 0,
-    validFrom: b.validFrom ? new Date(b.validFrom) : undefined,
-    validTo: b.validTo ? new Date(b.validTo) : undefined,
-  });
-  ok(res, { _id: String(policy._id) });
-});
+    // The POLICY DOCUMENT is required — it carries the number, the sum
+    // insured and the validity that billing verifies against. The CARD is
+    // optional: useful at the desk, but it does not prove the cover.
+    const grouped =
+      (req.files as Record<string, Express.Multer.File[]> | undefined) || {};
+    const policyFiles = grouped.policyDocument || [];
+    const cardFiles = grouped.card || [];
+
+    if (policyFiles.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Please attach your policy document — the schedule or policy paper " +
+          "showing the policy number, sum insured and validity. The insurance " +
+          "card on its own is not enough to verify cover.",
+        needs: "policyDocument",
+      });
+    }
+
+    const ALLOWED = ["image/jpeg", "image/png", "image/webp", "image/heic", "application/pdf"];
+    const bad = [...policyFiles, ...cardFiles].find(
+      (f) => !ALLOWED.includes(String(f.mimetype).toLowerCase()),
+    );
+    if (bad) {
+      return res.status(400).json({
+        success: false,
+        message: "Only images (JPG, PNG) or a PDF can be attached.",
+      });
+    }
+
+    const payer = await InsurancePayer.findOne({
+      _id: payerId,
+      isActive: true,
+      isDeleted: { $ne: true },
+    }).lean();
+    if (!payer) return res.status(400).json({ success: false, message: "Invalid insurer selected" });
+
+    // Uploaded before the policy is created so a failed upload doesn't leave
+    // a row claiming to have documents it never got.
+    let documents: {
+      kind: PolicyDocumentKind;
+      name: string; url: string; mimeType: string; uploadedAt: Date;
+    }[] = [];
+    try {
+      const upload = async (
+        f: Express.Multer.File,
+        kind: PolicyDocumentKind,
+        i: number,
+      ) => ({
+        kind,
+        name: f.originalname || `${kind}-${i + 1}`,
+        url: (await uploadFileToAws([f])).images as unknown as string,
+        mimeType: f.mimetype,
+        uploadedAt: new Date(),
+      });
+      documents = await Promise.all([
+        ...policyFiles.map((f, i) => upload(f, "policy", i)),
+        ...cardFiles.map((f, i) => upload(f, "card", i)),
+      ]);
+    } catch (err: any) {
+      console.error("[insurance] document upload failed:", err?.message);
+      return res.status(502).json({
+        success: false,
+        message: "Could not upload your document. Please check your connection and try again.",
+      });
+    }
+
+    const hp = await ensureHospitalPatient(req);
+    const policy = await PatientPolicy.create({
+      patientId: hp._id,
+      payerId,
+      policyNumber,
+      holderName: b.holderName ? String(b.holderName).trim() : undefined,
+      sumInsured: Number(b.sumInsured) || 0,
+      validFrom: b.validFrom ? new Date(b.validFrom) : undefined,
+      validTo: b.validTo ? new Date(b.validTo) : undefined,
+      documents,
+      source: "patient",
+      approvalStatus: "pending",
+    });
+    ok(res, {
+      _id: String(policy._id),
+      documents: policy.documents.length,
+      approvalStatus: policy.approvalStatus,
+      message:
+        "Policy submitted. Our billing team will verify it — you can use it " +
+        "for payment once it is approved." +
+        (cardFiles.length === 0
+          ? " Adding your insurance card later helps at the billing desk."
+          : ""),
+    });
+  },
+);
 
 // ================== Ambulance ==================
 // Ambulance "types" are the admin-managed VehicleTypes (Types & Pricing page).
@@ -1824,14 +1995,18 @@ const resolveVehicleType = async (type?: string) => {
 
 // Compute a real fare for a trip leg using the fare engine (distance-aware,
 // surge/GST included). Returns null if the type can't be resolved.
-const quoteFor = async (vt: any, pickup?: any, drop?: any) => {
+const quoteFor = async (vt: any, pickup?: any, drop?: any, userId?: any) => {
   const distanceKm = haversineKm(pickup, drop) ?? 0;
   const durationMin = etaMinutesFromKm(distanceKm) ?? 0;
+  // The membership concession is the plan's headline benefit, so it has to
+  // reach the quote the patient actually sees — not just the plan card.
+  const membershipConcessionPercent = await getMembershipConcession(userId);
   const breakdown = await calculateFare({
     vehicleTypeId: vt._id,
     distanceKm,
     durationMin,
     serviceType: "WITHIN_CITY",
+    membershipConcessionPercent,
   });
   return {
     distanceKm,
@@ -1861,7 +2036,7 @@ router.post("/ambulance/quotes", verifyUserToken, async (req, res) => {
       // whole list — fall back to the type's base/from price so the patient
       // always sees every ambulance option.
       try {
-        const q = await quoteFor(t, pickup, drop);
+        const q = await quoteFor(t, pickup, drop, uid(req));
         return { ...toAppType(t), amount: q.amount, distanceKm: q.distanceKm, etaMinutes: q.durationMin || null };
       } catch {
         const base = toAppType(t);
@@ -1880,7 +2055,7 @@ router.post("/ambulance/estimate", verifyUserToken, async (req, res) => {
     vt = await VehicleType.findOne({ category: "ambulance", isActive: true, isDeleted: { $ne: true } }).sort({ baseFare: 1 });
   }
   if (!vt) return res.status(404).json({ success: false, message: "No ambulance types configured" });
-  const q = await quoteFor(vt, pickup, drop);
+  const q = await quoteFor(vt, pickup, drop, uid(req));
   ok(res, {
     amount: q.amount,
     currency: "INR",
@@ -2048,7 +2223,7 @@ const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
   let distanceKm: number | undefined;
   let etaMinutes: number | undefined;
   if (vt) {
-    const q = await quoteFor(vt, b.pickup, b.drop);
+    const q = await quoteFor(vt, b.pickup, b.drop, uid(req));
     amount = q.amount;
     fareBreakdown = q.breakdown;
     distanceKm = q.distanceKm;

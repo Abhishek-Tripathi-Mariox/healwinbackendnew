@@ -14,6 +14,8 @@ export interface IMembershipPlan {
   price: number;
   durationMonths: number;
   concessionPercent?: number;
+  /** 0 = unlimited. Caps how many family members the plan covers. */
+  maxFamilyMembers?: number;
   bullets: string[];
   sortOrder: number;
   isActive: boolean;
@@ -29,6 +31,7 @@ const MembershipPlanSchema = new Schema<IMembershipPlan>(
     price: { type: Number, default: 0 },
     durationMonths: { type: Number, default: 12 },
     concessionPercent: { type: Number, default: 0 },
+    maxFamilyMembers: { type: Number, default: 0 },
     bullets: { type: [String], default: [] },
     sortOrder: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true, index: true },
@@ -47,6 +50,15 @@ export interface IUserMembership {
   tier: "silver" | "gold";
   enrolledAt: Date;
   validUpto: Date;
+  /**
+   * What the plan cost at enrolment, and what has actually been collected.
+   * The gateway is still mock, so these are almost always due-but-unpaid —
+   * recording it honestly beats a membership that silently implies revenue.
+   */
+  amountDue: number;
+  amountPaid: number;
+  paymentStatus: "pending" | "paid" | "waived";
+  paymentRef?: string;
   status: "active" | "expired" | "cancelled";
   createdAt: Date;
   updatedAt: Date;
@@ -60,6 +72,15 @@ const UserMembershipSchema = new Schema<IUserMembership>(
     tier: { type: String, enum: ["silver", "gold"], default: "silver" },
     enrolledAt: { type: Date, default: () => new Date() },
     validUpto: { type: Date, required: true },
+    amountDue: { type: Number, default: 0 },
+    amountPaid: { type: Number, default: 0 },
+    paymentStatus: {
+      type: String,
+      enum: ["pending", "paid", "waived"],
+      default: "pending",
+      index: true,
+    },
+    paymentRef: { type: String, trim: true },
     status: { type: String, enum: ["active", "expired", "cancelled"], default: "active", index: true },
   },
   { timestamps: true },

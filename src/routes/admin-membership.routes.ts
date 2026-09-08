@@ -17,4 +17,28 @@ router.put("/:id", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.updat
 router.patch("/:id/toggle", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.toggle), ResponseMiddleware);
 router.delete("/:id", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.remove), ResponseMiddleware);
 
+// Subscribers. Declared BEFORE "/:id" would match them — Express takes the
+// first matching route, and "/subscribers" would otherwise be read as a plan id.
+router.get(
+  "/subscribers/list",
+  auth.verifyAdminToken,
+  view,
+  ErrorHandlerMiddleware(C.subscribers),
+  ResponseMiddleware,
+);
+router.put(
+  "/subscribers/:id/payment",
+  auth.verifyAdminToken,
+  manage,
+  ErrorHandlerMiddleware(C.recordPayment),
+  ResponseMiddleware,
+);
+router.post(
+  "/subscribers/expire-lapsed",
+  auth.verifyAdminToken,
+  manage,
+  ErrorHandlerMiddleware(C.expireLapsed),
+  ResponseMiddleware,
+);
+
 export default router;

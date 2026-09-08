@@ -5,6 +5,7 @@ import { SOSSubmission } from "../models/sos-submission.model";
 import User from "../models/Users";
 import { emitToAdmin } from "../utils/socket.util";
 import PatientFamilyMember from "../models/patient-family-member.model";
+import { sendToUser } from "../services/notification.service";
 
 /**
  * Get emergency contacts
@@ -196,6 +197,31 @@ export const triggerSOS = async (req: Request, res: Response) => {
       .filter(Boolean)
       .join(" — ");
 
+    /**
+     * Does this go to the control room, or only to family?
+     *
+     * Default is YES — an SOS means an ambulance. A "family only" alert is a
+     * deliberate, narrower thing: tell my son I need help, without dispatching
+     * anyone. It is honoured, but nothing about it is inferred — the caller
+     * has to ask for it explicitly, and the app spells out that no ambulance
+     * will come.
+     */
+    const notifyControlRoom = req.body.notifyControlRoom !== false;
+
+    // An SOS addressed to nobody is not an SOS. Refuse it rather than
+    // returning success for an alert that reached no one.
+    if (
+      !notifyControlRoom &&
+      (!Array.isArray(req.body.notifyFamilyMemberIds) ||
+        req.body.notifyFamilyMemberIds.length === 0)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Choose at least one person to alert, or let the control room be notified.",
+      });
+    }
+
     const sosAlert = await SOSService.triggerSOS(
       "USER",
       userId,
@@ -238,6 +264,7 @@ export const triggerSOS = async (req: Request, res: Response) => {
           ? `${patient.countryCode || ""}${patient.mobileNumber}`
           : "N/A",
         address: fullAddress || address || undefined,
+        controlRoomAlerted: notifyControlRoom,
         emergencyType,
         description: description || undefined,
         status: "PENDING",
@@ -249,9 +276,78 @@ export const triggerSOS = async (req: Request, res: Response) => {
       console.error("SOS dashboard/submission step failed (non-fatal):", e?.message);
     }
 
-    // ALWAYS alert the admin in real time — even if the submission save above
-    // failed — so an SOS is never silently dropped from the dashboard alarm.
-    // Falls back to the SOSAlert id when there's no submission.
+    // ── Alert the chosen family members ──────────────────────────────────
+    //
+    // The raiser picks who else should know: nobody, one person, or everyone
+    // on the account. Reachability is recorded per person — a family member
+    // with an app account gets a push; one without has no channel we can use
+    // (the SMS gateway here is OTP-template only), and that is written down
+    // rather than silently skipped, so the control room can phone them.
+    const notifiedContacts: any[] = [];
+    const requested: string[] = Array.isArray(req.body.notifyFamilyMemberIds)
+      ? req.body.notifyFamilyMemberIds.map((x: any) => String(x))
+      : [];
+    if (userId && requested.length > 0) {
+      const validIds = requested.filter((id) => mongoose.isValidObjectId(id));
+      const members: any[] = validIds.length
+        ? await PatientFamilyMember.find({
+            _id: { $in: validIds },
+            // Scoped to the raiser's own family — otherwise anyone could
+            // blast an alert to arbitrary people by guessing ids.
+            userId,
+          })
+            .select("name phone relation linkedUserId")
+            .lean()
+        : [];
+
+      const who = subject?.name || patient?.fullName || "A family member";
+      const where = fullAddress || address || "location unavailable";
+      for (const m of members) {
+        if (m.linkedUserId) {
+          try {
+            await sendToUser(
+              m.linkedUserId,
+              "SYSTEM",
+              "🚨 Emergency SOS",
+              `${who} has raised an emergency${type ? ` (${type})` : ""}. Location: ${where}`,
+              { sosId: String(submission?._id || sosAlert._id), route: "Tracking" },
+            );
+            notifiedContacts.push({
+              familyMemberId: m._id, name: m.name, phone: m.phone,
+              relation: m.relation, channel: "push", delivered: true,
+            });
+          } catch (err: any) {
+            notifiedContacts.push({
+              familyMemberId: m._id, name: m.name, phone: m.phone,
+              relation: m.relation, channel: "push", delivered: false,
+              note: err?.message || "push failed",
+            });
+          }
+        } else {
+          notifiedContacts.push({
+            familyMemberId: m._id, name: m.name, phone: m.phone,
+            relation: m.relation, channel: "none", delivered: false,
+            note: "No app account — the control room should call this person.",
+          });
+        }
+      }
+
+      if (submission && notifiedContacts.length) {
+        await SOSSubmission.updateOne(
+          { _id: submission._id },
+          { $set: { notifiedContacts } },
+        ).catch(() => undefined);
+      }
+    }
+
+    // Alert the admin in real time — even if the submission save above failed —
+    // so an SOS is never silently dropped from the dashboard alarm. Falls back
+    // to the SOSAlert id when there's no submission.
+    //
+    // Skipped only for a family-only alert: raising the control-room alarm for
+    // something the raiser deliberately kept private would dispatch an
+    // ambulance nobody asked for.
+    if (notifyControlRoom) {
     emitToAdmin("sos:new", {
       sosId: String(submission?._id || sosAlert._id),
       emergency: true,
@@ -260,14 +356,29 @@ export const triggerSOS = async (req: Request, res: Response) => {
       lat: hasCoords ? coords.lat : undefined,
       lng: hasCoords ? coords.lng : undefined,
     });
+    }
+
+    const reached = notifiedContacts.filter((c) => c.delivered).length;
+    const unreachable = notifiedContacts.filter((c) => !c.delivered);
 
     res.status(201).json({
       success: true,
-      message: "SOS alert triggered. Help is on the way.",
+      // Say exactly what happened. "Help is on the way" is false for a
+      // family-only alert, and a patient believing an ambulance is coming when
+      // none is, is the worst possible outcome here.
+      message: notifyControlRoom
+        ? "SOS alert triggered. Help is on the way."
+        : reached > 0
+          ? `Your family has been alerted. No ambulance has been dispatched.`
+          : `Alert recorded, but nobody could be reached. Call for help directly.`,
       data: {
         sosId: sosAlert._id,
         submissionId: submission?._id,
         status: sosAlert.status,
+        controlRoomAlerted: notifyControlRoom,
+        familyAlerted: reached,
+        // Named, so the app can tell the raiser who to phone themselves.
+        unreachable: unreachable.map((c) => ({ name: c.name, phone: c.phone })),
       },
     });
   } catch (error: any) {

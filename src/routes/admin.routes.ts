@@ -280,6 +280,14 @@ adminRouter.get(
   ResponseMiddleware,
 );
 
+// Declared before "/:id" — otherwise Express matches this path as an id.
+adminRouter.get(
+  "/applications/failed-emails",
+  verifyAdminToken,
+  requirePermission(PERMISSIONS.APPLICATIONS_VIEW),
+  ErrorHandlerMiddleware(ApplicationController.failedAcknowledgements),
+  ResponseMiddleware,
+);
 adminRouter.get(
   "/applications/:id",
   verifyAdminToken,
@@ -335,6 +343,14 @@ adminRouter.post(
   requirePermission(PERMISSIONS.APPLICATIONS_UPDATE),
   upload.single("file"),
   ErrorHandlerMiddleware(ApplicationController.uploadSignedOffer),
+  ResponseMiddleware,
+);
+// Re-send an acknowledgement that failed to deliver.
+adminRouter.post(
+  "/applications/:id/resend-acknowledgement",
+  verifyAdminToken,
+  requirePermission(PERMISSIONS.APPLICATIONS_UPDATE),
+  ErrorHandlerMiddleware(ApplicationController.resendAcknowledgement),
   ResponseMiddleware,
 );
 adminRouter.post(

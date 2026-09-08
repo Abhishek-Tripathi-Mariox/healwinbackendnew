@@ -6,8 +6,11 @@ import Ambulance from "../../models/ambulance.model";
 import AmbulanceStaff from "../../models/ambulance-staff.model";
 import { sendPushNotification } from "../../services/notification.service";
 import { emitToUser } from "../../utils/socket.util";
-import IvrEscalation from "../../models/ivr-escalation.model";
-import { dialTier } from "../ivr-escalation.controller";
+import { randomUUID } from "crypto";
+import CallLog from "../../models/call-log.model";
+import { Admin } from "../../models/admin.model";
+import config from "../../config";
+import { clickToCall, isConfigured, tenDigits } from "../../services/myoperator.service";
 
 /**
  * Wraps up an SOS-linked dispatch when the admin resolves/closes the
@@ -263,12 +266,13 @@ export const getSubmissionDetails = async (req: Request, res: Response) => {
 };
 
 /**
- * One-click "Call" — places a real call to the SOS submitter (via the
- * configured IVR provider, ringing the operator/control-room number first
- * and bridging to them) and journals it as an IvrEscalation, with no manual
- * "Start Escalation" form. Reuses the submission's existing open escalation
- * (if any) instead of creating a new one on every click, so repeated Call
- * presses re-ring the same record's history rather than fragmenting it.
+ * One-click "Call" on an SOS submission.
+ *
+ * Places a MyOperator click-to-call: rings the admin who pressed the button
+ * (on the mobile number in their profile, falling back to the control room),
+ * then bridges them to the caller. The attempt is written to the call log, so
+ * duration, outcome and the recording all land against it when MyOperator's
+ * webhook reports back.
  */
 export const callSubmitter = async (req: Request, res: Response) => {
   try {
@@ -280,37 +284,75 @@ export const callSubmitter = async (req: Request, res: Response) => {
         message: "SOS submission not found",
       });
     }
-    if (!submission.phone || submission.phone === "N/A") {
+    const customerNumber = tenDigits(String(submission.phone || ""));
+    if (!customerNumber || customerNumber.length !== 10) {
       return res.status(400).json({
         success: false,
-        message: "This submission has no phone number to call",
+        message: "This submission has no valid phone number to call",
+      });
+    }
+    if (!isConfigured()) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "MyOperator is not configured — set MYOPERATOR_API_KEY, " +
+          "MYOPERATOR_COMPANY_ID and MYOPERATOR_SECRET_TOKEN in the backend .env",
       });
     }
 
-    let escalation = await IvrEscalation.findOne({
-      sosSubmission: submission._id,
-      status: { $in: ["pending", "in_progress"] },
+    const adminId = (req as any).adminId || (req as any).admin?._id;
+    let agentNumber = "";
+    if (adminId) {
+      const admin: any = await Admin.findById(adminId)
+        .select("phone mobileNumber")
+        .lean();
+      agentNumber = tenDigits(String(admin?.phone || admin?.mobileNumber || ""));
+    }
+    if (!agentNumber) agentNumber = tenDigits(String(config.ivr.operatorNumber || ""));
+    if (agentNumber.length !== 10) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "No agent number to ring — add a mobile number to your admin profile, " +
+          "or set IVR_OPERATOR_NUMBER for the control room",
+      });
+    }
+
+    const refId = randomUUID();
+    const result = await clickToCall(agentNumber, customerNumber, refId);
+
+    // Logged either way: a failed bridge is exactly what someone needs to see.
+    const call = await CallLog.create({
+      provider: result.provider,
+      providerCallId: result.callId,
+      refId,
+      direction: "click_to_call",
+      status: result.status === "placed" ? "initiated" : "failed",
+      customerNumber,
+      agentNumber,
+      placedByAdminId: adminId,
+      subjectType: "sos_submission",
+      subjectId: submission._id,
+      subjectLabel: submission.name || `SOS ${customerNumber}`,
+      notes: result.note,
+      startedAt: new Date(),
     });
 
-    if (!escalation) {
-      escalation = new IvrEscalation({
-        sosSubmission: submission._id,
-        triggerReason: "SOS call button",
-        contacts: [
-          { tier: 1, name: submission.name, phone: submission.phone, role: "SOS caller" },
-        ],
-        status: "in_progress",
-        startedByAdminId: (req as any).admin?._id,
+    if (result.status !== "placed") {
+      return res.status(400).json({
+        success: false,
+        message: result.note || "The call could not be placed",
+        data: { callId: String(call._id) },
       });
-    } else {
-      escalation.status = "in_progress";
     }
-    await dialTier(escalation, 1);
-    await escalation.save();
 
-    res.json({ success: true, data: { escalation } });
+    return res.json({
+      success: true,
+      data: { call, agentNumber },
+      message: `Ringing ${agentNumber} — you will be connected to ${customerNumber}`,
+    });
   } catch (error: any) {
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message || "Failed to place call",
     });

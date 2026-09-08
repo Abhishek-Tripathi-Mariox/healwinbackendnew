@@ -7,6 +7,30 @@ export interface ISOSSubmission {
   // Common fields
   name: string;
   phone: string;
+  /**
+   * Who the raiser chose to alert besides the control room, and whether we
+   * actually reached them.
+   *
+   * Recorded even when delivery failed: the control room needs to know that
+   * "the son was supposed to be told and we could not reach him", so someone
+   * can pick up the phone. A silent failure here is the worst outcome in an
+   * emergency.
+   */
+  /**
+   * False for a "tell my family, don't send an ambulance" alert. Such a row is
+   * a record, NOT a job waiting for the control room — without this flag it
+   * would sit in the dashboard looking like an unanswered emergency.
+   */
+  controlRoomAlerted?: boolean;
+  notifiedContacts?: {
+    familyMemberId?: Types.ObjectId;
+    name?: string;
+    phone?: string;
+    relation?: string;
+    channel: "push" | "none";
+    delivered: boolean;
+    note?: string;
+  }[];
   email?: string;
   // Location
   location?: {
@@ -48,6 +72,24 @@ const SOSSubmissionSchema = new Schema<ISOSSubmission>(
       type: String,
       required: true,
       trim: true,
+    },
+    controlRoomAlerted: { type: Boolean, default: true, index: true },
+    notifiedContacts: {
+      type: [
+        new Schema(
+          {
+            familyMemberId: { type: Schema.Types.ObjectId, ref: "PatientFamilyMember" },
+            name: String,
+            phone: String,
+            relation: String,
+            channel: { type: String, enum: ["push", "none"], default: "none" },
+            delivered: { type: Boolean, default: false },
+            note: String,
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
     },
     email: {
       type: String,

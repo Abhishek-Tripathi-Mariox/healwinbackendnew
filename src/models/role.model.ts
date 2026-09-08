@@ -274,9 +274,12 @@ export const PERMISSIONS = {
   LABS_DELETE: "labs:delete",
   LABS_APPROVE: "labs:approve",
 
-  // IVR escalation (SOS phone-tree)
-  IVR_VIEW: "ivr:view",
-  IVR_MANAGE: "ivr:manage",
+  // Telephony — call logs, recordings and click-to-call (MyOperator)
+  CALLS_VIEW: "calls:view",
+  // Placing a call spends money and rings a real person; separated from
+  // viewing so read-only staff can review recordings without dialling out.
+  CALLS_PLACE: "calls:place",
+  CALLS_MANAGE: "calls:manage",
 
   // ===== HR & Payroll =====
   HR_DASHBOARD_VIEW: "hr_dashboard:view",
@@ -594,7 +597,11 @@ export const PERMISSION_GROUPS = {
     PERMISSIONS.LABS_DELETE,
     PERMISSIONS.LABS_APPROVE,
   ],
-  "IVR Escalation": [PERMISSIONS.IVR_VIEW, PERMISSIONS.IVR_MANAGE],
+  "Calls & Recordings": [
+    PERMISSIONS.CALLS_VIEW,
+    PERMISSIONS.CALLS_PLACE,
+    PERMISSIONS.CALLS_MANAGE,
+  ],
   "HR — Dashboard": [PERMISSIONS.HR_DASHBOARD_VIEW],
   "HR — Employees": [
     PERMISSIONS.EMPLOYEES_VIEW,
@@ -683,7 +690,7 @@ export const SIDEBAR_MODULES = {
   beds: [PERMISSIONS.BEDS_VIEW],
   pharmacies: [PERMISSIONS.PHARMACIES_VIEW],
   labs: [PERMISSIONS.LABS_VIEW],
-  "ivr-escalations": [PERMISSIONS.IVR_VIEW],
+  calls: [PERMISSIONS.CALLS_VIEW],
   // HR & Payroll
   hr: [PERMISSIONS.HR_DASHBOARD_VIEW],
   employees: [PERMISSIONS.EMPLOYEES_VIEW],
@@ -839,6 +846,10 @@ export const DEFAULT_ROLES = {
       PERMISSIONS.SOS_VIEW,
       PERMISSIONS.SOS_RESPOND,
       PERMISSIONS.SOS_RESOLVE,
+      // Calls & recordings — the call centre is exactly who needs these.
+      PERMISSIONS.CALLS_VIEW,
+      PERMISSIONS.CALLS_PLACE,
+      PERMISSIONS.CALLS_MANAGE,
       // Finalize / dispatch all ambulance bookings
       PERMISSIONS.BOOKINGS_VIEW,
       PERMISSIONS.BOOKINGS_CREATE,
@@ -966,6 +977,9 @@ export const DEFAULT_ROLES = {
       PERMISSIONS.SALARY_STRUCTURE_MANAGE,
       PERMISSIONS.ATTENDANCE_VIEW,
       PERMISSIONS.ATTENDANCE_MANAGE,
+      PERMISSIONS.ATTENDANCE_APPROVE,
+      PERMISSIONS.SHIFTS_VIEW,
+      PERMISSIONS.SHIFTS_MANAGE,
       PERMISSIONS.LEAVE_VIEW,
       PERMISSIONS.LEAVE_MANAGE,
       PERMISSIONS.LEAVE_APPROVE,
@@ -973,6 +987,7 @@ export const DEFAULT_ROLES = {
       PERMISSIONS.HOLIDAYS_MANAGE,
       PERMISSIONS.PAYROLL_VIEW,
       PERMISSIONS.PAYROLL_PROCESS,
+      PERMISSIONS.PAYROLL_VERIFY,
       PERMISSIONS.PAYROLL_FINALIZE,
     ],
     isSystem: true,

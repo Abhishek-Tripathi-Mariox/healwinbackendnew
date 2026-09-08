@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { MembershipPlan, UserMembership } from "../../models/membership.model";
+import { expireLapsedMemberships } from "../../services/membership.service";
 
 /**
  * Admin CRUD for membership plans (the patient-app membership carousel source).
@@ -81,4 +82,116 @@ export const remove = async (req: Request, res: Response, next: NextFunction) =>
   req.rData = {};
   req.msg = "membership_plan_deleted";
   next();
+};
+
+/**
+ * GET /admin/membership/subscribers — who is actually enrolled.
+ *
+ * The panel could create and price plans but had no way to see a single
+ * subscriber, so nobody could answer "how many people are on Gold" or "who
+ * has not paid". Lapsed rows are swept before counting, so "active" here
+ * means genuinely current rather than merely never-checked.
+ */
+export const subscribers = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
+  const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "25"), 10)));
+
+  await expireLapsedMemberships();
+
+  const query: any = {};
+  if (req.query.status) query.status = String(req.query.status);
+  if (req.query.planId) query.planId = req.query.planId;
+  if (req.query.paymentStatus) query.paymentStatus = String(req.query.paymentStatus);
+
+  const [items, total, byStatus, revenue] = await Promise.all([
+    UserMembership.find(query)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate("userId", "fullName mobileNumber email")
+      .lean(),
+    UserMembership.countDocuments(query),
+    UserMembership.aggregate([
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]),
+    UserMembership.aggregate([
+      {
+        $group: {
+          _id: null,
+          due: { $sum: "$amountDue" },
+          collected: { $sum: "$amountPaid" },
+        },
+      },
+    ]),
+  ]);
+
+  req.rData = {
+    items,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    summary: {
+      byStatus: Object.fromEntries(byStatus.map((s: any) => [s._id, s.count])),
+      amountDue: revenue[0]?.due || 0,
+      amountCollected: revenue[0]?.collected || 0,
+    },
+  };
+  req.msg = "success";
+  return next();
+};
+
+/**
+ * PUT /admin/membership/subscribers/:id/payment — record what was collected.
+ * Payments are taken outside the app for now, so someone has to be able to
+ * mark a membership settled without a gateway callback.
+ */
+export const recordPayment = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const b = req.body || {};
+  const status = String(b.paymentStatus || "");
+  if (!["pending", "paid", "waived"].includes(status)) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "paymentStatus must be pending, paid or waived" };
+    return next();
+  }
+  const m: any = await UserMembership.findById(req.params.id as string);
+  if (!m) {
+    req.rCode = 5;
+    req.msg = "not_found";
+    req.rData = {};
+    return next();
+  }
+  m.paymentStatus = status;
+  // "paid" with no figure means the plan price was collected in full.
+  m.amountPaid =
+    status === "paid"
+      ? b.amountPaid !== undefined
+        ? Number(b.amountPaid) || 0
+        : m.amountDue
+      : status === "waived"
+        ? 0
+        : Number(b.amountPaid) || 0;
+  if (b.paymentRef) m.paymentRef = String(b.paymentRef);
+  await m.save();
+  req.rData = { item: m };
+  req.msg = "saved";
+  return next();
+};
+
+/** POST /admin/membership/expire-lapsed — run the sweep on demand. */
+export const expireLapsed = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const expired = await expireLapsedMemberships();
+  req.rData = { expired };
+  req.msg = "success";
+  return next();
 };

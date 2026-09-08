@@ -17,6 +17,10 @@ export interface FareBreakdown {
   gstPercentage: number;
   promoDiscount: number;
   coinDiscount: number;
+  /** Discount from the rider's active HealWin membership plan. */
+  membershipDiscount: number;
+  /** The plan's concession %, echoed so the app can show why. */
+  membershipConcessionPercent: number;
   totalDiscount: number;
   finalFare: number;
 }
@@ -33,6 +37,12 @@ export interface FareCalculationInput {
   tollCharges?: number;
   promoDiscount?: number;
   coinDiscount?: number;
+  /**
+   * Concession % from the rider's active membership plan. Applied to the
+   * pre-discount total, so it behaves like the "X% off ambulance" the plan
+   * card advertises rather than compounding on top of a promo.
+   */
+  membershipConcessionPercent?: number;
   stops?: number; // Number of additional stops
 }
 
@@ -139,7 +149,12 @@ export const calculateFare = async (
   // Calculate discounts
   const promoDiscount = input.promoDiscount || 0;
   const coinDiscount = input.coinDiscount || 0;
-  const totalDiscount = promoDiscount + coinDiscount;
+  // Membership concession, off the GST-inclusive total. Clamped to 0-100 so a
+  // bad plan value can never invert the fare into a payout.
+  const concession = Math.min(100, Math.max(0, input.membershipConcessionPercent || 0));
+  const membershipDiscount =
+    concession > 0 ? Math.round(((totalWithGst * concession) / 100) * 100) / 100 : 0;
+  const totalDiscount = promoDiscount + coinDiscount + membershipDiscount;
 
   // Calculate final fare
   const finalFare = Math.max(0, totalWithGst - totalDiscount);
@@ -159,6 +174,8 @@ export const calculateFare = async (
     gstPercentage,
     promoDiscount: Math.round(promoDiscount * 100) / 100,
     coinDiscount: Math.round(coinDiscount * 100) / 100,
+    membershipDiscount,
+    membershipConcessionPercent: concession,
     totalDiscount: Math.round(totalDiscount * 100) / 100,
     finalFare: Math.round(finalFare * 100) / 100,
   };

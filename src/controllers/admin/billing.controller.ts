@@ -16,6 +16,10 @@ import { notifyHospitalPatient } from "../../services/hms-notify.service";
 import { emitToAdmin } from "../../utils/socket.util";
 import { recomputeTotals, outstandingOf } from "../../services/billing-math";
 import { autoDraftClaimForInvoice } from "./insurance.controller";
+import {
+  payablePoliciesFor,
+  deductFromPolicy,
+} from "../../services/insurance-payment.service";
 
 /**
  * Doctor Panel / HMS — Billing: invoices, payments, refunds and financial reports.
@@ -273,6 +277,40 @@ export const recordPayment = async (
     req.rData = {};
     return next();
   }
+
+  // "Insurance" used to be a free-text label: any amount could be recorded
+  // against it with no policy and no cover check, and the balance simply
+  // dropped. It now has to name an APPROVED policy belonging to THIS patient
+  // with enough cover left, and it raises a real claim.
+  let insuranceClaim: any = null;
+  if (b.method === "insurance") {
+    if (!b.policyId) {
+      const options = await payablePoliciesFor(invoice.patientId);
+      req.rCode = 0;
+      req.msg = "validation_failed";
+      req.rData = {
+        hint: "Choose which policy to claim against.",
+        policies: options,
+        needsPolicy: true,
+      };
+      return next();
+    }
+    const result = await deductFromPolicy({
+      policyId: String(b.policyId),
+      patientId: invoice.patientId,
+      invoiceId: invoice._id,
+      amount,
+      adminId,
+      notes: b.reference || `Invoice ${invoice.invoiceNo}`,
+    });
+    if (!result.ok) {
+      req.rCode = 0;
+      req.msg = "validation_failed";
+      req.rData = { hint: result.reason, balance: result.balance };
+      return next();
+    }
+    insuranceClaim = result.claim;
+  }
   // Reject more than the outstanding balance. Without this a typo (5000 on a
   // 500 bill) silently produced a negative balanceDue and flipped the invoice
   // to "paid". Genuine prepayments go through /:id/advance instead.
@@ -289,7 +327,9 @@ export const recordPayment = async (
   invoice.payments.push({
     method: b.method,
     amount,
-    reference: b.reference || undefined,
+    // The claim number is the reference for an insurance payment — it is what
+    // ties the row on the bill to the claim in the insurance module.
+    reference: insuranceClaim?.claimNumber || b.reference || undefined,
     paidAt: b.paidAt ? new Date(b.paidAt) : new Date(),
     recordedByAdminId: adminId,
     isRefund: false,
@@ -323,7 +363,7 @@ export const recordPayment = async (
     fresh.payments.push({
       method: b.method,
       amount,
-      reference: b.reference || undefined,
+      reference: insuranceClaim?.claimNumber || b.reference || undefined,
       paidAt: b.paidAt ? new Date(b.paidAt) : new Date(),
       recordedByAdminId: adminId,
       isRefund: false,

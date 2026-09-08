@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { InsurancePayer, PatientPolicy, InsuranceClaim } from "../../models/insurance.model";
 import { nextSequence } from "../../models/counter.model";
 import { HospitalInvoice } from "../../models/hospital-invoice.model";
+import { payablePoliciesFor } from "../../services/insurance-payment.service";
 
 /** Recompute amountPaid / balanceDue / status from an invoice's payments. */
 const recomputeInvoice = (inv: any) => {
@@ -59,17 +60,31 @@ export const deletePayer = async (req: Request, _res: Response, next: NextFuncti
 export const listPolicies = async (req: Request, _res: Response, next: NextFunction) => {
   const query: any = {};
   if (req.query.patientId) query.patientId = req.query.patientId;
-  const items = await PatientPolicy.find(query)
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .populate("payerId", "name type")
-    .populate("patientId", "fullName patientId phone")
-    .lean();
-  req.rData = { items };
+  if (req.query.approvalStatus) query.approvalStatus = String(req.query.approvalStatus);
+
+  const [items, pendingCount] = await Promise.all([
+    PatientPolicy.find(query)
+      // Pending first: a verifier opening this page is here to clear the
+      // queue, not to browse policies that were approved last month.
+      .sort({ approvalStatus: 1, createdAt: -1 })
+      .limit(200)
+      .populate("payerId", "name type")
+      .populate("patientId", "fullName patientId phone")
+      .lean(),
+    PatientPolicy.countDocuments({ approvalStatus: "pending" }),
+  ]);
+
+  req.rData = { items, pendingCount };
   req.msg = "success";
   return next();
 };
 export const createPolicy = async (req: Request, _res: Response, next: NextFunction) => {
+  // A policy entered by billing staff has already been checked by the person
+  // typing it — the approval gate exists for patient self-registration.
+  if (req.body && !req.body.approvalStatus) {
+    req.body.approvalStatus = "approved";
+    req.body.source = "staff";
+  }
   const b = req.body || {};
   if (!b.patientId || !b.payerId || !b.policyNumber) {
     req.rCode = 0; req.msg = "validation_failed"; req.rData = { hint: "patientId, payerId, policyNumber required" };
@@ -189,8 +204,12 @@ export const updateClaimStatus = async (req: Request, _res: Response, next: Next
   claim.status = status;
 
   // On settlement, post the approved amount to the linked invoice as an
-  // "insurance" payment (once) so the patient's balance reflects the payout.
-  if (status === "settled" && !wasSettled && claim.invoiceId) {
+  // "insurance" payment so the patient's balance reflects the payout.
+  //
+  // `postedToInvoiceAt` guards the other route in: a bill paid FROM insurance
+  // creates its claim already posted, and settling that claim afterwards must
+  // not credit the invoice twice.
+  if (status === "settled" && !wasSettled && claim.invoiceId && !claim.postedToInvoiceAt) {
     const payAmount = claim.approvedAmount || claim.claimedAmount || 0;
     if (payAmount > 0) {
       const inv: any = await HospitalInvoice.findById(claim.invoiceId);
@@ -198,9 +217,93 @@ export const updateClaimStatus = async (req: Request, _res: Response, next: Next
         inv.payments.push({ method: "insurance", amount: payAmount, reference: claim.claimNumber, paidAt: new Date() });
         recomputeInvoice(inv);
         await inv.save();
+        claim.postedToInvoiceAt = new Date();
       }
     }
   }
   await claim.save();
   req.rData = { item: claim }; req.msg = "updated"; return next();
+};
+
+/**
+ * PUT /admin/insurance/policies/:id/approval  body: { approvalStatus, reviewNote? }
+ *
+ * Verifying a patient-registered policy. Only an approved policy can settle a
+ * bill, so this is the gate that makes self-registration safe: the patient can
+ * add anything, but nothing is spendable until someone has checked it against
+ * the card.
+ */
+export const setPolicyApproval = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const adminId = (req as any).adminId;
+  const status = String(req.body?.approvalStatus || "");
+  if (!["pending", "approved", "rejected"].includes(status)) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "approvalStatus must be pending, approved or rejected" };
+    return next();
+  }
+  if (status === "rejected" && !String(req.body?.reviewNote || "").trim()) {
+    // The patient sees this in the app; "rejected" with no reason is not
+    // something they can act on.
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "Give a reason when rejecting — the patient sees it." };
+    return next();
+  }
+
+  const policy: any = await PatientPolicy.findById(req.params.id as string);
+  if (!policy) {
+    req.rCode = 5;
+    req.msg = "not_found";
+    req.rData = {};
+    return next();
+  }
+
+  // Withdrawing approval from a policy that has already paid for something
+  // would leave claims standing against cover the hospital no longer accepts.
+  if (policy.approvalStatus === "approved" && status !== "approved") {
+    const claims = await InsuranceClaim.countDocuments({
+      policyId: policy._id,
+      status: { $in: ["approved", "settled"] },
+    });
+    if (claims > 0) {
+      req.rCode = 0;
+      req.msg = "validation_failed";
+      req.rData = {
+        hint: `This policy has already settled ${claims} claim(s). Reverse those first if the approval was wrong.`,
+      };
+      return next();
+    }
+  }
+
+  policy.approvalStatus = status;
+  policy.reviewNote = req.body?.reviewNote || undefined;
+  policy.approvedByAdminId = adminId;
+  policy.approvedAt = status === "approved" ? new Date() : undefined;
+  await policy.save();
+
+  req.rData = { item: policy };
+  req.msg = "saved";
+  return next();
+};
+
+/**
+ * GET /admin/insurance/patients/:patientId/payable
+ * Policies that could pay this patient's bill, each with its live balance and
+ * — where it cannot be used — the reason. Unusable ones are included so the
+ * desk can say "still awaiting approval" rather than "no insurance found".
+ */
+export const payableForPatient = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const items = await payablePoliciesFor(req.params.patientId as string);
+  req.rData = { items };
+  req.msg = "success";
+  return next();
 };

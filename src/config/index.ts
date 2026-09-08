@@ -122,26 +122,23 @@ const config = {
 
   // IVR escalation (automated SOS phone-tree). Falls back to "log" — which
   // records intended calls without dialling — when no provider is configured.
+  // Telephony — MyOperator handles both the IVR and click-to-call.
   ivr: {
-    provider: optional("IVR_PROVIDER", "log"), // "exotel" | "mcube" | "myoperator" | "log"
-    exotelSid: optional("EXOTEL_SID"),
-    exotelApiKey: optional("EXOTEL_API_KEY"),
-    exotelApiToken: optional("EXOTEL_API_TOKEN"),
-    exotelCallerId: optional("EXOTEL_CALLER_ID"),
-    exotelSubdomain: optional("EXOTEL_SUBDOMAIN", "api.exotel.com"),
-    // MCube click-to-call (bridge): dials the operator/control-room number
-    // first, and on answer connects them to the escalation contact.
-    mcubeApiUrl: optional("MCUBE_API_URL", "https://api.mcube.com/Restmcube-api/outbound-calls"),
-    mcubeApiKey: optional("MCUBE_API_KEY"),
-    // MyOperator OBD (outbound dialer) API — same bridge pattern, different
-    // provider. `callType` defaults to a peer-to-peer bridge; check the
-    // MyOperator dashboard (Manage → API integration) for the exact value
-    // your account expects if calls don't connect.
+    // MyOperator OBD (outbound dialer) API. Rings the agent first, then
+    // bridges to the customer. `callType` defaults to a peer-to-peer bridge;
+    // check the MyOperator dashboard (Manage → API integration) for the exact
+    // value your account expects if calls don't connect.
     myOperatorApiUrl: optional("MYOPERATOR_API_URL", "https://obd-api.myoperator.co/obd-api-v1"),
     myOperatorApiKey: optional("MYOPERATOR_API_KEY"), // x-api-key header
     myOperatorCompanyId: optional("MYOPERATOR_COMPANY_ID"),
     myOperatorSecretToken: optional("MYOPERATOR_SECRET_TOKEN"),
     myOperatorCallType: optional("MYOPERATOR_CALL_TYPE", "peer_to_peer"),
+    // Shared secret for the inbound webhook. The endpoint has to be public
+    // (MyOperator can't hold a session), so this is what protects it. Leave
+    // unset only in development.
+    myOperatorWebhookToken: optional("MYOPERATOR_WEBHOOK_TOKEN"),
+    // Fallback agent number when the admin placing the call has none on their
+    // profile — the control room's own line.
     operatorNumber: optional("IVR_OPERATOR_NUMBER"),
   },
 

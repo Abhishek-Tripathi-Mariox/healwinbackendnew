@@ -525,25 +525,53 @@ export const applyToCareer = async (req: Request, res: Response) => {
     appliedDate: new Date().toLocaleDateString("en-IN"),
   };
 
-  // Fire-and-forget: generate PDF then send single email (HR gets BCC)
+  // Fire-and-forget so the candidate is never left waiting on a mail server —
+  // but the OUTCOME is written back to the application. A failed send used to
+  // reach only a console log, so nobody knew a candidate had gone
+  // unacknowledged. Now it is on the record and retryable from the panel.
   (async () => {
+    let pdfBuffer: Buffer | undefined;
     try {
-      const pdfBuffer = await generateApplicationPDF(application as any);
-
-      await sendApplicationAcknowledgement({
+      pdfBuffer = await generateApplicationPDF(application as any);
+    } catch (err: any) {
+      console.error("Failed to generate application PDF:", err?.message);
+      // Not fatal — the acknowledgement still goes, just without the PDF.
+    }
+    try {
+      const result = await sendApplicationAcknowledgement({
         ...emailData,
         pdfBuffer,
         documents: documentAttachments,
-      }).catch((err) =>
-        console.error("Failed to send application email:", err),
+      });
+      await CareerApplication.updateOne(
+        { _id: application._id },
+        {
+          $set: {
+            ackEmailStatus: result?.success ? "sent" : "failed",
+            ackEmailError: result?.success ? undefined : result?.error,
+            ackEmailAt: new Date(),
+          },
+          $inc: { ackEmailAttempts: 1 },
+        },
       );
-    } catch (err) {
-      console.error("Failed to generate PDF or send email:", err);
-      // Still try sending email without PDF
-      sendApplicationAcknowledgement({
-        ...emailData,
-        documents: documentAttachments,
-      }).catch((e) => console.error("Failed to send application email:", e));
+      if (!result?.success) {
+        console.error(
+          `[careers] acknowledgement FAILED for ${application.applicationNumber}: ${result?.error}`,
+        );
+      }
+    } catch (err: any) {
+      console.error("Failed to send application email:", err?.message);
+      await CareerApplication.updateOne(
+        { _id: application._id },
+        {
+          $set: {
+            ackEmailStatus: "failed",
+            ackEmailError: err?.message || "unknown error",
+            ackEmailAt: new Date(),
+          },
+          $inc: { ackEmailAttempts: 1 },
+        },
+      ).catch(() => undefined);
     }
   })();
 

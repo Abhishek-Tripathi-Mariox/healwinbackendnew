@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { CareerApplication } from "../../models/career-application.model";
 import {
+  sendApplicationAcknowledgement,
   sendApplicationStatusUpdate,
   sendInterviewInvite,
   sendOfferLetter,
@@ -9,6 +10,7 @@ import {
 import {
   generateOfferLetterPDF,
   generateAppointmentLetterPDF,
+  generateApplicationPDF,
 } from "../../services/pdf.service";
 import { uploadBufferToAws } from "../../utils/s3";
 import config from "../../config";
@@ -661,4 +663,65 @@ export const issueAppointment = async (req: Request, res: Response) => {
     emailError: mail.success ? undefined : mail.error,
     archivedToS3: !!appointmentLetterUrl,
   };
+};
+
+/**
+ * POST /admin/applications/:id/resend-acknowledgement
+ *
+ * Re-send the acknowledgement for an application whose email failed. The
+ * application itself was never at risk — it is saved before any mail is
+ * attempted — but a candidate who was never acknowledged needs someone to be
+ * able to put that right without re-entering anything.
+ */
+export const resendAcknowledgement = async (req: Request, res: Response) => {
+  const application: any = await CareerApplication.findById(
+    req.params.id as string,
+  ).populate("careerId", "title department location");
+  if (!application) {
+    return res
+      .status(404)
+      .json({ success: false, message: "Application not found" });
+  }
+
+  let pdfBuffer: Buffer | undefined;
+  try {
+    pdfBuffer = await generateApplicationPDF(application);
+  } catch {
+    // Send without the PDF rather than not at all.
+  }
+
+  const result = await sendApplicationAcknowledgement({
+    candidateName: application.name,
+    candidateEmail: application.email,
+    candidatePhone: application.phone,
+    position: application.position || application.careerId?.title || "",
+    department: application.department || application.careerId?.department || "",
+    applicationId: String(application._id),
+    applicationNumber: application.applicationNumber || "",
+    appliedDate: new Date(application.appliedAt || application.createdAt)
+      .toLocaleDateString("en-IN"),
+    pdfBuffer,
+  });
+
+  application.ackEmailStatus = result?.success ? "sent" : "failed";
+  application.ackEmailError = result?.success ? undefined : result?.error;
+  application.ackEmailAt = new Date();
+  application.ackEmailAttempts = (application.ackEmailAttempts || 0) + 1;
+  await application.save();
+
+  res.locals.data = {
+    sent: !!result?.success,
+    error: result?.success ? undefined : result?.error,
+    attempts: application.ackEmailAttempts,
+  };
+};
+
+/** GET /admin/applications/failed-emails — everyone who was never acknowledged. */
+export const failedAcknowledgements = async (req: Request, res: Response) => {
+  const items = await CareerApplication.find({ ackEmailStatus: "failed" })
+    .select("name email applicationNumber ackEmailError ackEmailAt ackEmailAttempts appliedAt")
+    .sort({ appliedAt: -1 })
+    .limit(200)
+    .lean();
+  res.locals.data = { items, total: items.length };
 };

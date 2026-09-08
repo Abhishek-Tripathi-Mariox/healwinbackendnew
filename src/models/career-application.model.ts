@@ -136,6 +136,19 @@ export interface ICareerApplication {
   offer?: IOffer | null;
   appointment?: IAppointment | null;
 
+  /**
+   * Delivery state of the acknowledgement email.
+   *
+   * The application row is saved BEFORE any mail is attempted, so a mail
+   * outage can never lose an application. What was missing was visibility:
+   * a failed send only reached a console log, so nobody knew the candidate
+   * was never acknowledged. Recorded here so the panel can show it and retry.
+   */
+  ackEmailStatus?: "pending" | "sent" | "failed";
+  ackEmailError?: string;
+  ackEmailAt?: Date;
+  ackEmailAttempts?: number;
+
   /* ── Meta ── */
   status: ApplicationStatus;
   appliedAt: Date;
@@ -254,6 +267,16 @@ const CareerApplicationSchema = new Schema<ICareerApplication>(
     interviewHistory: { type: [InterviewSchema], default: [] },
     offer: { type: OfferSchema, default: null },
     appointment: { type: AppointmentSchema, default: null },
+
+    ackEmailStatus: {
+      type: String,
+      enum: ["pending", "sent", "failed"],
+      default: "pending",
+      index: true,
+    },
+    ackEmailError: { type: String, trim: true },
+    ackEmailAt: Date,
+    ackEmailAttempts: { type: Number, default: 0 },
 
     /* Meta */
     status: {

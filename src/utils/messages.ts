@@ -63,11 +63,7 @@ export type MessageKey =
   | "pharmacy_not_found"
   | "pharmacy_deleted"
   | "pharmacy_submitted"
-  | "escalation_started"
-  | "escalation_updated"
-  | "escalation_list"
-  | "escalation_detail"
-  | "escalation_not_found"
+  | "call_placed"
   // HR & Payroll
   | "employee_created"
   | "employee_updated"
@@ -217,11 +213,7 @@ export default function messages(lang: Lang = "en"): MessageMap {
     pharmacy_submitted: {
       en: "pharmacy listing submitted for review",
     },
-    escalation_started: { en: "IVR escalation started" },
-    escalation_updated: { en: "escalation updated" },
-    escalation_list: { en: "escalation list" },
-    escalation_detail: { en: "escalation detail" },
-    escalation_not_found: { en: "escalation not found with given id" },
+    call_placed: { en: "call placed — ringing the agent now" },
     // HR & Payroll
     employee_created: { en: "employee created successfully" },
     employee_updated: { en: "employee updated successfully" },
