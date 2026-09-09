@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { LocatorServiceType } from "../../models/locator-service-type.model";
 import { paginate } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 const slugify = (text: string) =>
   text
@@ -23,8 +24,8 @@ export const getAllLocatorServiceTypes = async (
   if (applicableTo) filter.applicableTo = applicableTo;
   if (q) {
     filter.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { description: { $regex: q, $options: "i" } },
+      { name: { $regex: escapeRegex(q), $options: "i" } },
+      { description: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
   const result = await paginate(LocatorServiceType, filter, req, {

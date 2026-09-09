@@ -3,6 +3,7 @@ import { Centre } from "../../models/centre.model";
 import { uploadFileToAws } from "../../utils/s3";
 import { paginate } from "../../utils/paginate.util";
 import { invalidateCache } from "../../middlewares/cache.middleware";
+import { escapeRegex } from "../../utils/helpers";
 
 export const getAllCentres = async (req: Request, res: Response) => {
   const { status, q, state, district, type, serviceType } = req.query as {
@@ -22,9 +23,9 @@ export const getAllCentres = async (req: Request, res: Response) => {
   if (serviceType) filter.serviceTypes = serviceType;
   if (q) {
     filter.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { address: { $regex: q, $options: "i" } },
-      { info: { $regex: q, $options: "i" } },
+      { name: { $regex: escapeRegex(q), $options: "i" } },
+      { address: { $regex: escapeRegex(q), $options: "i" } },
+      { info: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
   const result = await paginate(Centre, filter, req, { createdAt: -1 }, [

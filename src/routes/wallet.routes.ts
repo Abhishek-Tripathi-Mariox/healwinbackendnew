@@ -6,10 +6,18 @@ import * as WalletController from "../controllers/wallet.controller";
 
 const router = Router();
 
+// Top-up is a TWO-step, gateway-verified flow. The old single-shot "/add",
+// which credited any amount the client named with no payment, is gone.
 router.post(
-  "/add",
+  "/topup/start",
   AuthMiddleware().verifyUserToken,
-  ErrorHandlerMiddleware(WalletController.addToWallet),
+  ErrorHandlerMiddleware(WalletController.startWalletTopUp),
+  ResponseMiddleware
+);
+router.post(
+  "/topup/confirm",
+  AuthMiddleware().verifyUserToken,
+  ErrorHandlerMiddleware(WalletController.confirmWalletTopUp),
   ResponseMiddleware
 );
 

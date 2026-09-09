@@ -700,40 +700,70 @@ export const sendPromoNotification = async (
     query.lastActiveAt = { $lt: thirtyDaysAgo };
   }
 
-  const users = await User.find(query).select("_id fcmToken");
-
-  const fcmTokens = users
-    .filter((u) => u.fcmToken)
-    .map((u) => u.fcmToken as string);
-
-  // Save notifications for all users
-  const notifications = users.map((user) => ({
-    userId: user._id,
-    type: "PROMO",
-    title,
-    body,
-    data: promoCode ? { promoCode } : undefined,
-    isRead: false,
-  }));
-
-  await Notification.insertMany(notifications);
-
-  // Send push notifications in batches of 500
-  const batchSize = 500;
+  /**
+   * Streamed in batches.
+   *
+   * This used to load every matching user as a hydrated Mongoose document,
+   * build one array of notification objects for all of them, and hand that
+   * single array to `insertMany`. At a hundred thousand recipients that is the
+   * entire audience resident in memory three times over — documents, tokens,
+   * and pending notification rows — before a single push goes out.
+   *
+   * A cursor keeps memory flat regardless of audience size: read a batch,
+   * write its rows, push to its tokens, discard, repeat. FCM's own multicast
+   * limit is 500, so that is the natural batch size.
+   */
+  const BATCH = 500;
+  let totalUsers = 0;
   let totalSuccess = 0;
   let totalFailure = 0;
 
-  for (let i = 0; i < fcmTokens.length; i += batchSize) {
-    const batch = fcmTokens.slice(i, i + batchSize);
-    const result = await sendMulticastNotification(batch, title, body, {
-      promoCode: promoCode || "",
-    });
-    totalSuccess += result.successCount;
-    totalFailure += result.failureCount;
+  let batch: { _id: any; fcmToken?: string }[] = [];
+
+  const flush = async () => {
+    if (!batch.length) return;
+
+    await Notification.insertMany(
+      batch.map((user) => ({
+        userId: user._id,
+        type: "PROMO",
+        title,
+        body,
+        data: promoCode ? { promoCode } : undefined,
+        isRead: false,
+      })),
+      // One bad row must not discard the rest of the batch.
+      { ordered: false },
+    );
+
+    const tokens = batch
+      .map((u) => u.fcmToken)
+      .filter((t): t is string => !!t);
+    if (tokens.length) {
+      const result = await sendMulticastNotification(tokens, title, body, {
+        promoCode: promoCode || "",
+      });
+      totalSuccess += result.successCount;
+      totalFailure += result.failureCount;
+    }
+
+    totalUsers += batch.length;
+    batch = [];
+  };
+
+  const cursor = User.find(query)
+    .select("_id fcmToken")
+    .lean()
+    .cursor({ batchSize: BATCH });
+
+  for await (const user of cursor) {
+    batch.push(user as any);
+    if (batch.length >= BATCH) await flush();
   }
+  await flush();
 
   return {
-    totalUsers: users.length,
+    totalUsers,
     successCount: totalSuccess,
     failureCount: totalFailure,
   };

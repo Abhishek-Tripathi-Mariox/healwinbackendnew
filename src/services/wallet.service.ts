@@ -2,29 +2,12 @@ import Wallet from "../models/wallet.model";
 import WalletTransaction from "../models/wallet-transaction.model";
 import { Types } from "mongoose";
 
-export const addToWallet = async (
-  userId: Types.ObjectId,
-  amount: number,
-  referenceId?: string
-) => {
-  // 1️⃣ create wallet if not exists
-  const wallet = await Wallet.findOneAndUpdate(
-    { userId },
-    { $inc: { balance: amount } },
-    { returnDocument: "after", upsert: true }
-  );
-
-  // 2️⃣ store transaction
-  await WalletTransaction.create({
-    userId,
-    amount,
-    type: "CREDIT",
-    referenceId,
-    description: "Wallet Recharge",
-  });
-
-  return wallet;
-};
+/**
+ * `addToWallet` used to live here: it credited any amount with no payment and
+ * no caller checks, and was reachable from the patient app. It is gone.
+ * Crediting now happens only in wallet-topup.service — either against a
+ * verified gateway payment, or through `creditManually` for staff refunds.
+ */
 
 export const getWallet = async (userId: Types.ObjectId) => {
   const wallet = await Wallet.findOne({ userId });

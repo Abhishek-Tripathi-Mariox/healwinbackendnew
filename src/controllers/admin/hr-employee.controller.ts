@@ -23,7 +23,15 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
 
   const query: any = { isDeleted: false };
   if (req.query.status) query.status = req.query.status;
-  if (req.query.departmentId) query.departmentId = req.query.departmentId;
+  // "none" is how the caller asks for employees with no department — the
+  // headcount breakdown reports those as "Unassigned", and drilling into that
+  // row has to be able to say so. An empty value cannot carry the meaning:
+  // it is indistinguishable from "no department filter at all".
+  if (req.query.departmentId === "none") {
+    query.departmentId = null;
+  } else if (req.query.departmentId) {
+    query.departmentId = req.query.departmentId;
+  }
   if (req.query.category) query.category = String(req.query.category);
   if (search) {
     const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");

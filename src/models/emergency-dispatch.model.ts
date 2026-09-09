@@ -220,6 +220,9 @@ EmergencyDispatchSchema.index({ dispatchType: 1 });
 EmergencyDispatchSchema.index({ dispatchedBy: 1 });
 EmergencyDispatchSchema.index({ ambulanceId: 1, status: 1 });
 EmergencyDispatchSchema.index({ driverStaffId: 1, status: 1 });
+// The dispatch board lists everything, newest first — no status in the filter,
+// so `{ status, dispatchedAt }` cannot order it.
+EmergencyDispatchSchema.index({ dispatchedAt: -1 });
 EmergencyDispatchSchema.index({ patientLocation: "2dsphere" });
 
 export const EmergencyDispatch = mongoose.model<IEmergencyDispatch>(

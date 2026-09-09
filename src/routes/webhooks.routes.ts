@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as MyOperator from "../controllers/myoperator-webhook.controller";
+import * as Razorpay from "../controllers/razorpay-webhook.controller";
 
 /**
  * Public provider webhooks. Mounted at /webhooks.
@@ -12,5 +13,7 @@ const router = Router();
 
 router.get("/myoperator", MyOperator.verify);
 router.post("/myoperator", MyOperator.receive);
+
+router.post("/razorpay", Razorpay.receive);
 
 export default router;

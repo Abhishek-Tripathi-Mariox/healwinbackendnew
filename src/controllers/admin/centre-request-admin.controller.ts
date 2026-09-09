@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { CentreRequest } from "../../models/centre-request.model";
 import { Centre } from "../../models/centre.model";
 import { paginate } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 export const getAllCentreRequests = async (req: Request, res: Response) => {
   const { status, q, state, district } = req.query as {
@@ -12,13 +13,13 @@ export const getAllCentreRequests = async (req: Request, res: Response) => {
   };
   const filter: Record<string, any> = {};
   if (status && status !== "all") filter.status = status;
-  if (state) filter.state = { $regex: state, $options: "i" };
-  if (district) filter.district = { $regex: district, $options: "i" };
+  if (state) filter.state = { $regex: escapeRegex(state), $options: "i" };
+  if (district) filter.district = { $regex: escapeRegex(district), $options: "i" };
   if (q) {
     filter.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { address: { $regex: q, $options: "i" } },
-      { contactPerson: { $regex: q, $options: "i" } },
+      { name: { $regex: escapeRegex(q), $options: "i" } },
+      { address: { $regex: escapeRegex(q), $options: "i" } },
+      { contactPerson: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
   const result = await paginate(CentreRequest, filter, req, { createdAt: -1 }, [

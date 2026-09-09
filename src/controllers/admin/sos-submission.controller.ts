@@ -11,6 +11,7 @@ import CallLog from "../../models/call-log.model";
 import { Admin } from "../../models/admin.model";
 import config from "../../config";
 import { clickToCall, isConfigured, tenDigits } from "../../services/myoperator.service";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Wraps up an SOS-linked dispatch when the admin resolves/closes the
@@ -135,9 +136,9 @@ export const getAllSubmissions = async (req: Request, res: Response) => {
     if (status) query.status = status;
     if (search) {
       query.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { phone: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
+        { name: { $regex: escapeRegex(search), $options: "i" } },
+        { phone: { $regex: escapeRegex(search), $options: "i" } },
+        { email: { $regex: escapeRegex(search), $options: "i" } },
       ];
     }
     if (startDate || endDate) {
@@ -180,7 +181,8 @@ export const getAllSubmissions = async (req: Request, res: Response) => {
  */
 export const getSubmissionStats = async (req: Request, res: Response) => {
   try {
-    const [typeCounts, statusCounts, todayCounts] = await Promise.all([
+    const [typeCounts, statusCounts, todayCounts, typeStatusCounts] =
+      await Promise.all([
       SOSSubmission.aggregate([
         { $group: { _id: "$type", count: { $sum: 1 } } },
       ]),
@@ -197,7 +199,37 @@ export const getSubmissionStats = async (req: Request, res: Response) => {
         },
         { $group: { _id: "$type", count: { $sum: 1 } } },
       ]),
+      // Status counts broken down BY TYPE.
+      //
+      // `byStatus` above counts every submission regardless of type, but the
+      // list on screen is always scoped to one tab. Without this split, the
+      // dashboard's "Pending 3" card could open a list showing 1, because the
+      // other two pending were forms rather than calls.
+      SOSSubmission.aggregate([
+        { $group: { _id: { type: "$type", status: "$status" }, count: { $sum: 1 } } },
+      ]),
     ]);
+
+    const TYPES = ["CALL", "FORM", "APP_DOWNLOAD"] as const;
+    const STATUSES = ["PENDING", "IN_PROGRESS", "RESOLVED", "CLOSED"] as const;
+    const byTypeStatus = Object.fromEntries(
+      TYPES.map((type) => [
+        type,
+        {
+          ...Object.fromEntries(
+            STATUSES.map((status) => [
+              status,
+              typeStatusCounts.find(
+                (r: any) => r._id?.type === type && r._id?.status === status,
+              )?.count || 0,
+            ]),
+          ),
+          total: typeStatusCounts
+            .filter((r: any) => r._id?.type === type)
+            .reduce((sum: number, r: any) => sum + r.count, 0),
+        },
+      ]),
+    );
 
     const stats = {
       byType: {
@@ -220,6 +252,7 @@ export const getSubmissionStats = async (req: Request, res: Response) => {
         APP_DOWNLOAD:
           todayCounts.find((t: any) => t._id === "APP_DOWNLOAD")?.count || 0,
       },
+      byTypeStatus,
       total: typeCounts.reduce((sum: number, t: any) => sum + t.count, 0) || 0,
     };
 

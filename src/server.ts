@@ -88,7 +88,20 @@ app.use(requestLogger()); // Request logging
 /**
  * Body parser
  */
-app.use(express.json({ limit: "10mb" }));
+app.use(
+  express.json({
+    limit: "10mb",
+    // Provider webhooks are signed over the exact bytes sent, so the raw body
+    // has to be kept before parsing — re-serialising the parsed object does
+    // not reproduce it. Only kept for webhook paths.
+    verify: (req: any, _res, buf) => {
+      const url: string = req.originalUrl || req.url || "";
+      if (url.includes("/webhooks/") || url.includes("/payments/webhook")) {
+        req.rawBody = buf.toString("utf8");
+      }
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(express.text({ limit: "1mb" })); // For sendBeacon text/plain payloads
 

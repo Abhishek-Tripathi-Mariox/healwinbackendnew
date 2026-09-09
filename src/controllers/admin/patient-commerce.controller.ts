@@ -7,6 +7,7 @@ import {
 import { slotToDate, slotLabelFor } from "../../utils/slots.util";
 import { sendToUser } from "../../services/notification.service";
 import { uploadMultipleFilesToAws } from "../../utils/s3";
+import { paginate } from "../../utils/paginate.util";
 
 // Friendly patient-facing message for each status, per order kind.
 const STATUS_MSG: Record<string, Record<string, { title: string; body: string }>> = {
@@ -201,6 +202,17 @@ const statusFilter = (req: Request): any => {
 };
 
 // ----- Consultations -----
+/**
+ * These three listings used to return the ENTIRE collection — no skip, no
+ * limit — and the admin screen then sliced it in the browser to show 20 rows.
+ * That works while there are a few hundred records and collapses well before
+ * a hundred thousand: the server holds every document in memory, serialises
+ * all of it, and the browser parses the lot to display one page of it.
+ *
+ * They are paginated server-side now. `items` is still the array the screen
+ * reads, so the response stays backwards compatible; `pagination` is added
+ * alongside it.
+ */
 export const listConsultations = async (req: Request, _res: Response, next: NextFunction) => {
   const query = statusFilter(req);
   // A doctor logging in should only see consultations booked with them —
@@ -209,11 +221,14 @@ export const listConsultations = async (req: Request, _res: Response, next: Next
   if (req.admin?.roleName === "Doctor") {
     query.doctorId = req.adminId;
   }
-  const items = await Consultation.find(query)
-    .populate("userId", USER_FIELDS)
-    .sort({ createdAt: -1 })
-    .lean();
-  req.rData = { items };
+  const { items, pagination } = await paginate(
+    Consultation,
+    query,
+    req,
+    { createdAt: -1 },
+    [{ path: "userId", select: USER_FIELDS }],
+  );
+  req.rData = { items, pagination };
   req.msg = "success";
   return next();
 };
@@ -240,11 +255,14 @@ export const updateConsultationStatus = async (req: Request, _res: Response, nex
 
 // ----- Lab bookings -----
 export const listLabBookings = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = await LabBooking.find(statusFilter(req))
-    .populate("userId", USER_FIELDS)
-    .sort({ createdAt: -1 })
-    .lean();
-  req.rData = { items };
+  const { items, pagination } = await paginate(
+    LabBooking,
+    statusFilter(req),
+    req,
+    { createdAt: -1 },
+    [{ path: "userId", select: USER_FIELDS }],
+  );
+  req.rData = { items, pagination };
   req.msg = "success";
   return next();
 };
@@ -270,11 +288,14 @@ export const updateLabBookingStatus = async (req: Request, _res: Response, next:
 
 // ----- Pharmacy orders -----
 export const listPharmacyOrders = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = await PharmacyOrder.find(statusFilter(req))
-    .populate("userId", USER_FIELDS)
-    .sort({ createdAt: -1 })
-    .lean();
-  req.rData = { items };
+  const { items, pagination } = await paginate(
+    PharmacyOrder,
+    statusFilter(req),
+    req,
+    { createdAt: -1 },
+    [{ path: "userId", select: USER_FIELDS }],
+  );
+  req.rData = { items, pagination };
   req.msg = "success";
   return next();
 };

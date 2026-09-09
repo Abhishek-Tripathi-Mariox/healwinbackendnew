@@ -6,6 +6,7 @@ import Ambulance from "../../models/ambulance.model";
 import InventoryItem from "../../models/inventory-item.model";
 import StockTransaction from "../../models/stock-transaction.model";
 import { getNearbyAmbulances } from "../../services/ambulance-dispatch.service";
+import { paginate } from "../../utils/paginate.util";
 import { emitToUser } from "../../utils/socket.util";
 import { sendToUser, sendDispatchPush } from "../../services/notification.service";
 import { mintOtp } from "../../services/ambulance-dispatch.service";
@@ -27,13 +28,23 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
   const query: any = { emergency: { $ne: true } };
   if (req.query.status) query.status = req.query.status;
   else query.status = { $in: ACTIVE }; // default: open requests
-  const items = await AmbulanceRequest.find(query)
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .populate("userId", "fullName mobileNumber")
-    .populate("hospitalPatientId", "patientId fullName phone")
-    .lean();
-  req.rData = { items };
+
+  // This was a bare `.limit(200)`. That is not pagination — it is a silent
+  // truncation: past 200 requests the rest simply stop existing as far as the
+  // queue is concerned, with nothing on screen to say so. Paged properly, with
+  // a total, so the operator can see there is more and reach it.
+  const { items, pagination } = await paginate(
+    AmbulanceRequest,
+    query,
+    req,
+    { createdAt: -1 },
+    [
+      { path: "userId", select: "fullName mobileNumber" },
+      { path: "hospitalPatientId", select: "patientId fullName phone" },
+    ],
+    { defaultLimit: 50 },
+  );
+  req.rData = { items, pagination };
   req.msg = "success";
   return next();
 };

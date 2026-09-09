@@ -231,6 +231,10 @@ const HrEmployeeSchema = new Schema<IHrEmployee>(
 );
 
 HrEmployeeSchema.index({ fullName: "text", employeeCode: "text", email: "text" });
+// Every employee listing filters `isDeleted: false` and sorts newest-first.
+HrEmployeeSchema.index({ isDeleted: 1, createdAt: -1 });
+HrEmployeeSchema.index({ isDeleted: 1, status: 1, createdAt: -1 });
+HrEmployeeSchema.index({ isDeleted: 1, departmentId: 1 });
 
 export const HrEmployee = mongoose.model<IHrEmployee>(
   "HrEmployee",

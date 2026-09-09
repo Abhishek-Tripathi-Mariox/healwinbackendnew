@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { Types } from "mongoose";
 import Centre from "../../models/centre.model";
 import AmbulanceStaff from "../../models/ambulance-staff.model";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Hospital management — admin-facing surface for Centre rows that serve
@@ -36,8 +37,8 @@ export const listHospitals = async (
   if (type) filter.type = type;
   if (search) {
     filter.$or = [
-      { name: { $regex: search, $options: "i" } },
-      { address: { $regex: search, $options: "i" } },
+      { name: { $regex: escapeRegex(search), $options: "i" } },
+      { address: { $regex: escapeRegex(search), $options: "i" } },
     ];
   }
 
@@ -122,8 +123,8 @@ export const listHospitalStaff = async (
   if (isActive !== undefined) filter.isActive = isActive === "true";
   if (search) {
     filter.$or = [
-      { fullName: { $regex: search, $options: "i" } },
-      { mobileNumber: { $regex: search, $options: "i" } },
+      { fullName: { $regex: escapeRegex(search), $options: "i" } },
+      { mobileNumber: { $regex: escapeRegex(search), $options: "i" } },
     ];
   }
   const items = await AmbulanceStaff.find(filter)

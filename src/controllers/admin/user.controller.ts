@@ -6,6 +6,7 @@ import { CoinWallet } from "../../models/coin.model";
 import UserAddress from "../../models/UserAddress";
 import WalletTransaction from "../../models/wallet-transaction.model";
 import { EmergencyContact } from "../../models/sos.model";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Get all users with filters
@@ -52,10 +53,10 @@ export const getAllUsers = async (req: Request, res: Response) => {
 
   if (search) {
     query.$or = [
-      { fullName: { $regex: search, $options: "i" } },
-      { mobileNumber: { $regex: search, $options: "i" } },
-      { email: { $regex: search, $options: "i" } },
-      { referralCode: { $regex: search, $options: "i" } },
+      { fullName: { $regex: escapeRegex(search), $options: "i" } },
+      { mobileNumber: { $regex: escapeRegex(search), $options: "i" } },
+      { email: { $regex: escapeRegex(search), $options: "i" } },
+      { referralCode: { $regex: escapeRegex(search), $options: "i" } },
     ];
   }
 

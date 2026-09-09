@@ -167,6 +167,8 @@ const HospitalInvoiceSchema = new Schema<IHospitalInvoice>(
 
 HospitalInvoiceSchema.index({ createdAt: -1 });
 HospitalInvoiceSchema.index({ status: 1, createdAt: -1 });
+// A patient's billing history — the most-opened view on this collection.
+HospitalInvoiceSchema.index({ patientId: 1, createdAt: -1 });
 
 export const HospitalInvoice = mongoose.model<IHospitalInvoice>(
   "HospitalInvoice",

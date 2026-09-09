@@ -3,6 +3,7 @@ import Booking from "../../models/booking.model";
 import User from "../../models/Users";
 import Driver from "../../models/driver.model";
 import { Types } from "mongoose";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Get all bookings with filters
@@ -33,9 +34,9 @@ export const getAllBookings = async (req: Request, res: Response) => {
 
   if (search) {
     query.$or = [
-      { bookingNumber: { $regex: search, $options: "i" } },
-      { "pickup.address": { $regex: search, $options: "i" } },
-      { "drop.address": { $regex: search, $options: "i" } },
+      { bookingNumber: { $regex: escapeRegex(search), $options: "i" } },
+      { "pickup.address": { $regex: escapeRegex(search), $options: "i" } },
+      { "drop.address": { $regex: escapeRegex(search), $options: "i" } },
     ];
   }
 

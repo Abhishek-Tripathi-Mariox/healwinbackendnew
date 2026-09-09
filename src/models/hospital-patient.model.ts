@@ -50,6 +50,8 @@ export interface IHospitalPatient {
   age?: number;
   bloodGroup?: string; // A+, A-, B+, B-, AB+, AB-, O+, O-, unknown
   phone: string;
+  /** Last 10 digits of `phone` — see the schema note. */
+  phoneKey?: string;
   email?: string;
   address?: IPatientAddress;
   photo?: string; // patient photograph URL
@@ -115,6 +117,16 @@ const HospitalPatientSchema = new Schema<IHospitalPatient>(
       default: "unknown",
     },
     phone: { type: String, required: true, trim: true, index: true },
+    /**
+     * Last 10 digits of `phone`, kept in step by the hooks below.
+     *
+     * The patient app links to hospital records by matching the tail of the
+     * mobile, which was done with a suffix regex (`/9876500011$/`). An index
+     * can match a PREFIX, never a suffix, so that lookup scanned every patient
+     * — on a path the portal hits constantly. Storing the normalised key turns
+     * it into an indexed equality match.
+     */
+    phoneKey: { type: String, trim: true },
     email: { type: String, trim: true, lowercase: true },
     address: {
       line1: { type: String, trim: true },
@@ -160,6 +172,53 @@ const HospitalPatientSchema = new Schema<IHospitalPatient>(
 
 // Free-text search across the registration desk's primary lookup fields.
 HospitalPatientSchema.index({ fullName: "text", patientId: "text", phone: "text" });
+// A text index cannot order a listing. The registry lists live patients
+// newest-first, and duplicate detection groups by phone.
+HospitalPatientSchema.index({ isDeleted: 1, createdAt: -1 });
+HospitalPatientSchema.index({ isDeleted: 1, phone: 1 });
+HospitalPatientSchema.index({ phoneKey: 1, isDeleted: 1 });
+
+/** Last ten digits — the one definition both hooks and lookups use. */
+export const toPhoneKey = (phone?: string): string =>
+  String(phone || "").replace(/\D/g, "").slice(-10);
+
+/**
+ * Keep `phoneKey` in step with `phone` on every write path.
+ *
+ * Both hooks are needed: `save` covers documents created or edited in memory,
+ * and the update hook covers `findOneAndUpdate`/`updateOne`, which never run
+ * document middleware. Missing either one leaves records the patient portal
+ * cannot find — a silent failure, since the lookup simply returns nothing.
+ */
+HospitalPatientSchema.pre("save", function (this: any) {
+  if (this.isModified("phone") || !this.get("phoneKey")) {
+    this.set("phoneKey", toPhoneKey(this.get("phone")));
+  }
+});
+
+HospitalPatientSchema.pre(
+  ["findOneAndUpdate", "updateOne", "updateMany"] as any,
+  // Declared without a `next` callback on purpose: registered against several
+  // hook names at once, mongoose invokes this with no arguments, so calling
+  // `next()` threw on every update. Returning is the supported form.
+  function (this: any) {
+    const update = this.getUpdate() || {};
+    const phone =
+      update.phone ?? update.$set?.phone ?? update.$setOnInsert?.phone;
+    if (phone === undefined) return;
+    const phoneKey = toPhoneKey(phone);
+    // Mongoose rejects an update that mixes bare fields with operators, so the
+    // key has to go in whichever form the caller already used.
+    if (update.phone !== undefined && !update.$set) {
+      this.setUpdate({ ...update, phoneKey });
+    } else {
+      this.setUpdate({
+        ...update,
+        $set: { ...(update.$set || {}), phoneKey },
+      });
+    }
+  },
+);
 
 export const HospitalPatient = mongoose.model<IHospitalPatient>(
   "HospitalPatient",

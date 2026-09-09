@@ -4,6 +4,7 @@ import { invalidateCache } from "../../middlewares/cache.middleware";
 import { State } from "../../models/state.model";
 import { uploadFileToAws } from "../../utils/s3";
 import { paginate } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 export const getDivisions = async (_req: Request, res: Response) => {
   const divisions = await TeamMember.distinct("division");
@@ -33,10 +34,10 @@ export const getAllMembers = async (req: Request, res: Response) => {
 
   if (q) {
     filter.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { designation: { $regex: q, $options: "i" } },
-      { division: { $regex: q, $options: "i" } },
-      { department: { $regex: q, $options: "i" } },
+      { name: { $regex: escapeRegex(q), $options: "i" } },
+      { designation: { $regex: escapeRegex(q), $options: "i" } },
+      { division: { $regex: escapeRegex(q), $options: "i" } },
+      { department: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 

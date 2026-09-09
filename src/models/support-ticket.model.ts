@@ -158,6 +158,11 @@ SupportTicketSchema.index({ userId: 1, status: 1, createdAt: -1 });
 SupportTicketSchema.index({ driverId: 1, status: 1, createdAt: -1 });
 SupportTicketSchema.index({ staffId: 1, status: 1, createdAt: -1 });
 SupportTicketSchema.index({ status: 1, priority: 1, createdAt: -1 });
+// Filtering by status alone still sorted in memory: `priority` sits between
+// `status` and `createdAt`, so the index does not order by createdAt within a
+// status.
+SupportTicketSchema.index({ status: 1, createdAt: -1 });
+SupportTicketSchema.index({ createdAt: -1 });
 SupportMessageSchema.index({ ticketId: 1, createdAt: 1 });
 
 export const SupportTicket = mongoose.model<ISupportTicket>(

@@ -274,6 +274,10 @@ export const PERMISSIONS = {
   LABS_DELETE: "labs:delete",
   LABS_APPROVE: "labs:approve",
 
+  // Payment gateway credentials
+  PAYMENT_CONFIG_VIEW: "payment_config:view",
+  PAYMENT_CONFIG_MANAGE: "payment_config:manage",
+
   // Telephony — call logs, recordings and click-to-call (MyOperator)
   CALLS_VIEW: "calls:view",
   // Placing a call spends money and rings a real person; separated from
@@ -597,6 +601,10 @@ export const PERMISSION_GROUPS = {
     PERMISSIONS.LABS_DELETE,
     PERMISSIONS.LABS_APPROVE,
   ],
+  "Payment Configuration": [
+    PERMISSIONS.PAYMENT_CONFIG_VIEW,
+    PERMISSIONS.PAYMENT_CONFIG_MANAGE,
+  ],
   "Calls & Recordings": [
     PERMISSIONS.CALLS_VIEW,
     PERMISSIONS.CALLS_PLACE,
@@ -691,6 +699,7 @@ export const SIDEBAR_MODULES = {
   pharmacies: [PERMISSIONS.PHARMACIES_VIEW],
   labs: [PERMISSIONS.LABS_VIEW],
   calls: [PERMISSIONS.CALLS_VIEW],
+  "payment-config": [PERMISSIONS.PAYMENT_CONFIG_VIEW],
   // HR & Payroll
   hr: [PERMISSIONS.HR_DASHBOARD_VIEW],
   employees: [PERMISSIONS.EMPLOYEES_VIEW],

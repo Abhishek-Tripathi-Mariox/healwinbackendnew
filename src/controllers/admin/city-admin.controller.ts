@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { City } from "../../models/city.model";
+import { escapeRegex } from "../../utils/helpers";
 
 export const getAllCities = async (req: Request, res: Response) => {
   const { status, q, state } = req.query as {
@@ -12,7 +13,7 @@ export const getAllCities = async (req: Request, res: Response) => {
   if (status === "inactive") filter.isActive = false;
   if (state) filter.state = state;
   if (q) {
-    filter.$or = [{ name: { $regex: q, $options: "i" } }];
+    filter.$or = [{ name: { $regex: escapeRegex(q), $options: "i" } }];
   }
   const cities = await City.find(filter)
     .populate("state", "name code")

@@ -12,6 +12,9 @@ const ErrorHandlerMiddleware =
         return res.json({
           success: true,
           data: res.locals.data,
+          // Optional; carries things like "this export was truncated", which
+          // the caller must be told about rather than left to assume.
+          ...(res.locals.meta !== undefined ? { meta: res.locals.meta } : {}),
         });
       }
     } catch (ex: any) {

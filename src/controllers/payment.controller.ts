@@ -258,7 +258,11 @@ export const handleWebhook = async (req: Request, res: Response) => {
       });
     }
 
-    const result = await PaymentService.handleWebhook(req.body, signature);
+    const result = await PaymentService.handleWebhook(
+      req.body,
+      signature,
+      (req as any).rawBody,
+    );
 
     if (!result.success) {
       return res.status(400).json({

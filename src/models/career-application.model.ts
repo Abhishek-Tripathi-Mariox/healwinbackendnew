@@ -302,6 +302,11 @@ const CareerApplicationSchema = new Schema<ICareerApplication>(
 
 CareerApplicationSchema.index({ careerId: 1, appliedAt: -1 });
 CareerApplicationSchema.index({ email: 1 });
+// The applications screen lists across all jobs, newest first, often narrowed
+// by status — neither is served by `{ careerId, appliedAt }`.
+CareerApplicationSchema.index({ appliedAt: -1 });
+CareerApplicationSchema.index({ status: 1, appliedAt: -1 });
+CareerApplicationSchema.index({ createdAt: -1 });
 // Note: applicationNumber already has unique: true which creates an index — no need for separate .index()
 
 const APPLICATION_NUMBER_START = 10001;

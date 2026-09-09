@@ -89,6 +89,7 @@ import adminPharmacyDispenseRoutes from "./admin-pharmacy-dispense.routes";
 import adminLabsRoutes from "./admin-labs.routes";
 import webhooksRoutes from "./webhooks.routes";
 import adminCallsRoutes from "./admin-calls.routes";
+import adminPaymentSettingsRoutes from "./admin-payment-settings.routes";
 
 // HR & Payroll
 import adminHrEmployeesRoutes from "./admin-hr-employees.routes";
@@ -205,6 +206,7 @@ router.use("/admin/pharmacies", adminPharmaciesRoutes);
 router.use("/admin/pharmacy-dispense", adminPharmacyDispenseRoutes);
 router.use("/admin/labs", adminLabsRoutes);
 router.use("/admin/calls", adminCallsRoutes);
+router.use("/admin/payment-settings", adminPaymentSettingsRoutes);
 
 // HR & Payroll (role-gated inside the routers)
 router.use("/admin/hr/employees", adminHrEmployeesRoutes);

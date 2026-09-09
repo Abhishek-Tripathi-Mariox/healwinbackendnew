@@ -3,14 +3,15 @@ import { CmsPage } from "../../models/cms-page.model";
 import { uploadFileToAws } from "../../utils/s3";
 import { paginate } from "../../utils/paginate.util";
 import { invalidateCache } from "../../middlewares/cache.middleware";
+import { escapeRegex } from "../../utils/helpers";
 
 export const getAllCmsPages = async (req: Request, res: Response) => {
   const { q } = req.query as { q?: string };
   const filter: Record<string, any> = {};
   if (q) {
     filter.$or = [
-      { title: { $regex: q, $options: "i" } },
-      { slug: { $regex: q, $options: "i" } },
+      { title: { $regex: escapeRegex(q), $options: "i" } },
+      { slug: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
   const result = await paginate(CmsPage, filter, req, { createdAt: -1 }, [

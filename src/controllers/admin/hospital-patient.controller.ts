@@ -296,37 +296,80 @@ const normPhone = (p?: string) => String(p || "").replace(/\D/g, "").slice(-10);
  * Never merges automatically — this only surfaces candidates for a human
  * to review and confirm via mergePatients.
  */
-export const findDuplicates = async (req: Request, _res: Response, next: NextFunction) => {
-  const patients = await HospitalPatient.find({ isDeleted: false })
-    .select("patientId fullName phone gender dateOfBirth createdAt")
-    .lean();
+/** Strip the separators that appear in real phone data, in-database. */
+const digitsOnlyExpr = (field: string) =>
+  [" ", "+", "-", "(", ")", ".", "\u00a0"].reduce(
+    (input: any, ch) => ({ $replaceAll: { input, find: ch, replacement: "" } }),
+    { $ifNull: [field, ""] },
+  );
 
-  const byPhone = new Map<string, any[]>();
-  const byNameDob = new Map<string, any[]>();
-  for (const p of patients) {
-    const phoneKey = normPhone((p as any).phone);
-    if (phoneKey.length === 10) {
-      if (!byPhone.has(phoneKey)) byPhone.set(phoneKey, []);
-      byPhone.get(phoneKey)!.push(p);
-    }
-    if ((p as any).dateOfBirth) {
-      const nameKey = `${String((p as any).fullName || "").trim().toLowerCase()}|${new Date((p as any).dateOfBirth).toISOString().slice(0, 10)}`;
-      if (!byNameDob.has(nameKey)) byNameDob.set(nameKey, []);
-      byNameDob.get(nameKey)!.push(p);
-    }
-  }
+/** Last ten digits — the same key `normPhone` produces in JS. */
+const phoneKeyExpr = (() => {
+  const d = digitsOnlyExpr("$phone");
+  return {
+    $substrCP: [d, { $max: [0, { $subtract: [{ $strLenCP: d }, 10] }] }, 10],
+  };
+})();
+
+const DUP_FIELDS = {
+  _id: 1,
+  patientId: 1,
+  fullName: 1,
+  phone: 1,
+  gender: 1,
+  dateOfBirth: 1,
+  createdAt: 1,
+} as const;
+
+export const findDuplicates = async (req: Request, _res: Response, next: NextFunction) => {
+  /**
+   * Grouping happens in the database.
+   *
+   * This used to read every non-deleted patient into the API process and build
+   * two Maps over them. At a hundred thousand patients that is the whole
+   * collection in memory on every click of one admin button — while the answer
+   * is only ever the handful of records that actually collide. `$group` does
+   * the same work next to the data and returns just the collisions.
+   */
+  const [phoneGroups, nameDobGroups] = await Promise.all([
+    HospitalPatient.aggregate([
+      { $match: { isDeleted: false } },
+      { $project: { ...DUP_FIELDS, key: phoneKeyExpr } },
+      // Only real 10-digit numbers group; a short or junk value is not evidence
+      // of anything, and grouping on "" would collide every such record.
+      { $match: { $expr: { $regexMatch: { input: "$key", regex: /^[0-9]{10}$/ } } } },
+      { $group: { _id: "$key", patients: { $push: "$$ROOT" }, n: { $sum: 1 } } },
+      { $match: { n: { $gte: 2 } } },
+    ]),
+    HospitalPatient.aggregate([
+      { $match: { isDeleted: false, dateOfBirth: { $ne: null } } },
+      {
+        $project: {
+          ...DUP_FIELDS,
+          key: {
+            $concat: [
+              { $toLower: { $trim: { input: { $ifNull: ["$fullName", ""] } } } },
+              "|",
+              { $dateToString: { date: "$dateOfBirth", format: "%Y-%m-%d" } },
+            ],
+          },
+        },
+      },
+      { $group: { _id: "$key", patients: { $push: "$$ROOT" }, n: { $sum: 1 } } },
+      { $match: { n: { $gte: 2 } } },
+    ]),
+  ]);
 
   const groups: { reason: "phone" | "name_dob"; patients: any[] }[] = [];
   const seenViaPhone = new Set<string>();
-  for (const group of byPhone.values()) {
-    if (group.length < 2) continue;
-    groups.push({ reason: "phone", patients: group });
-    group.forEach((p: any) => seenViaPhone.add(String(p._id)));
+  for (const g of phoneGroups) {
+    groups.push({ reason: "phone", patients: g.patients });
+    g.patients.forEach((p: any) => seenViaPhone.add(String(p._id)));
   }
-  for (const group of byNameDob.values()) {
-    if (group.length < 2) continue;
-    if (group.every((p: any) => seenViaPhone.has(String(p._id)))) continue; // already reported via phone
-    groups.push({ reason: "name_dob", patients: group });
+  for (const g of nameDobGroups) {
+    // Already reported as a phone collision — don't list the same people twice.
+    if (g.patients.every((p: any) => seenViaPhone.has(String(p._id)))) continue;
+    groups.push({ reason: "name_dob", patients: g.patients });
   }
 
   // Record counts so an admin can judge which side of a merge has the

@@ -4,6 +4,7 @@ import DriverKYC from "../../models/driver-kyc.model";
 import DriverVehicle from "../../models/driver-vehicle.model";
 import Booking from "../../models/booking.model";
 import VehicleType from "../../models/vehicle-type.model";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Get all drivers with filters
@@ -32,9 +33,9 @@ export const getAllDrivers = async (req: Request, res: Response) => {
 
   if (search) {
     query.$or = [
-      { fullName: { $regex: search, $options: "i" } },
-      { mobileNumber: { $regex: search, $options: "i" } },
-      { email: { $regex: search, $options: "i" } },
+      { fullName: { $regex: escapeRegex(search), $options: "i" } },
+      { mobileNumber: { $regex: escapeRegex(search), $options: "i" } },
+      { email: { $regex: escapeRegex(search), $options: "i" } },
     ];
   }
 

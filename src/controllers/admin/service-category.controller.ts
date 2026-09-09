@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { ServiceCategory } from "../../models/service-category.model";
 import { paginate } from "../../utils/paginate.util";
 import { invalidateCache } from "../../middlewares/cache.middleware";
+import { escapeRegex } from "../../utils/helpers";
 
 const slugify = (text: string) =>
   text
@@ -18,8 +19,8 @@ export const getAllCategories = async (req: Request, res: Response) => {
 
   if (q) {
     filter.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { description: { $regex: q, $options: "i" } },
+      { name: { $regex: escapeRegex(q), $options: "i" } },
+      { description: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 

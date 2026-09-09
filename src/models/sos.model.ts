@@ -164,6 +164,9 @@ const SOSAlertSchema = new Schema<ISOSAlert>(
 EmergencyContactSchema.index({ userId: 1, isActive: 1 });
 SOSAlertSchema.index({ location: "2dsphere" });
 SOSAlertSchema.index({ status: 1, createdAt: -1 });
+// The alerts history lists everything, newest first.
+SOSAlertSchema.index({ createdAt: -1 });
+SOSAlertSchema.index({ userId: 1, createdAt: -1 });
 
 export const EmergencyContact = mongoose.model<IEmergencyContact>(
   "EmergencyContact",

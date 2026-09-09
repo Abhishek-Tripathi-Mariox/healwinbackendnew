@@ -252,4 +252,20 @@ BookingSchema.index({ driverId: 1, status: 1, createdAt: -1 });
 BookingSchema.index({ status: 1, createdAt: -1 });
 BookingSchema.index({ paymentStatus: 1, status: 1 });
 
+/**
+ * Newest-first listing.
+ *
+ * The compound indexes above all lead with an equality field, so a query that
+ * filters on none of them — the plain "latest first" list every admin screen
+ * opens with — cannot use any of them for the sort and falls back to sorting
+ * in memory. That is fine at a thousand rows and fails at a hundred thousand:
+ * MongoDB buffers the whole result set and aborts the sort past 32MB.
+ */
+BookingSchema.index({ createdAt: -1 });
+// `{ userId, status, createdAt }` cannot serve "this user's bookings, newest
+// first" — with no status in the filter, the index orders by status before
+// createdAt, so the sort still happens in memory.
+BookingSchema.index({ userId: 1, createdAt: -1 });
+BookingSchema.index({ driverId: 1, createdAt: -1 });
+
 export default mongoose.model<IBooking>("Booking", BookingSchema);

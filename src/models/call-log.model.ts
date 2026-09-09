@@ -174,6 +174,10 @@ CallLogSchema.index(
 CallLogSchema.index({ createdAt: -1 });
 CallLogSchema.index({ subjectType: 1, subjectId: 1 });
 CallLogSchema.index({ status: 1, createdAt: -1 });
+// The call log is ordered by when the call STARTED, not when the row was
+// written — `{ createdAt }` above cannot serve that sort.
+CallLogSchema.index({ startedAt: -1 });
+CallLogSchema.index({ direction: 1, startedAt: -1 });
 
 export const CallLog = mongoose.model<ICallLog>("CallLog", CallLogSchema);
 

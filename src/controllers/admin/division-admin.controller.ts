@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { Division } from "../../models/division.model";
 import { paginate } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 export const getAllDivisions = async (req: Request, res: Response) => {
   const { status, q, district } = req.query as {
@@ -13,7 +14,7 @@ export const getAllDivisions = async (req: Request, res: Response) => {
   if (status === "inactive") filter.isActive = false;
   if (district) filter.district = district;
   if (q) {
-    filter.$or = [{ name: { $regex: q, $options: "i" } }];
+    filter.$or = [{ name: { $regex: escapeRegex(q), $options: "i" } }];
   }
   const result = await paginate(
     Division,

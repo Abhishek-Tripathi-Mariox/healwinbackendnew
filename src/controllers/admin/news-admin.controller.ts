@@ -3,6 +3,7 @@ import { NewsArticle } from "../../models/news-article.model";
 import { uploadFileToAws, uploadMultipleFilesToAws } from "../../utils/s3";
 import { paginate } from "../../utils/paginate.util";
 import { invalidateCache } from "../../middlewares/cache.middleware";
+import { escapeRegex } from "../../utils/helpers";
 
 // ── News Articles ──
 
@@ -19,9 +20,9 @@ export const getAllArticles = async (req: Request, res: Response) => {
   if (category) filter.category = category;
   if (q) {
     filter.$or = [
-      { title: { $regex: q, $options: "i" } },
-      { category: { $regex: q, $options: "i" } },
-      { author: { $regex: q, $options: "i" } },
+      { title: { $regex: escapeRegex(q), $options: "i" } },
+      { category: { $regex: escapeRegex(q), $options: "i" } },
+      { author: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import OffDutyReason from "../../models/off-duty-reason.model";
+import { escapeRegex } from "../../utils/helpers";
 
 export const list = async (
   req: Request,
@@ -10,7 +11,7 @@ export const list = async (
   const q: any = {};
   if (typeof isActive === "string") q.isActive = isActive === "true";
   if (typeof search === "string" && search.trim()) {
-    q.label = { $regex: search.trim(), $options: "i" };
+    q.label = { $regex: escapeRegex(search).trim(), $options: "i" };
   }
   const items = await OffDutyReason.find(q)
     .sort({ sortOrder: 1, createdAt: -1 })

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import AmbulanceStaff from "../../models/ambulance-staff.model";
 import Ambulance from "../../models/ambulance.model";
 import { EmergencyDispatch } from "../../models/emergency-dispatch.model";
+import { escapeRegex } from "../../utils/helpers";
 
 export const create = async (
   req: Request,
@@ -107,8 +108,8 @@ export const list = async (
   if (search) {
     const s = String(search);
     filter.$or = [
-      { fullName: { $regex: s, $options: "i" } },
-      { mobileNumber: { $regex: s, $options: "i" } },
+      { fullName: { $regex: escapeRegex(s), $options: "i" } },
+      { mobileNumber: { $regex: escapeRegex(s), $options: "i" } },
     ];
   }
 

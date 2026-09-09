@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { EmploymentType } from "../../models/employment-type.model";
 import { paginate } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 export const getAllEmploymentTypes = async (req: Request, res: Response) => {
   const { status, q } = req.query as { status?: string; q?: string };
@@ -9,8 +10,8 @@ export const getAllEmploymentTypes = async (req: Request, res: Response) => {
   if (status === "inactive") filter.isActive = false;
   if (q) {
     filter.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { description: { $regex: q, $options: "i" } },
+      { name: { $regex: escapeRegex(q), $options: "i" } },
+      { description: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
   const result = await paginate(EmploymentType, filter, req, {

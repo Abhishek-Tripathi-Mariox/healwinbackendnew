@@ -15,6 +15,7 @@ import {
 import { uploadBufferToAws } from "../../utils/s3";
 import config from "../../config";
 import { paginate } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 export const getAllApplications = async (req: Request, res: Response) => {
   const { status, careerId, q, gender, department, dateFrom, dateTo } =
@@ -46,9 +47,9 @@ export const getAllApplications = async (req: Request, res: Response) => {
 
   if (q) {
     filter.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { email: { $regex: q, $options: "i" } },
-      { phone: { $regex: q, $options: "i" } },
+      { name: { $regex: escapeRegex(q), $options: "i" } },
+      { email: { $regex: escapeRegex(q), $options: "i" } },
+      { phone: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 
@@ -167,17 +168,34 @@ export const exportApplications = async (req: Request, res: Response) => {
 
   if (q) {
     filter.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { email: { $regex: q, $options: "i" } },
-      { phone: { $regex: q, $options: "i" } },
+      { name: { $regex: escapeRegex(q), $options: "i" } },
+      { email: { $regex: escapeRegex(q), $options: "i" } },
+      { phone: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 
+  /**
+   * Exports are legitimately bulk, but not unbounded.
+   *
+   * This read every matching application as a hydrated Mongoose document with
+   * three populates and built the full row array in memory. At a hundred
+   * thousand applications that exhausts the process before it writes a byte.
+   *
+   * `.lean()` removes the hydration cost, and a hard ceiling keeps a single
+   * click from taking the API down — an operator exporting a hundred thousand
+   * rows wants a date range, not a spreadsheet no tool will open. When the cap
+   * bites, the response says so rather than silently handing back a truncated
+   * file that looks complete.
+   */
+  const EXPORT_LIMIT = 20000;
+  const total = await CareerApplication.countDocuments(filter);
   const applications = await CareerApplication.find(filter)
     .populate("careerId", "title department location")
     .populate("selectedStates", "name")
     .populate("selectedDistricts", "name")
-    .sort({ appliedAt: -1 });
+    .sort({ appliedAt: -1 })
+    .limit(EXPORT_LIMIT)
+    .lean();
 
   // Build CSV/JSON export data with S3 URLs for documents
   const rows = applications.map((app: any) => ({
@@ -208,6 +226,14 @@ export const exportApplications = async (req: Request, res: Response) => {
   }));
 
   res.locals.data = rows;
+  if (total > EXPORT_LIMIT) {
+    res.locals.meta = {
+      truncated: true,
+      exported: rows.length,
+      total,
+      hint: `Only the ${EXPORT_LIMIT.toLocaleString("en-IN")} most recent of ${total.toLocaleString("en-IN")} applications were exported. Narrow the date range to get the rest.`,
+    };
+  }
 };
 
 

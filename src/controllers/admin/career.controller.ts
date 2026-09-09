@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { Career } from "../../models/career.model";
 import { paginate } from "../../utils/paginate.util";
 import { invalidateCache } from "../../middlewares/cache.middleware";
+import { escapeRegex } from "../../utils/helpers";
 
 export const getDepartments = async (_req: Request, res: Response) => {
   const departments = await Career.distinct("department");
@@ -32,9 +33,9 @@ export const getAllCareers = async (req: Request, res: Response) => {
 
   if (q) {
     filter.$or = [
-      { title: { $regex: q, $options: "i" } },
-      { department: { $regex: q, $options: "i" } },
-      { location: { $regex: q, $options: "i" } },
+      { title: { $regex: escapeRegex(q), $options: "i" } },
+      { department: { $regex: escapeRegex(q), $options: "i" } },
+      { location: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 

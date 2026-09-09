@@ -9,7 +9,7 @@ import PatientFamilyMember from "../models/patient-family-member.model";
 import User from "../models/Users";
 import SavedContact from "../models/saved-contact.model";
 import PatientMedicalRecord from "../models/patient-medical-record.model";
-import HospitalPatient from "../models/hospital-patient.model";
+import HospitalPatient, { toPhoneKey } from "../models/hospital-patient.model";
 import { StaffCaseNote } from "../models/ambulance-staff-extras.model";
 import { Admin } from "../models/admin.model";
 import LabTest from "../models/lab-test.model";
@@ -1125,10 +1125,13 @@ router.post("/membership/enroll", verifyUserToken, async (req, res) => {
 
 /** All HospitalPatient _ids linked to a given phone (last-10-digit match). */
 const hospitalPatientIdsForPhone = async (phone?: string): Promise<any[]> => {
-  const last10 = String(phone || "").replace(/\D/g, "").slice(-10);
+  const last10 = toPhoneKey(phone);
   if (last10.length !== 10) return [];
+  // Equality on the stored key, which is indexed. This was a suffix regex
+  // (`/<last10>$/`) — an index can match a prefix but never a suffix, so it
+  // scanned every patient on a path the portal calls constantly.
   const patients = await HospitalPatient.find({
-    phone: { $regex: `${last10}$` },
+    phoneKey: last10,
     isDeleted: { $ne: true },
   })
     .select("_id")

@@ -117,6 +117,12 @@ const PushTemplateSchema = new Schema<IPushTemplate>(
 NotificationSchema.index({ userId: 1, isRead: 1, createdAt: -1 });
 NotificationSchema.index({ driverId: 1, isRead: 1, createdAt: -1 });
 NotificationSchema.index({ staffId: 1, isRead: 1, createdAt: -1 });
+// Opening the bell shows ALL notifications, read and unread. With `isRead`
+// between the owner and the sort key, that list sorted in memory — on the
+// collection that grows fastest of any here.
+NotificationSchema.index({ userId: 1, createdAt: -1 });
+NotificationSchema.index({ driverId: 1, createdAt: -1 });
+NotificationSchema.index({ staffId: 1, createdAt: -1 });
 
 export const Notification = mongoose.model<INotification>(
   "Notification",

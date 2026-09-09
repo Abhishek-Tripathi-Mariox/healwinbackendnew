@@ -70,6 +70,8 @@ const PharmacyOrderSchema = new Schema<IPharmacyOrder>(
   { timestamps: true },
 );
 PharmacyOrderSchema.index({ userId: 1, createdAt: -1 });
+PharmacyOrderSchema.index({ createdAt: -1 });
+PharmacyOrderSchema.index({ status: 1, createdAt: -1 });
 export const PharmacyOrder = mongoose.model<IPharmacyOrder>("PharmacyOrder", PharmacyOrderSchema);
 
 // ---------------- Lab booking ----------------
@@ -144,6 +146,8 @@ const LabBookingSchema = new Schema<ILabBooking>(
   { timestamps: true },
 );
 LabBookingSchema.index({ userId: 1, createdAt: -1 });
+LabBookingSchema.index({ createdAt: -1 });
+LabBookingSchema.index({ status: 1, createdAt: -1 });
 export const LabBooking = mongoose.model<ILabBooking>("LabBooking", LabBookingSchema);
 
 // ---------------- Doctor consultation ----------------
@@ -195,4 +199,9 @@ const ConsultationSchema = new Schema<IConsultation>(
   { timestamps: true },
 );
 ConsultationSchema.index({ userId: 1, createdAt: -1 });
+// The admin console lists across all patients, and a doctor's own console
+// narrows to their own consultations — neither is served by the per-user index.
+ConsultationSchema.index({ createdAt: -1 });
+ConsultationSchema.index({ status: 1, createdAt: -1 });
+ConsultationSchema.index({ doctorId: 1, createdAt: -1 });
 export const Consultation = mongoose.model<IConsultation>("Consultation", ConsultationSchema);

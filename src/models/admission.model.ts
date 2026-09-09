@@ -157,6 +157,8 @@ const AdmissionSchema = new Schema<IAdmission>(
 );
 
 AdmissionSchema.index({ status: 1, admittedAt: -1 });
+AdmissionSchema.index({ createdAt: -1 });
+AdmissionSchema.index({ patientId: 1, createdAt: -1 });
 
 export const Admission = mongoose.model<IAdmission>(
   "Admission",

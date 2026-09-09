@@ -1,4 +1,5 @@
 import PDFDocument from "pdfkit";
+import config from "../config";
 import { ICareerApplication } from "../models/career-application.model";
 import { IPayslip } from "../models/payslip.model";
 import { IHrEmployee } from "../models/hr-employee.model";
@@ -18,6 +19,17 @@ export const fmtDateTimeIST = (d: Date | string | number): string =>
   new Date(d).toLocaleString("en-IN", { timeZone: IST });
 export const fmtDateIST = (d: Date | string | number): string =>
   new Date(d).toLocaleDateString("en-IN", { timeZone: IST });
+/**
+ * "9 September 2026" — for letters, where a numeric date is ambiguous to read
+ * and looks abrupt in prose.
+ */
+export const fmtLongDateIST = (d: Date | string | number): string =>
+  new Date(d).toLocaleDateString("en-IN", {
+    timeZone: IST,
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
 export const fmtTimeIST = (d: Date | string | number): string =>
   new Date(d).toLocaleTimeString("en-IN", {
     timeZone: IST,
@@ -75,18 +87,356 @@ const downloadImage = (url: string): Promise<Buffer> => {
 /**
  * Generate application acknowledgement PDF matching PHP format
  */
+/* ══════════════════════════════════════════════════════════════════════════
+ *  Shared document design
+ *
+ *  Every generated document — letters, invoices, prescriptions, discharge
+ *  summaries, payslips — is built from the pieces below so they read as one
+ *  organisation's paperwork rather than eight unrelated printouts.
+ *
+ *  The look: a deep navy masthead carrying the brand and its contact line, a
+ *  centred document title over a short accent rule, then generously spaced
+ *  body type. Borders are kept light — tables are separated by tint and hair
+ *  rules rather than boxed in.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+export const DOC = {
+  ink: "#0F172A", // near-black body text
+  muted: "#64748B", // secondary text
+  hairline: "#E2E8F0",
+  band: "#12305B", // masthead navy
+  bandSoft: "#1D4C8F", // the lighter diagonal on the masthead
+  accent: "#0891B2", // rules and highlights
+  tint: "#F1F5F9", // table label / zebra fill
+  margin: 50,
+} as const;
+
+/** Usable width between the margins. */
+const contentWidth = (doc: PDFKit.PDFDocument) =>
+  doc.page.width - DOC.margin * 2;
+
+/**
+ * The masthead.
+ *
+ * Drawn as full-bleed shapes at the very top of the page, so it reads as
+ * printed stationery rather than as the first line of the letter.
+ */
+export const letterhead = (
+  doc: PDFKit.PDFDocument,
+  opts: {
+    logo?: Buffer;
+    /**
+     * Override the organisation shown. Clinical documents are issued by the
+     * hospital that treated the patient, which in a multi-hospital deployment
+     * is not the same as the platform brand — a prescription must carry the
+     * hospital's own name and contact, not ours.
+     */
+    name?: string;
+    tagline?: string;
+    contact?: string;
+  } = {},
+): void => {
+  const b = {
+    ...config.brand,
+    ...(opts.name ? { name: opts.name } : {}),
+    ...(opts.tagline !== undefined ? { tagline: opts.tagline } : {}),
+  };
+  const W = doc.page.width;
+  const H = 104;
+
+  doc.save();
+  doc.rect(0, 0, W, H).fill(DOC.band);
+  // Two overlapping diagonals on the right — the same idea as the reference
+  // letterhead, done in vector so it stays crisp at any print size.
+  doc
+    .moveTo(W * 0.58, 0)
+    .lineTo(W, 0)
+    .lineTo(W, H)
+    .lineTo(W * 0.74, H)
+    .fill(DOC.bandSoft);
+  doc
+    .moveTo(W * 0.78, 0)
+    .lineTo(W * 0.93, 0)
+    .lineTo(W * 0.72, H)
+    .lineTo(W * 0.57, H)
+    .fillOpacity(0.35)
+    .fill("#FFFFFF");
+  doc.fillOpacity(1);
+
+  let x = DOC.margin;
+  if (opts.logo) {
+    try {
+      doc.image(opts.logo, x, 26, { fit: [46, 46] });
+      x += 58;
+    } catch {
+      // A broken logo must never cost us the whole document.
+    }
+  }
+
+  doc
+    .fillColor("#FFFFFF")
+    .font("Helvetica-Bold")
+    .fontSize(22)
+    .text(b.name.toUpperCase(), x, 28, { lineBreak: false });
+
+  doc
+    .font("Helvetica")
+    .fontSize(9.5)
+    .fillColor("#C7D9F1")
+    .text(b.tagline, x, 55, { lineBreak: false });
+
+  // Contact line — only the parts that are actually configured.
+  const contact =
+    opts.contact ?? [b.email, b.phone, b.website].filter(Boolean).join("   |   ");
+  if (contact) {
+    doc
+      .fontSize(8.5)
+      .fillColor("#9FBCE4")
+      .text(contact, x, 72, { lineBreak: false });
+  }
+  doc.restore();
+
+  // A thin accent bar under the band ties the header to the rules below it.
+  doc.rect(0, H, W, 3).fill(DOC.accent);
+
+  doc.fillColor(DOC.ink).font("Helvetica").fontSize(10);
+  doc.x = DOC.margin;
+  doc.y = H + 28;
+};
+
+/** Centred document title with a short accent rule beneath it. */
+export const docTitle = (doc: PDFKit.PDFDocument, title: string): void => {
+  const w = contentWidth(doc);
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(16)
+    .fillColor(DOC.ink)
+    .text(title.toUpperCase(), DOC.margin, doc.y, {
+      width: w,
+      align: "center",
+      characterSpacing: 0.6,
+    });
+  const y = doc.y + 6;
+  const mid = doc.page.width / 2;
+  doc.rect(mid - 26, y, 52, 2.5).fill(DOC.accent);
+  doc.fillColor(DOC.ink).font("Helvetica").fontSize(10);
+  doc.x = DOC.margin;
+  doc.y = y + 18;
+};
+
+/**
+ * Reference block — date and document number, set right, as on a real letter.
+ */
+export const refBlock = (
+  doc: PDFKit.PDFDocument,
+  rows: Array<[string, string]>,
+): void => {
+  const w = contentWidth(doc);
+  doc.font("Helvetica").fontSize(9.5).fillColor(DOC.muted);
+  for (const [label, value] of rows) {
+    doc.text(`${label}: ${value}`, DOC.margin, doc.y, { width: w, align: "right" });
+  }
+  doc.fillColor(DOC.ink).fontSize(10);
+  doc.x = DOC.margin;
+  doc.moveDown(0.8);
+};
+
+/**
+ * Key/value table.
+ *
+ * Tinted label column, hairline separators, no outer box — the same table
+ * used by every document that has terms or particulars to state.
+ */
+export const infoTable = (
+  doc: PDFKit.PDFDocument,
+  rows: Array<[string, string]>,
+  opts: { labelWidth?: number; heading?: string } = {},
+): void => {
+  const w = contentWidth(doc);
+  const labelW = opts.labelWidth ?? 155;
+  const valueW = w - labelW;
+
+  if (opts.heading) {
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10)
+      .fillColor(DOC.muted)
+      .text(opts.heading.toUpperCase(), DOC.margin, doc.y, {
+        characterSpacing: 0.8,
+      });
+    doc.moveDown(0.45);
+  }
+
+  for (const [label, value] of rows) {
+    const text = value || "—";
+    const h = Math.max(
+      22,
+      doc.font("Helvetica").fontSize(10).heightOfString(text, {
+        width: valueW - 20,
+      }) + 11,
+    );
+    // Start a new page before a row would be split across the fold.
+    if (doc.y + h > doc.page.height - 90) {
+      doc.addPage();
+      doc.y = DOC.margin;
+    }
+    const top = doc.y;
+    doc.rect(DOC.margin, top, labelW, h).fill(DOC.tint);
+    doc
+      .moveTo(DOC.margin, top + h)
+      .lineTo(DOC.margin + w, top + h)
+      .lineWidth(0.5)
+      .strokeColor(DOC.hairline)
+      .stroke();
+    doc
+      .fillColor(DOC.muted)
+      .font("Helvetica-Bold")
+      .fontSize(9.5)
+      .text(label, DOC.margin + 10, top + 7, { width: labelW - 20 });
+    doc
+      .fillColor(DOC.ink)
+      .font("Helvetica")
+      .fontSize(10)
+      .text(text, DOC.margin + labelW + 10, top + 7, { width: valueW - 20 });
+    doc.y = top + h;
+  }
+  // The rows were written at explicit x offsets; put the cursor back or the
+  // next flowing paragraph renders indented.
+  doc.x = DOC.margin;
+  doc.fillColor(DOC.ink);
+};
+
+/** Body paragraph — justified, with the spacing the letters are built on. */
+export const para = (
+  doc: PDFKit.PDFDocument,
+  text: string,
+  opts: { gap?: number; bold?: boolean } = {},
+): void => {
+  doc
+    .font(opts.bold ? "Helvetica-Bold" : "Helvetica")
+    .fontSize(10.5)
+    .fillColor(DOC.ink)
+    .text(text, DOC.margin, doc.y, {
+      width: contentWidth(doc),
+      align: "justify",
+      lineGap: 2.5,
+    });
+  doc.x = DOC.margin;
+  doc.moveDown(opts.gap ?? 0.9);
+};
+
+/** Signature block, kept off the fold. */
+export const signOff = (
+  doc: PDFKit.PDFDocument,
+  opts: { name?: string; role?: string } = {},
+): void => {
+  if (doc.y > doc.page.height - 170) doc.addPage();
+  doc.moveDown(1.2);
+  doc
+    .font("Helvetica")
+    .fontSize(10.5)
+    .fillColor(DOC.ink)
+    .text(`For ${config.brand.name}`, DOC.margin, doc.y);
+  doc.moveDown(2.6);
+  doc
+    .moveTo(DOC.margin, doc.y)
+    .lineTo(DOC.margin + 170, doc.y)
+    .lineWidth(0.7)
+    .strokeColor(DOC.hairline)
+    .stroke();
+  doc.moveDown(0.4);
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(10)
+    .text(opts.name || "Authorised Signatory", DOC.margin, doc.y);
+  doc
+    .font("Helvetica")
+    .fontSize(9.5)
+    .fillColor(DOC.muted)
+    .text(opts.role || "Human Resources", DOC.margin, doc.y);
+  doc.fillColor(DOC.ink);
+};
+
+/**
+ * Footer on every page — a hair rule, the address, and "Page n of m".
+ *
+ * Called once, just before `doc.end()`: pdfkit can only number pages after
+ * they all exist, so this walks the buffered range at the end.
+ */
+export const paginate = (
+  doc: PDFKit.PDFDocument,
+  note?: string,
+  /**
+   * Skip the address in the footer. Clinical documents print the treating
+   * hospital's own address above the fold; repeating the platform address
+   * underneath it just contradicts them.
+   */
+  opts: { address?: boolean } = {},
+): void => {
+  const range = doc.bufferedPageRange();
+  for (let i = range.start; i < range.start + range.count; i++) {
+    doc.switchToPage(i);
+    // The footer sits BELOW the bottom margin by design. pdfkit treats text
+    // crossing that margin as an overflow and starts a new page — which is
+    // how a one-page letter came out three pages long, each new page
+    // triggering another footer. Drop the margin while writing it.
+    const bottomMargin = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
+    const y = doc.page.height - 42;
+    doc
+      .moveTo(DOC.margin, y)
+      .lineTo(doc.page.width - DOC.margin, y)
+      .lineWidth(0.5)
+      .strokeColor(DOC.hairline)
+      .stroke();
+    const left = [
+      opts.address === false ? null : config.brand.address,
+      note,
+    ]
+      .filter(Boolean)
+      .join("  ·  ");
+    doc.font("Helvetica").fontSize(7.5).fillColor(DOC.muted);
+    if (left) {
+      doc.text(left, DOC.margin, y + 8, {
+        width: contentWidth(doc) - 90,
+        lineBreak: false,
+      });
+    }
+    doc.text(
+      `Page ${i - range.start + 1} of ${range.count}`,
+      DOC.margin,
+      y + 8,
+      { width: contentWidth(doc), align: "right", lineBreak: false },
+    );
+    doc.page.margins.bottom = bottomMargin;
+  }
+};
+
+/** Fetch the configured logo once, tolerating any failure. */
+const brandLogo = async (): Promise<Buffer | undefined> => {
+  const url = config.brand.logoUrl;
+  if (!url) return undefined;
+  try {
+    return await downloadImage(url);
+  } catch {
+    return undefined;
+  }
+};
+
 export const generateApplicationPDF = async (
   application: ICareerApplication & { applicationNumber: string },
 ): Promise<Buffer> => {
+  const logo = await brandLogo();
   return new Promise(async (resolve, reject) => {
     try {
-      const margin = 40;
+      const margin = DOC.margin;
       const doc = new PDFDocument({
         size: "A4",
         margin,
+        bufferPages: true,
         info: {
           Title: `Application ${application.applicationNumber}`,
-          Author: "HealWin Life Support & Emergency Care",
+          Author: config.brand.name,
         },
       });
 
@@ -169,13 +519,12 @@ export const generateApplicationPDF = async (
       };
 
       // ============ HEADER ============
-      doc
-        .fontSize(14)
-        .font("Helvetica-Bold")
-        .text("Acknowledgment of Your Application Submission", {
-          align: "center",
-        });
-      doc.moveDown(0.8);
+      letterhead(doc, { logo });
+      refBlock(doc, [
+        ["Application No", (application as any).applicationNumber || "—"],
+        ["Received", fmtDateIST((application as any).createdAt || new Date())],
+      ]);
+      docTitle(doc, "Application Acknowledgement");
 
       // ============ GREETING WITH PHOTO ============
       const photoX = doc.page.width - margin - 75;
@@ -332,12 +681,25 @@ export const generateApplicationPDF = async (
         .font("Helvetica")
         .text("Warm regards,", margin, y);
       y += 13;
-      doc.font("Helvetica-Bold").text("HR Team, HealWin", margin, y);
+      doc
+        .font("Helvetica-Bold")
+        .fillColor(DOC.ink)
+        .text(`HR Team, ${config.brand.name}`, margin, y);
       y += 13;
+      // Contact details come from the brand config now — they used to be
+      // hardcoded here, so a change of number meant a code change.
       doc
         .font("Helvetica")
-        .text("080 4018 4600, hr@healwin.in, www.healwin.in", margin, y);
+        .fillColor(DOC.muted)
+        .text(
+          [config.brand.phone, config.brand.email, config.brand.website]
+            .filter(Boolean)
+            .join(", "),
+          margin,
+          y,
+        );
 
+      paginate(doc, `Application · ${application.applicationNumber}`);
       doc.end();
     } catch (error) {
       reject(error);
@@ -349,19 +711,21 @@ export const generateApplicationPDF = async (
  * Generate a salary-slip PDF for one payslip. Two-column earnings vs deductions
  * table with a net-pay summary, matching the on-screen payslip.
  */
-export const generatePayslipPDF = (
+export const generatePayslipPDF = async (
   payslip: IPayslip,
   employee?: Partial<IHrEmployee>,
 ): Promise<Buffer> => {
+  const logo = await brandLogo();
   return new Promise((resolve, reject) => {
     try {
-      const margin = 40;
+      const margin = DOC.margin;
       const doc = new PDFDocument({
         size: "A4",
         margin,
+        bufferPages: true,
         info: {
           Title: `Payslip ${payslip.employeeCode} ${MONTH_NAMES[payslip.month - 1]} ${payslip.year}`,
-          Author: "HealWin Life Support & Emergency Care",
+          Author: config.brand.name,
         },
       });
 
@@ -373,20 +737,15 @@ export const generatePayslipPDF = (
       const pageWidth = doc.page.width - margin * 2;
 
       // ===== Header =====
-      doc
-        .fontSize(16)
-        .font("Helvetica-Bold")
-        .fillColor("#0066cc")
-        .text("HealWin Life Support & Emergency Care", { align: "center" });
-      doc
-        .fontSize(10)
-        .font("Helvetica")
-        .fillColor("#000000")
-        .text(
-          `Payslip for ${MONTH_NAMES[payslip.month - 1]} ${payslip.year}`,
-          { align: "center" },
-        );
-      doc.moveDown(1);
+      letterhead(doc, { logo });
+      refBlock(doc, [
+        ["Employee Code", payslip.employeeCode || "—"],
+        ["Generated", fmtDateIST(new Date())],
+      ]);
+      docTitle(
+        doc,
+        `Payslip — ${MONTH_NAMES[payslip.month - 1]} ${payslip.year}`,
+      );
 
       // ===== Employee meta =====
       let y = doc.y;
@@ -465,6 +824,20 @@ export const generatePayslipPDF = (
         ["Medical", e.medical],
         ["Special Allowance", e.specialAllowance],
         ["Other Allowances", e.otherAllowances],
+        // Overtime is part of `gross`, but had no row of its own — so on any
+        // payslip with overtime the earnings column did not add up to the
+        // gross printed beneath it, and there was no way for the employee to
+        // see what the difference was.
+        ...((e.overtime
+          ? [
+              [
+                payslip.overtimeMinutes
+                  ? `Overtime (${Math.floor(payslip.overtimeMinutes / 60)}h ${payslip.overtimeMinutes % 60}m)`
+                  : "Overtime",
+                e.overtime,
+              ],
+            ]
+          : []) as [string, number][]),
       ];
       const dedRows: [string, number][] = [
         ["Provident Fund (PF)", d.pf],
@@ -531,7 +904,7 @@ export const generatePayslipPDF = (
       y += 40;
 
       doc
-        .fillColor("#888888")
+        .fillColor(DOC.muted)
         .font("Helvetica-Oblique")
         .fontSize(8)
         .text(
@@ -541,6 +914,10 @@ export const generatePayslipPDF = (
           { width: pageWidth, align: "center" },
         );
 
+      paginate(
+        doc,
+        `Payslip · ${payslip.employeeCode} · ${MONTH_NAMES[payslip.month - 1]} ${payslip.year}`,
+      );
       doc.end();
     } catch (error) {
       reject(error);
@@ -551,14 +928,19 @@ export const generatePayslipPDF = (
 const INR = (n: number) => `Rs. ${(n || 0).toLocaleString("en-IN")}`;
 
 /** Hospital invoice as a PDF (digital bill). */
-export const generateInvoicePDF = (invoice: any): Promise<Buffer> => {
+export const generateInvoicePDF = async (invoice: any): Promise<Buffer> => {
+  const logo = await brandLogo();
   return new Promise((resolve, reject) => {
     try {
-      const margin = 40;
+      const margin = DOC.margin;
       const doc = new PDFDocument({
         size: "A4",
         margin,
-        info: { Title: `Invoice ${invoice.invoiceNo}`, Author: "HealWin" },
+        bufferPages: true,
+        info: {
+          Title: `Invoice ${invoice.invoiceNo}`,
+          Author: config.brand.name,
+        },
       });
       const chunks: Buffer[] = [];
       doc.on("data", (c: Buffer) => chunks.push(c));
@@ -568,46 +950,28 @@ export const generateInvoicePDF = (invoice: any): Promise<Buffer> => {
       const pageW = doc.page.width - margin * 2;
       const patient = invoice.patientId || {};
 
-      // Letterhead: real hospital identity + a rule under it. This used to be
-      // a hardcoded name floating with no address, contact or separator — it
-      // did not read as a document from anywhere in particular.
-      const hospitalName = process.env.HOSPITAL_NAME || "HealWin Hospital";
-      const hospitalAddr = process.env.HOSPITAL_ADDRESS || "";
-      const hospitalContact = [
-        process.env.HOSPITAL_PHONE ? `Tel: ${process.env.HOSPITAL_PHONE}` : null,
-        process.env.HOSPITAL_EMAIL || null,
-        process.env.HOSPITAL_WEBSITE || null,
-      ]
-        .filter(Boolean)
-        .join("   |   ");
+      letterhead(doc, { logo });
+      refBlock(doc, [
+        ["Invoice No", invoice.invoiceNo || "—"],
+        ["Date", fmtDateTimeIST(invoice.createdAt)],
+        ...(invoice.gstin
+          ? ([["GSTIN", invoice.gstin]] as Array<[string, string]>)
+          : []),
+      ]);
+      docTitle(doc, "Tax Invoice");
 
-      doc.fontSize(16).font("Helvetica-Bold").fillColor("#0066cc")
-        .text(hospitalName, { align: "center" });
-      doc.fontSize(8).font("Helvetica").fillColor("#444");
-      if (hospitalAddr) doc.text(hospitalAddr, { align: "center" });
-      if (hospitalContact) doc.text(hospitalContact, { align: "center" });
-      if (invoice.gstin) doc.text(`GSTIN: ${invoice.gstin}`, { align: "center" });
-
-      doc.moveDown(0.4);
-      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y)
-        .lineWidth(1).strokeColor("#0066cc").stroke();
-      doc.moveDown(0.5);
-
-      doc.fontSize(12).font("Helvetica-Bold").fillColor("#000")
-        .text("TAX INVOICE", { align: "center" });
+      doc.fontSize(10).font("Helvetica-Bold").fillColor(DOC.muted)
+        .text("BILLED TO", margin, doc.y, { characterSpacing: 0.8 });
       doc.moveDown(0.3);
-      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y)
-        .lineWidth(0.5).strokeColor("#999").stroke();
-      doc.moveDown(0.5);
-      doc.moveDown(1).fillColor("#000");
-
-      doc.fontSize(9);
-      doc.font("Helvetica-Bold").text(`Invoice No: `, { continued: true }).font("Helvetica").text(invoice.invoiceNo);
-      doc.font("Helvetica-Bold").text(`Date: `, { continued: true }).font("Helvetica")
-        .text(fmtDateTimeIST(invoice.createdAt));
-      doc.font("Helvetica-Bold").text(`Patient: `, { continued: true }).font("Helvetica")
-        .text(`${patient.fullName || "-"}${patient.patientId ? ` (${patient.patientId})` : ""}`);
-      doc.moveDown(0.5);
+      doc.fontSize(11).font("Helvetica-Bold").fillColor(DOC.ink)
+        .text(patient.fullName || "—", margin, doc.y);
+      if (patient.patientId) {
+        doc.fontSize(9).font("Helvetica").fillColor(DOC.muted)
+          .text(`Patient ID: ${patient.patientId}`, margin, doc.y);
+      }
+      doc.fillColor(DOC.ink).fontSize(9);
+      doc.x = margin;
+      doc.moveDown(1);
 
       // Line items table
       const cols = [margin, margin + 230, margin + 300, margin + 380, margin + pageW];
@@ -645,47 +1009,102 @@ export const generateInvoicePDF = (invoice: any): Promise<Buffer> => {
       tot("Paid", INR(invoice.amountPaid));
       tot("Balance Due", INR(invoice.balanceDue), true);
 
-      doc.moveDown(1);
-      doc.fontSize(8).fillColor("#666").text("This is a computer-generated invoice.", { align: "center" });
+      doc.moveDown(1.2);
+      doc.fontSize(8).fillColor(DOC.muted)
+        .text("This is a computer-generated invoice and does not require a signature.",
+          margin, doc.y, { width: pageW, align: "center" });
+
+      paginate(doc, `Invoice ${invoice.invoiceNo || ""}`.trim());
       doc.end();
     } catch (e) { reject(e); }
   });
 };
 
 /** Payment receipt PDF for an invoice's (non-refund) payments. */
-export const generateReceiptPDF = (invoice: any): Promise<Buffer> => {
+export const generateReceiptPDF = async (invoice: any): Promise<Buffer> => {
+  const logo = await brandLogo();
   return new Promise((resolve, reject) => {
     try {
-      const margin = 40;
-      const doc = new PDFDocument({ size: "A4", margin, info: { Title: `Receipt ${invoice.invoiceNo}` } });
+      const margin = DOC.margin;
+      const doc = new PDFDocument({
+        size: "A4",
+        margin,
+        bufferPages: true,
+        info: { Title: `Receipt ${invoice.invoiceNo}`, Author: config.brand.name },
+      });
       const chunks: Buffer[] = [];
       doc.on("data", (c: Buffer) => chunks.push(c));
       doc.on("end", () => resolve(Buffer.concat(chunks)));
       doc.on("error", reject);
       const patient = invoice.patientId || {};
 
-      doc.fontSize(16).font("Helvetica-Bold").fillColor("#0066cc")
-        .text("HealWin Life Support & Emergency Care", { align: "center" });
-      doc.fontSize(11).font("Helvetica").fillColor("#000").text("Payment Receipt", { align: "center" });
-      doc.moveDown(1);
-      doc.fontSize(9);
-      doc.font("Helvetica-Bold").text("Invoice: ", { continued: true }).font("Helvetica").text(invoice.invoiceNo);
-      doc.font("Helvetica-Bold").text("Patient: ", { continued: true }).font("Helvetica").text(patient.fullName || "-");
+      letterhead(doc, { logo });
+      refBlock(doc, [
+        ["Invoice", invoice.invoiceNo || "—"],
+        ["Issued", fmtDateTimeIST(new Date())],
+      ]);
+      docTitle(doc, "Payment Receipt");
+
+      infoTable(doc, [
+        ["Patient", patient.fullName || ""],
+        ...(patient.patientId
+          ? ([["Patient ID", patient.patientId]] as Array<[string, string]>)
+          : []),
+        ["Against Invoice", invoice.invoiceNo || ""],
+      ]);
+      doc.moveDown(1.2);
+
+      doc.font("Helvetica-Bold").fontSize(10).fillColor(DOC.muted)
+        .text("PAYMENTS RECEIVED", margin, doc.y, { characterSpacing: 0.8 });
       doc.moveDown(0.5);
 
-      doc.font("Helvetica-Bold").text("Payments", { underline: true });
-      doc.moveDown(0.3);
-      for (const p of (invoice.payments || [])) {
+      const pageW2 = doc.page.width - margin * 2;
+      const cols = [margin, margin + 150, margin + 270, margin + pageW2];
+      const line = (a: string, b: string, c: string, bold = false) => {
+        const y = doc.y;
+        doc.font(bold ? "Helvetica-Bold" : "Helvetica").fontSize(9)
+          .fillColor(bold ? DOC.muted : DOC.ink);
+        doc.text(a, cols[0], y, { width: cols[1] - cols[0] - 8 });
+        doc.text(b, cols[1], y, { width: cols[2] - cols[1] - 8 });
+        doc.text(c, cols[2], y, { width: cols[3] - cols[2], align: "right" });
+        doc.x = margin;
+        doc.moveDown(0.55);
+      };
+      line("DATE", "METHOD", "AMOUNT", true);
+      doc.moveTo(margin, doc.y - 3).lineTo(margin + pageW2, doc.y - 3)
+        .lineWidth(0.5).strokeColor(DOC.hairline).stroke();
+
+      for (const p of invoice.payments || []) {
         const label = p.isRefund ? "Refund" : p.isAdvance ? "Advance" : "Payment";
-        doc.font("Helvetica").fontSize(9).text(
-          `${fmtDateTimeIST(p.paidAt)}  -  ${label} (${p.method})  -  ${p.isRefund ? "-" : ""}${INR(p.amount)}`,
+        line(
+          fmtDateTimeIST(p.paidAt),
+          `${label} · ${p.method}`,
+          `${p.isRefund ? "-" : ""}${INR(p.amount)}`,
         );
       }
-      doc.moveDown(0.8);
-      doc.font("Helvetica-Bold").text(`Total Paid: ${INR(invoice.amountPaid)}`);
-      doc.font("Helvetica-Bold").text(`Balance Due: ${INR(invoice.balanceDue)}`);
-      doc.moveDown(1);
-      doc.fontSize(8).fillColor("#666").text("Thank you. This is a computer-generated receipt.", { align: "center" });
+
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW2, doc.y)
+        .lineWidth(0.5).strokeColor(DOC.hairline).stroke();
+      doc.moveDown(0.6);
+
+      const total = (l: string, v: string) => {
+        const y = doc.y;
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(DOC.ink);
+        doc.text(l, cols[1], y, { width: cols[2] - cols[1] + 40, align: "right" });
+        doc.text(v, cols[2] + 40, y, { width: cols[3] - cols[2] - 40, align: "right" });
+        doc.x = margin;
+        doc.moveDown(0.45);
+      };
+      total("Total Paid", INR(invoice.amountPaid));
+      total("Balance Due", INR(invoice.balanceDue));
+
+      doc.x = margin;
+      doc.moveDown(1.4);
+      doc.fontSize(8).font("Helvetica").fillColor(DOC.muted)
+        .text("Thank you. This is a computer-generated receipt and does not require a signature.",
+          margin, doc.y, { width: pageW2, align: "center" });
+
+      paginate(doc, `Receipt · ${invoice.invoiceNo || ""}`.trim());
       doc.end();
     } catch (e) { reject(e); }
   });
@@ -705,14 +1124,21 @@ const age = (dob?: Date | string) => {
  * (bed history, vitals/medication/progress logs, the free-text summary
  * staff wrote) rather than fields that don't exist on the model.
  */
-export const generateDischargeSummaryPDF = (admission: any): Promise<Buffer> => {
+export const generateDischargeSummaryPDF = async (
+  admission: any,
+): Promise<Buffer> => {
+  const logo = await brandLogo();
   return new Promise((resolve, reject) => {
     try {
-      const margin = 40;
+      const margin = DOC.margin;
       const doc = new PDFDocument({
         size: "A4",
         margin,
-        info: { Title: `Discharge Summary ${admission.admissionNo}`, Author: "HealWin" },
+        bufferPages: true,
+        info: {
+          Title: `Discharge Summary ${admission.admissionNo}`,
+          Author: config.brand.name,
+        },
       });
       const chunks: Buffer[] = [];
       doc.on("data", (c: Buffer) => chunks.push(c));
@@ -724,34 +1150,46 @@ export const generateDischargeSummaryPDF = (admission: any): Promise<Buffer> => 
       const doctor = admission.attendingDoctorId || {};
       const patientAge = patient.age ?? age(patient.dateOfBirth);
 
-      doc.fontSize(16).font("Helvetica-Bold").fillColor("#0066cc")
-        .text("HealWin Life Support & Emergency Care", { align: "center" });
-      doc.fontSize(11).font("Helvetica").fillColor("#000")
-        .text("Discharge Summary", { align: "center" });
-      doc.moveDown(1);
+      letterhead(doc, { logo });
+      refBlock(doc, [
+        ["Admission No", admission.admissionNo || "—"],
+        ["Issued", fmtDateTimeIST(new Date())],
+      ]);
+      docTitle(doc, "Discharge Summary");
 
-      const field = (label: string, value: string) => {
-        doc.fontSize(9).font("Helvetica-Bold").text(`${label}: `, { continued: true })
-          .font("Helvetica").text(value || "-");
-      };
-      field("Admission No", admission.admissionNo);
-      field(
-        "Patient",
-        `${patient.fullName || "-"}${patient.patientId ? ` (${patient.patientId})` : ""}` +
-          `${patientAge != null ? `, ${patientAge}y` : ""}${patient.gender ? `, ${titleCasePdf(patient.gender)}` : ""}`,
-      );
-      field("Attending Doctor", doctor.fullName || "-");
-      field("Ward / Bed", `${admission.currentWard || admission.ward || "-"} / ${admission.currentBedNumber || admission.bedNumber || "-"}`);
-      field("Admitted", fmtDateTimeIST(admission.admittedAt));
-      field("Discharged", admission.dischargedAt ? fmtDateTimeIST(admission.dischargedAt) : "-");
-      if (admission.reason) field("Reason for Admission", admission.reason);
-      doc.moveDown(0.8);
+      infoTable(doc, [
+        [
+          "Patient",
+          `${patient.fullName || "—"}${patient.patientId ? ` (${patient.patientId})` : ""}` +
+            `${patientAge != null ? `, ${patientAge}y` : ""}` +
+            `${patient.gender ? `, ${titleCasePdf(patient.gender)}` : ""}`,
+        ],
+        ["Attending Doctor", doctor.fullName || ""],
+        [
+          "Ward / Bed",
+          `${admission.currentWard || admission.ward || "—"} / ${admission.currentBedNumber || admission.bedNumber || "—"}`,
+        ],
+        ["Admitted", fmtDateTimeIST(admission.admittedAt)],
+        [
+          "Discharged",
+          admission.dischargedAt ? fmtDateTimeIST(admission.dischargedAt) : "",
+        ],
+        ...(admission.reason
+          ? ([["Reason for Admission", admission.reason]] as Array<[string, string]>)
+          : []),
+      ]);
+      doc.moveDown(1.1);
 
       const section = (title: string) => {
-        doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y).stroke("#ccc");
-        doc.moveDown(0.3);
-        doc.fontSize(10).font("Helvetica-Bold").fillColor("#0066cc").text(title);
-        doc.fillColor("#000").moveDown(0.3);
+        // Keep a heading with at least a little of its section beneath it.
+        if (doc.y > doc.page.height - 130) doc.addPage();
+        doc.fontSize(10).font("Helvetica-Bold").fillColor(DOC.muted)
+          .text(title.toUpperCase(), margin, doc.y, { characterSpacing: 0.8 });
+        doc.moveDown(0.25);
+        doc.rect(margin, doc.y, 34, 2).fill(DOC.accent);
+        doc.fillColor(DOC.ink).font("Helvetica").fontSize(9.5);
+        doc.x = margin;
+        doc.moveDown(0.7);
       };
 
       section("Course in Hospital / Discharge Notes");
@@ -761,8 +1199,14 @@ export const generateDischargeSummaryPDF = (admission: any): Promise<Buffer> => 
       if ((admission.medicationLog || []).length > 0) {
         section("Medications Administered");
         for (const m of admission.medicationLog) {
+          // Was `new Date(m.at).toLocaleString("en-IN")`: unpinned (so it
+          // printed the server's zone, not IST, against this file's own rule)
+          // and rendered a literal "Invalid Date" whenever the timestamp was
+          // missing — which is exactly when a nurse needs to notice it isn't
+          // recorded.
+          const when = m.at ? fmtDateTimeIST(m.at) : "Time not recorded";
           doc.fontSize(9).font("Helvetica").text(
-            `${new Date(m.at).toLocaleString("en-IN")}  —  ${m.drug}${m.dose ? ` ${m.dose}` : ""}${m.route ? ` (${m.route})` : ""}${m.notes ? `  ${m.notes}` : ""}`,
+            `${when}  —  ${m.drug || "Medication"}${m.dose ? ` ${m.dose}` : ""}${m.route ? ` (${m.route})` : ""}${m.notes ? `  ${m.notes}` : ""}`,
             { width: pageW },
           );
         }
@@ -786,11 +1230,16 @@ export const generateDischargeSummaryPDF = (admission: any): Promise<Buffer> => 
         doc.moveDown(0.6);
       }
 
-      doc.moveDown(0.6);
-      doc.fontSize(8).fillColor("#666").text(
+      doc.x = margin;
+      doc.moveDown(1);
+      doc.fontSize(8).font("Helvetica").fillColor(DOC.muted).text(
         "This is a computer-generated discharge summary. Please follow up with your treating doctor as advised.",
-        { align: "center" },
+        margin,
+        doc.y,
+        { width: pageW, align: "center" },
       );
+
+      paginate(doc, `Discharge · ${admission.admissionNo || ""}`.trim());
       doc.end();
     } catch (e) { reject(e); }
   });
@@ -809,7 +1258,7 @@ const titleCasePdf = (s: string) => s.replace(/\b\w/g, (c) => c.toUpperCase());
  * `extras` carries the things that don't live on the encounter: the hospital
  * letterhead block and the lab readings to quote.
  */
-export const generatePrescriptionPDF = (
+export const generatePrescriptionPDF = async (
   encounter: any,
   extras: {
     hospital: { name: string; address?: string; phone?: string; email?: string; website?: string };
@@ -817,12 +1266,14 @@ export const generatePrescriptionPDF = (
     department?: string;
   },
 ): Promise<Buffer> => {
+  const logo = await brandLogo();
   return new Promise((resolve, reject) => {
     try {
-      const margin = 40;
+      const margin = DOC.margin;
       const doc = new PDFDocument({
         size: "A4",
         margin,
+        bufferPages: true,
         info: { Title: "Prescription", Author: extras.hospital.name },
       });
       const chunks: Buffer[] = [];
@@ -837,29 +1288,38 @@ export const generatePrescriptionPDF = (
       const visit = new Date(encounter.visitDate || encounter.createdAt || Date.now());
 
       // ---------- Letterhead ----------
-      doc.fontSize(18).font("Helvetica-Bold").fillColor("#c0392b")
-        .text(extras.hospital.name, margin, margin, { width: pageW * 0.6 });
-      if (extras.department) {
-        doc.fontSize(10).font("Helvetica-Bold").fillColor("#000")
-          .text(extras.department, margin + pageW * 0.6, margin + 4, {
-            width: pageW * 0.4,
-            align: "right",
-          });
-      }
-      doc.moveDown(0.6);
+      // The treating hospital's identity, not the platform's.
+      letterhead(doc, {
+        logo,
+        name: extras.hospital.name,
+        tagline: extras.department || config.brand.tagline,
+        contact:
+          [extras.hospital.phone, extras.hospital.email, extras.hospital.website]
+            .filter(Boolean)
+            .join("   |   ") || undefined,
+      });
 
+      // ---------- Prescriber ----------
       const docTop = doc.y;
-      doc.fontSize(12).font("Helvetica-Bold").fillColor("#000")
-        .text(doctor.fullName ? `Dr. ${doctor.fullName}` : "Doctor", margin, docTop);
-      doc.fontSize(8).font("Helvetica").fillColor("#333");
-      if (prof.qualification) doc.text(prof.qualification);
-      if (prof.speciality) doc.text(prof.speciality);
-      if (doctor.email) doc.text(doctor.email);
-      if (prof.registrationNumber) doc.text(`Regd No.- ${prof.registrationNumber}`);
+      doc.fontSize(12).font("Helvetica-Bold").fillColor(DOC.ink)
+        .text(doctor.fullName ? `Dr. ${doctor.fullName}` : "Doctor", margin, docTop, {
+          width: pageW * 0.6,
+        });
+      doc.fontSize(8.5).font("Helvetica").fillColor(DOC.muted);
+      const credentials = [
+        prof.qualification,
+        prof.speciality,
+        doctor.email,
+        prof.registrationNumber ? `Regd. No. ${prof.registrationNumber}` : null,
+      ].filter(Boolean) as string[];
+      for (const c of credentials) doc.text(c, margin, doc.y, { width: pageW * 0.6 });
 
+      doc.x = margin;
+      doc.moveDown(0.7);
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y)
+        .lineWidth(0.7).strokeColor(DOC.hairline).stroke();
+      doc.fillColor(DOC.ink);
       doc.moveDown(0.6);
-      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y).lineWidth(1).stroke("#333");
-      doc.moveDown(0.5);
 
       // ---------- Patient strip ----------
       const ageStr = patient.age != null ? `${patient.age} YEAR(S)` : "";
@@ -996,20 +1456,32 @@ export const generatePrescriptionPDF = (
         margin, doc.y, { width: pageW },
       );
 
-      doc.moveDown(0.8);
-      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y).lineWidth(0.5).stroke("#999");
-      doc.moveDown(0.4);
-      doc.fontSize(9).font("Helvetica-Bold").fillColor("#c0392b")
-        .text(extras.hospital.name, { align: "center" });
-      doc.fontSize(7).font("Helvetica").fillColor("#333");
-      if (extras.hospital.address) doc.text(extras.hospital.address, { align: "center" });
+      doc.x = margin;
+      doc.moveDown(1);
+      doc.moveTo(margin, doc.y).lineTo(margin + pageW, doc.y)
+        .lineWidth(0.5).strokeColor(DOC.hairline).stroke();
+      doc.moveDown(0.5);
+      doc.fontSize(9).font("Helvetica-Bold").fillColor(DOC.band)
+        .text(extras.hospital.name, margin, doc.y, { width: pageW, align: "center" });
+      doc.fontSize(7).font("Helvetica").fillColor(DOC.muted);
+      if (extras.hospital.address) {
+        doc.text(extras.hospital.address, margin, doc.y, {
+          width: pageW,
+          align: "center",
+        });
+      }
       const contact = [
         extras.hospital.phone ? `Tel: ${extras.hospital.phone}` : null,
         extras.hospital.email || null,
         extras.hospital.website || null,
       ].filter(Boolean).join("   |   ");
-      if (contact) doc.text(contact, { align: "center" });
+      if (contact) {
+        doc.text(contact, margin, doc.y, { width: pageW, align: "center" });
+      }
 
+      // The hospital's own footer already names the address, so the shared
+      // one would only repeat it — page numbers are what is missing.
+      paginate(doc, undefined, { address: false });
       doc.end();
     } catch (e) {
       reject(e);
@@ -1024,7 +1496,12 @@ export const generatePrescriptionPDF = (
  * copy on file is byte-identical to the one they received — which matters if
  * the terms are ever disputed.
  */
-export const generateOfferLetterPDF = (data: {
+/**
+ * Offer letter — a proposal of employment, issued when an application is
+ * marked hired. Printed on the shared letterhead so it matches every other
+ * document the organisation sends out.
+ */
+export const generateOfferLetterPDF = async (data: {
   candidateName: string;
   applicationNumber: string;
   designation: string;
@@ -1036,12 +1513,14 @@ export const generateOfferLetterPDF = (data: {
   notes?: string;
   companyName: string;
 }): Promise<Buffer> => {
+  const logo = await brandLogo();
   return new Promise((resolve, reject) => {
     try {
-      const margin = 50;
       const doc = new PDFDocument({
         size: "A4",
-        margin,
+        margin: DOC.margin,
+        // Buffered so the footer can number the pages once they all exist.
+        bufferPages: true,
         info: {
           Title: `Offer Letter - ${data.candidateName}`,
           Author: data.companyName,
@@ -1052,109 +1531,50 @@ export const generateOfferLetterPDF = (data: {
       doc.on("end", () => resolve(Buffer.concat(chunks)));
       doc.on("error", reject);
 
-      const pageWidth = doc.page.width - margin * 2;
+      letterhead(doc, { logo });
+      refBlock(doc, [
+        ["Date", fmtLongDateIST(new Date())],
+        ["Ref", data.applicationNumber || "—"],
+      ]);
+      docTitle(doc, "Letter of Offer");
 
-      // ---- Letterhead ----
-      doc
-        .fontSize(18)
-        .font("Helvetica-Bold")
-        .text(data.companyName, { align: "center" });
-      doc
-        .fontSize(9)
-        .font("Helvetica")
-        .fillColor("#555")
-        .text("Life Support & Emergency Care", { align: "center" });
-      doc.moveDown(0.5);
-      doc
-        .moveTo(margin, doc.y)
-        .lineTo(margin + pageWidth, doc.y)
-        .strokeColor("#0891b2")
-        .lineWidth(2)
-        .stroke();
-      doc.moveDown(1.2);
-
-      doc.fillColor("#000").fontSize(10).font("Helvetica");
-      doc.text(`Date: ${fmtDateIST(new Date())}`, { align: "right" });
-      doc.text(`Ref: ${data.applicationNumber}`, { align: "right" });
-      doc.moveDown(1);
-
-      doc.fontSize(14).font("Helvetica-Bold").text("LETTER OF OFFER", {
-        align: "center",
-      });
-      doc.moveDown(1);
-
-      doc.fontSize(11).font("Helvetica");
-      doc.text(`Dear ${data.candidateName},`);
-      doc.moveDown(0.6);
-      doc.text(
+      para(doc, `Dear ${data.candidateName},`, { gap: 0.5 });
+      para(
+        doc,
         `We are pleased to offer you the position of ${data.designation} at ${data.companyName}. ` +
-          `Following your application and interview, we would be glad to have you join us. ` +
-          `The principal terms of your employment are set out below.`,
-        { align: "justify" },
+          `Following your application and interview, your qualifications and experience stood out, and we ` +
+          `would be glad to have you join us. The principal terms of your employment are set out below.`,
       );
-      doc.moveDown(1);
 
-      // ---- Terms table ----
-      const rows: Array<[string, string]> = [
-        ["Designation", data.designation],
-        ["Department", data.department || "-"],
-        ["Annual CTC", inr(data.ctcAnnual)],
-        ["Date of Joining", fmtDateIST(data.joiningDate)],
-        ["Place of Posting", data.location || "-"],
-        ["Reporting To", data.reportingTo || "-"],
-      ];
-      const labelW = 150;
-      const valueW = pageWidth - labelW;
-      for (const [label, value] of rows) {
-        const h = Math.max(
-          20,
-          doc.font("Helvetica").fontSize(10).heightOfString(value, {
-            width: valueW - 8,
-          }) + 8,
-        );
-        const top = doc.y;
-        doc.rect(margin, top, labelW, h).fillAndStroke("#f8fafc", "#e5e7eb");
-        doc.rect(margin + labelW, top, valueW, h).strokeColor("#e5e7eb").stroke();
-        doc
-          .fillColor("#000")
-          .font("Helvetica-Bold")
-          .fontSize(10)
-          .text(label, margin + 6, top + 5, { width: labelW - 12 });
-        doc
-          .font("Helvetica")
-          .text(value, margin + labelW + 6, top + 5, { width: valueW - 12 });
-        doc.y = top + h;
-      }
-      // The table wrote cells at explicit x offsets — put the cursor back on
-      // the left margin before any flowing text, or it renders indented.
-      doc.x = margin;
-      doc.moveDown(1.2);
+      infoTable(
+        doc,
+        [
+          ["Designation", data.designation],
+          ["Department", data.department || ""],
+          ["Annual CTC", inr(data.ctcAnnual)],
+          ["Date of Joining", fmtLongDateIST(data.joiningDate)],
+          ["Place of Posting", data.location || ""],
+          ["Reporting To", data.reportingTo || ""],
+        ],
+        { heading: "Terms of the offer" },
+      );
+      doc.moveDown(1.1);
 
       if (data.notes) {
-        doc.font("Helvetica-Bold").fontSize(10).text("Additional Terms");
-        doc.moveDown(0.3);
-        doc.font("Helvetica").fontSize(10).text(data.notes, { align: "justify" });
-        doc.moveDown(1);
+        para(doc, "Additional Terms", { bold: true, gap: 0.35 });
+        para(doc, data.notes);
       }
 
-      doc
-        .font("Helvetica")
-        .fontSize(10)
-        .text(
-          "This offer is subject to verification of the documents and credentials submitted with your " +
-            "application, and to your acceptance of the terms above. Please confirm your acceptance by " +
-            "replying to this email on or before your date of joining.",
-          { align: "justify" },
-        );
-      doc.moveDown(1);
-      doc.text("We look forward to welcoming you to the team.");
-      doc.moveDown(2);
+      para(
+        doc,
+        "This offer is subject to verification of the documents and credentials submitted with your " +
+          "application, and to your acceptance of the terms above. Please confirm your acceptance by " +
+          "replying to this email on or before your date of joining.",
+      );
+      para(doc, "We look forward to welcoming you to the team.", { gap: 0.4 });
 
-      doc.font("Helvetica-Bold").text("For " + data.companyName);
-      doc.moveDown(2.5);
-      doc.font("Helvetica").text("Authorised Signatory");
-      doc.text("Human Resources");
-
+      signOff(doc);
+      paginate(doc, `Offer · ${data.applicationNumber || data.candidateName}`);
       doc.end();
     } catch (err) {
       reject(err);
@@ -1167,7 +1587,7 @@ export const generateOfferLetterPDF = (data: {
  * accepted. Deliberately a different document from the offer: the offer is a
  * proposal, this confirms an employment that has begun.
  */
-export const generateAppointmentLetterPDF = (data: {
+export const generateAppointmentLetterPDF = async (data: {
   candidateName: string;
   applicationNumber: string;
   designation: string;
@@ -1179,12 +1599,13 @@ export const generateAppointmentLetterPDF = (data: {
   employeeCode?: string;
   companyName: string;
 }): Promise<Buffer> => {
+  const logo = await brandLogo();
   return new Promise((resolve, reject) => {
     try {
-      const margin = 50;
       const doc = new PDFDocument({
         size: "A4",
-        margin,
+        margin: DOC.margin,
+        bufferPages: true,
         info: {
           Title: `Appointment Letter - ${data.candidateName}`,
           Author: data.companyName,
@@ -1195,102 +1616,56 @@ export const generateAppointmentLetterPDF = (data: {
       doc.on("end", () => resolve(Buffer.concat(chunks)));
       doc.on("error", reject);
 
-      const pageWidth = doc.page.width - margin * 2;
+      letterhead(doc, { logo });
+      refBlock(doc, [
+        ["Date", fmtLongDateIST(new Date())],
+        ["Ref", data.applicationNumber || "—"],
+      ]);
+      docTitle(doc, "Letter of Appointment");
 
-      doc.fontSize(18).font("Helvetica-Bold").text(data.companyName, { align: "center" });
-      doc
-        .fontSize(9)
-        .font("Helvetica")
-        .fillColor("#555")
-        .text("Life Support & Emergency Care", { align: "center" });
-      doc.moveDown(0.5);
-      doc
-        .moveTo(margin, doc.y)
-        .lineTo(margin + pageWidth, doc.y)
-        .strokeColor("#0891b2")
-        .lineWidth(2)
-        .stroke();
-      doc.moveDown(1.2);
-
-      doc.fillColor("#000").fontSize(10).font("Helvetica");
-      doc.text(`Date: ${fmtDateIST(new Date())}`, { align: "right" });
-      doc.text(`Ref: ${data.applicationNumber}`, { align: "right" });
-      doc.moveDown(1);
-
-      doc.fontSize(14).font("Helvetica-Bold").text("LETTER OF APPOINTMENT", {
-        align: "center",
-      });
-      doc.moveDown(1);
-
-      doc.fontSize(11).font("Helvetica");
-      doc.text(`Dear ${data.candidateName},`);
-      doc.moveDown(0.6);
-      doc.text(
+      para(doc, `Dear ${data.candidateName},`, { gap: 0.5 });
+      para(
+        doc,
         `Further to your acceptance of our offer, we are pleased to confirm your appointment as ` +
-          `${data.designation} at ${data.companyName} with effect from ${fmtDateIST(data.joiningDate)}. ` +
-          `Your appointment is governed by the terms below and by the company's policies in force from time to time.`,
-        { align: "justify" },
+          `${data.designation} at ${data.companyName} with effect from ${fmtLongDateIST(data.joiningDate)}. ` +
+          `Your appointment is governed by the terms below and by the organisation's policies in force ` +
+          `from time to time.`,
       );
-      doc.moveDown(1);
 
-      const rows: Array<[string, string]> = [
-        ["Employee Name", data.candidateName],
-        ...(data.employeeCode
-          ? ([["Employee Code", data.employeeCode]] as Array<[string, string]>)
-          : []),
-        ["Designation", data.designation],
-        ["Department", data.department || "-"],
-        ["Date of Joining", fmtDateIST(data.joiningDate)],
-        ["Place of Posting", data.location || "-"],
-        ["Reporting To", data.reportingTo || "-"],
-        ...(data.ctcAnnual
-          ? ([["Annual CTC", inr(data.ctcAnnual)]] as Array<[string, string]>)
-          : []),
-      ];
-      const labelW = 150;
-      const valueW = pageWidth - labelW;
-      for (const [label, value] of rows) {
-        const h = Math.max(
-          20,
-          doc.font("Helvetica").fontSize(10).heightOfString(value, {
-            width: valueW - 8,
-          }) + 8,
-        );
-        const top = doc.y;
-        doc.rect(margin, top, labelW, h).fillAndStroke("#f8fafc", "#e5e7eb");
-        doc.rect(margin + labelW, top, valueW, h).strokeColor("#e5e7eb").stroke();
-        doc
-          .fillColor("#000")
-          .font("Helvetica-Bold")
-          .fontSize(10)
-          .text(label, margin + 6, top + 5, { width: labelW - 12 });
-        doc
-          .font("Helvetica")
-          .text(value, margin + labelW + 6, top + 5, { width: valueW - 12 });
-        doc.y = top + h;
-      }
-      // Reset after the explicit-x table so flowing text isn't indented.
-      doc.x = margin;
-      doc.moveDown(1.2);
+      infoTable(
+        doc,
+        [
+          ["Employee Name", data.candidateName],
+          ...(data.employeeCode
+            ? ([["Employee Code", data.employeeCode]] as Array<[string, string]>)
+            : []),
+          ["Designation", data.designation],
+          ["Department", data.department || ""],
+          ["Date of Joining", fmtLongDateIST(data.joiningDate)],
+          ["Place of Posting", data.location || ""],
+          ["Reporting To", data.reportingTo || ""],
+          ...(data.ctcAnnual
+            ? ([["Annual CTC", inr(data.ctcAnnual)]] as Array<[string, string]>)
+            : []),
+        ],
+        { heading: "Particulars of appointment" },
+      );
+      doc.moveDown(1.1);
 
-      doc
-        .font("Helvetica")
-        .fontSize(10)
-        .text(
-          "You are required to comply with the organisation's code of conduct, confidentiality obligations " +
-            "and patient-privacy policies at all times. Please report to Human Resources on your date of " +
-            "joining with the original documents submitted during recruitment.",
-          { align: "justify" },
-        );
-      doc.moveDown(1);
-      doc.text("We warmly welcome you to the team and look forward to working with you.");
-      doc.moveDown(2);
+      para(
+        doc,
+        "You are required to comply with the organisation's code of conduct, confidentiality obligations " +
+          "and patient-privacy policies at all times. Please report to Human Resources on your date of " +
+          "joining with the original documents submitted during recruitment.",
+      );
+      para(
+        doc,
+        "We warmly welcome you to the team and look forward to working with you.",
+        { gap: 0.4 },
+      );
 
-      doc.font("Helvetica-Bold").text("For " + data.companyName);
-      doc.moveDown(2.5);
-      doc.font("Helvetica").text("Authorised Signatory");
-      doc.text("Human Resources");
-
+      signOff(doc);
+      paginate(doc, `Appointment · ${data.employeeCode || data.applicationNumber || data.candidateName}`);
       doc.end();
     } catch (err) {
       reject(err);

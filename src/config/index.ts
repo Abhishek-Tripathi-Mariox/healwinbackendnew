@@ -35,6 +35,21 @@ const config = {
       // writes." Default to false so writes work on standalone; set
       // DB_RETRY_WRITES=true once the deployment is a replica set.
       retryWrites: process.env.DB_RETRY_WRITES === "true",
+      /**
+       * Index building is a deploy step, not a boot step.
+       *
+       * Mongoose defaults this to true, so every process start asks MongoDB to
+       * build every declared index. On small data that is a harmless no-op; on
+       * a hundred-thousand-row collection a newly added index builds while the
+       * app is coming up — and with several workers, all of them ask at once.
+       * Run `npm run migrate:indexes` as part of deployment instead.
+       *
+       * Left on outside production so local schema changes take effect without
+       * remembering to run the migration.
+       */
+      autoIndex: process.env.DB_AUTO_INDEX
+        ? process.env.DB_AUTO_INDEX === "true"
+        : process.env.NODE_ENV !== "production",
     },
   },
 
@@ -187,6 +202,32 @@ const config = {
   // system sends from; they take precedence over the older SMTP_USER/SMTP_PASS
   // names, which remain as a fallback for existing deployments.
   //
+  /**
+   * Organisation identity printed on every generated document — the letterhead
+   * on offer and appointment letters, invoices, prescriptions, discharge
+   * summaries and payslips. Kept here rather than passed in per call so the
+   * documents cannot drift apart from each other.
+   */
+  brand: {
+    // HOSPITAL_* are the names the invoice/discharge generators already used;
+    // they stay as fallbacks so a deployment that set them keeps its details.
+    name: optional(
+      "BRAND_NAME",
+      optional("HOSPITAL_NAME", optional("SMTP_COMPANY_NAME", "HealWin")),
+    ),
+    tagline: optional("BRAND_TAGLINE", "Emergency & Critical Care"),
+    email: optional(
+      "BRAND_EMAIL",
+      optional("HOSPITAL_EMAIL", optional("SMTP_HR_EMAIL", "hr@healwin.in")),
+    ),
+    phone: optional("BRAND_PHONE", optional("HOSPITAL_PHONE", "")),
+    website: optional("BRAND_WEBSITE", optional("HOSPITAL_WEBSITE", "")),
+    address: optional("BRAND_ADDRESS", optional("HOSPITAL_ADDRESS", "")),
+    // Absolute URL or a path under the backend — printed in the letterhead
+    // when set, otherwise the name is set in type.
+    logoUrl: optional("BRAND_LOGO_URL", ""),
+  },
+
   // There is deliberately NO hardcoded password default any more. A committed
   // app password is a live credential in the repo, and a default also hides
   // misconfiguration: mail appears to work while going out from the wrong

@@ -7,6 +7,13 @@ export interface IWalletTransaction {
   amount: number;
   type: TransactionType;
   referenceId?: string;
+  /**
+   * The gateway payment id, when this row was created by a real payment.
+   * Unique — this is what makes crediting idempotent: the app's confirm call
+   * and the provider's webhook both race to credit the same payment, and only
+   * one row per payment can ever exist.
+   */
+  paymentRef?: string;
   description?: string;
   balanceBefore: number;
   balanceAfter: number;
@@ -35,6 +42,9 @@ const WalletTransactionSchema = new Schema<IWalletTransaction>(
       type: String,
       index: true,
     },
+    paymentRef: {
+      type: String,
+    },
     description: String,
     balanceBefore: {
       type: Number,
@@ -57,6 +67,12 @@ const WalletTransactionSchema = new Schema<IWalletTransaction>(
 // Compound indexes
 WalletTransactionSchema.index({ userId: 1, createdAt: -1 });
 WalletTransactionSchema.index({ referenceId: 1, status: 1 });
+// Partial, not sparse: sparse would still index rows where the field is
+// explicitly null and collide on the second one.
+WalletTransactionSchema.index(
+  { paymentRef: 1 },
+  { unique: true, partialFilterExpression: { paymentRef: { $type: "string" } } }
+);
 
 export default mongoose.model<IWalletTransaction>(
   "WalletTransaction",

@@ -249,6 +249,19 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
 
 AmbulanceRequestSchema.index({ userId: 1, status: 1, createdAt: -1 });
 
+/**
+ * Newest-first listing.
+ *
+ * The compound indexes above all lead with an equality field, so a query that
+ * filters on none of them — the plain "latest first" list every admin screen
+ * opens with — cannot use any of them for the sort and falls back to sorting
+ * in memory. That is fine at a thousand rows and fails at a hundred thousand:
+ * MongoDB buffers the whole result set and aborts the sort past 32MB.
+ */
+AmbulanceRequestSchema.index({ createdAt: -1 });
+AmbulanceRequestSchema.index({ status: 1, createdAt: -1 });
+AmbulanceRequestSchema.index({ userId: 1, createdAt: -1 });
+
 export const AmbulanceRequest = mongoose.model<IAmbulanceRequest>(
   "AmbulanceRequest",
   AmbulanceRequestSchema,

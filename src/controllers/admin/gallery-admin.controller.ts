@@ -3,6 +3,7 @@ import { GalleryImage } from "../../models/gallery-image.model";
 import { uploadMultipleFilesToAws } from "../../utils/s3";
 import { paginate } from "../../utils/paginate.util";
 import { invalidateCache } from "../../middlewares/cache.middleware";
+import { escapeRegex } from "../../utils/helpers";
 
 export const getAllImages = async (req: Request, res: Response) => {
   const { q, category } = req.query as { q?: string; category?: string };
@@ -11,8 +12,8 @@ export const getAllImages = async (req: Request, res: Response) => {
   if (category) filter.category = category;
   if (q) {
     filter.$or = [
-      { title: { $regex: q, $options: "i" } },
-      { category: { $regex: q, $options: "i" } },
+      { title: { $regex: escapeRegex(q), $options: "i" } },
+      { category: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 

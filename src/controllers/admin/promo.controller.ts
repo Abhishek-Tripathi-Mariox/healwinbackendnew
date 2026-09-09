@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import PromoCode from "../../models/promo-code.model";
 import * as PromoService from "../../services/promo.service";
 import { Types } from "mongoose";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Admin CRUD for promo codes (logistics + ambulance). Mounted at /admin/promos.
@@ -31,8 +32,8 @@ export const getAllPromos = async (
 
   if (search) {
     query.$or = [
-      { code: { $regex: search, $options: "i" } },
-      { description: { $regex: search, $options: "i" } },
+      { code: { $regex: escapeRegex(search), $options: "i" } },
+      { description: { $regex: escapeRegex(search), $options: "i" } },
     ];
   }
 

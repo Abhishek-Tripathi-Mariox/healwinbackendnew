@@ -13,6 +13,23 @@ import config from "../config";
  */
 export const OTP_LENGTH = 4;
 
+/**
+ * Make a user-typed search term safe to drop into a `$regex`.
+ *
+ * Two problems, both of which get worse with data volume:
+ *
+ *  • Correctness — a search for "C++" or "(ICU)" is not a valid pattern, so it
+ *    either throws or quietly matches the wrong things.
+ *  • Denial of service — a crafted term such as "(a+)+$" backtracks
+ *    catastrophically. Against a hundred thousand documents that is enough to
+ *    tie up the database from a single unauthenticated search box.
+ *
+ * Escaping every metacharacter makes the term literal, which is what a search
+ * box means anyway.
+ */
+export const escapeRegex = (input: unknown): string =>
+  String(input ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 export default function helpers() {
   /**
    * Standard API response

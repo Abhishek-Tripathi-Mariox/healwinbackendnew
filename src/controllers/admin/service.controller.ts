@@ -3,6 +3,7 @@ import { Service } from "../../models/service.model";
 import { invalidateCache } from "../../middlewares/cache.middleware";
 import { uploadFileToAws } from "../../utils/s3";
 import { paginate } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 // Slugify helper
 const slugify = (text: string) =>
@@ -20,9 +21,9 @@ export const getAllServices = async (req: Request, res: Response) => {
 
   if (q) {
     filter.$or = [
-      { title: { $regex: q, $options: "i" } },
-      { subtitle: { $regex: q, $options: "i" } },
-      { description: { $regex: q, $options: "i" } },
+      { title: { $regex: escapeRegex(q), $options: "i" } },
+      { subtitle: { $regex: escapeRegex(q), $options: "i" } },
+      { description: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 

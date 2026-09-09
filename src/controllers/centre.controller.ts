@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { Centre } from "../models/centre.model";
 import { LocatorServiceType } from "../models/locator-service-type.model";
 import { Department } from "../models/department.model";
+import { escapeRegex } from "../utils/helpers";
 
 // List all active locator service types (for tabs on centre locator page)
 export const listServiceTypes = async (_req: Request, res: Response) => {
@@ -126,9 +127,9 @@ export const searchCentres = async (req: Request, res: Response) => {
 
   if (q) {
     filter.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { address: { $regex: q, $options: "i" } },
-      { info: { $regex: q, $options: "i" } },
+      { name: { $regex: escapeRegex(q), $options: "i" } },
+      { address: { $regex: escapeRegex(q), $options: "i" } },
+      { info: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 

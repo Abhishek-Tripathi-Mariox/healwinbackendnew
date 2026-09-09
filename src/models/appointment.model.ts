@@ -119,6 +119,10 @@ const AppointmentSchema = new Schema<IAppointment>(
 
 // Queue board: doctor's appointments for a given day, ordered by token.
 AppointmentSchema.index({ doctorId: 1, scheduledAt: 1, tokenNumber: 1 });
+// The OPD board opens on a whole day with no doctor chosen, so the
+// doctor-first index above cannot serve it.
+AppointmentSchema.index({ scheduledAt: 1, tokenNumber: 1 });
+AppointmentSchema.index({ patientId: 1, scheduledAt: -1 });
 
 export const Appointment = mongoose.model<IAppointment>(
   "Appointment",

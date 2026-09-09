@@ -7,6 +7,7 @@ import {
 import NewsArticle from "../../models/news-article.model";
 import GalleryImage from "../../models/gallery-image.model";
 import { paginate } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Publish an approved submission into the public-facing collection the
@@ -69,9 +70,9 @@ export const getAllSubmissions = async (req: Request, res: Response) => {
   if (status) filter.status = status;
   if (q) {
     filter.$or = [
-      { title: { $regex: q, $options: "i" } },
-      { authorName: { $regex: q, $options: "i" } },
-      { authorEmail: { $regex: q, $options: "i" } },
+      { title: { $regex: escapeRegex(q), $options: "i" } },
+      { authorName: { $regex: escapeRegex(q), $options: "i" } },
+      { authorEmail: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 

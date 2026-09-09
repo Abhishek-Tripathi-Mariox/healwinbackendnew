@@ -98,6 +98,13 @@ const UserSchema: Schema<IUser> = new Schema(
 
 // Compound indexes
 UserSchema.index({ mobileNumber: 1, isDeleted: 1 });
+// The user list filters `isDeleted` on every request and sorts newest-first;
+// without this it collection-scans and sorts in memory.
+UserSchema.index({ isDeleted: 1, createdAt: -1 });
+UserSchema.index({ isDeleted: 1, role: 1, createdAt: -1 });
+// Promotional broadcast audience: active, notifications on, optionally
+// narrowed by last-seen. Without this the send scans every user.
+UserSchema.index({ isActive: 1, isNotificationEnabled: 1, lastActiveAt: 1 });
 // UserSchema.index({ referralCode: 1 }, { sparse: true });
 
 // Prevent overwrite error in dev / hot reload

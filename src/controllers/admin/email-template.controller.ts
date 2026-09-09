@@ -8,6 +8,7 @@ import {
   getActiveTemplate,
   getSmtpConfig,
 } from "../../services/email.service";
+import { escapeRegex } from "../../utils/helpers";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
 
@@ -52,8 +53,8 @@ export const getAllTemplates = async (req: Request, res: Response) => {
   if (type) filter.type = type;
   if (q) {
     filter.$or = [
-      { name: { $regex: q, $options: "i" } },
-      { subject: { $regex: q, $options: "i" } },
+      { name: { $regex: escapeRegex(q), $options: "i" } },
+      { subject: { $regex: escapeRegex(q), $options: "i" } },
     ];
   }
 

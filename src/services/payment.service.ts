@@ -1,17 +1,26 @@
 import { Types } from "mongoose";
-import crypto from "crypto";
 import Booking from "../models/booking.model";
 import Wallet from "../models/wallet.model";
 import WalletTransaction from "../models/wallet-transaction.model";
-import User from "../models/Users";
-import config from "../config";
+import * as Gateway from "./razorpay.service";
+import { emitToUser } from "../utils/socket.util";
+import {
+  startTopUp,
+  confirmTopUp,
+  creditCapturedPayment,
+  resolveTopUpUser,
+} from "./wallet-topup.service";
 
-// Razorpay configuration (replace with actual credentials)
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || "rzp_test_xxxxx";
-const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || "test_secret";
-
-// Mock Razorpay instance - Replace with actual razorpay in production
-let razorpayInstance: any = null;
+/**
+ * Payments.
+ *
+ * This module used to run entirely on a mock: `razorpayInstance` was never
+ * assigned, so every verification fell into an "accept it, we're in dev" branch
+ * and any caller could mark a booking PAID, or credit a wallet with an amount
+ * of their own choosing, by posting three made-up strings. Every path here now
+ * goes through razorpay.service, which uses the credentials configured in the
+ * admin panel and verifies signatures for real.
+ */
 
 interface RazorpayOrder {
   id: string;
@@ -41,23 +50,20 @@ interface RefundResult {
 }
 
 /**
- * Initialize Razorpay SDK
+ * Report whether payments can actually be taken, at boot. Credentials live in
+ * the database, so this is a status check rather than an initialisation step —
+ * keys added in the admin panel later are picked up without a restart.
  */
 export const initializeRazorpay = async () => {
-  try {
-    // In production, use:
-    // const Razorpay = require('razorpay');
-    // razorpayInstance = new Razorpay({
-    //   key_id: RAZORPAY_KEY_ID,
-    //   key_secret: RAZORPAY_KEY_SECRET,
-    // });
-
-    console.log("Razorpay SDK initialized (mock mode)");
-    return true;
-  } catch (error) {
-    console.error("Failed to initialize Razorpay:", error);
+  const creds = await Gateway.getCredentials();
+  if (creds.source === "none") {
+    console.warn(
+      "[payments] No gateway credentials — payments will be refused until keys are added under System → Payment Configuration.",
+    );
     return false;
   }
+  console.log(`[payments] Razorpay ready (${creds.mode} mode, from ${creds.source})`);
+  return true;
 };
 
 /**
@@ -70,33 +76,19 @@ export const createOrder = async (
   notes?: Record<string, string>,
 ): Promise<RazorpayOrder | null> => {
   try {
-    const amountInPaise = Math.round(amount * 100); // Convert to paise
-
-    if (razorpayInstance) {
-      const order = await razorpayInstance.orders.create({
-        amount: amountInPaise,
-        currency,
-        receipt,
-        notes: notes || {},
-      });
-      return order;
-    } else {
-      // Mock order for development
-      const mockOrder: RazorpayOrder = {
-        id: `order_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        entity: "order",
-        amount: amountInPaise,
-        amount_paid: 0,
-        amount_due: amountInPaise,
-        currency,
-        receipt,
-        status: "created",
-        attempts: 0,
-        created_at: Date.now(),
-      };
-      console.log("Created mock order:", mockOrder);
-      return mockOrder;
-    }
+    const order = await Gateway.createOrder(amount, receipt, notes || {});
+    return {
+      id: order.orderId,
+      entity: "order",
+      amount: order.amount,
+      amount_paid: 0,
+      amount_due: order.amount,
+      currency: order.currency || currency,
+      receipt,
+      status: "created",
+      attempts: 0,
+      created_at: Date.now(),
+    };
   } catch (error) {
     console.error("Failed to create Razorpay order:", error);
     return null;
@@ -110,20 +102,7 @@ export const verifyPaymentSignature = (
   orderId: string,
   paymentId: string,
   signature: string,
-): boolean => {
-  try {
-    const body = orderId + "|" + paymentId;
-    const expectedSignature = crypto
-      .createHmac("sha256", RAZORPAY_KEY_SECRET)
-      .update(body)
-      .digest("hex");
-
-    return expectedSignature === signature;
-  } catch (error) {
-    console.error("Failed to verify payment signature:", error);
-    return false;
-  }
-};
+): Promise<boolean> => Gateway.verifyPaymentSignature({ orderId, paymentId, signature });
 
 /**
  * Create order for booking payment
@@ -179,19 +158,46 @@ export const verifyBookingPayment = async (
   signature: string,
 ): Promise<PaymentVerificationResult> => {
   try {
-    // In mock mode, accept all payments
-    const isValid = razorpayInstance
-      ? verifyPaymentSignature(orderId, paymentId, signature)
-      : true;
+    if (!(await verifyPaymentSignature(orderId, paymentId, signature))) {
+      return { success: false, message: "Invalid payment signature" };
+    }
 
-    if (!isValid) {
+    // A signature only proves the callback came from Razorpay for this order —
+    // not that anyone paid. Ask the gateway what actually happened.
+    const payment = await Gateway.fetchPayment(paymentId);
+    if (!payment) {
       return {
         success: false,
-        message: "Invalid payment signature",
+        message: "Could not confirm this payment with the gateway.",
+      };
+    }
+    if (payment.status !== "captured") {
+      return {
+        success: false,
+        message: `Payment is "${payment.status}", not captured.`,
+      };
+    }
+    if (payment.order_id && payment.order_id !== orderId) {
+      return { success: false, message: "This payment belongs to another order." };
+    }
+
+    const target = await Booking.findById(bookingId);
+    if (!target) {
+      return { success: false, message: "Booking not found" };
+    }
+    if (target.paymentStatus === "PAID") {
+      // Idempotent: a retried callback confirms, it does not re-charge.
+      return { success: true, message: "Payment already recorded", paymentId, orderId };
+    }
+    // Underpayment must not mark the booking settled.
+    const paidRupees = payment.amount / 100;
+    if (paidRupees + 0.01 < target.finalFare) {
+      return {
+        success: false,
+        message: `Only ₹${paidRupees} was paid against a fare of ₹${target.finalFare}.`,
       };
     }
 
-    // Update booking payment status
     const booking = await Booking.findByIdAndUpdate(
       bookingId,
       {
@@ -245,41 +251,37 @@ export const processRefund = async (
 
     const refundAmount = amount || booking.finalFare;
 
-    if (razorpayInstance && booking.paymentTransactionId) {
-      const refund = await razorpayInstance.payments.refund(
-        booking.paymentTransactionId,
-        {
-          amount: Math.round(refundAmount * 100), // Convert to paise
-          notes: {
-            bookingId: bookingId.toString(),
-            reason: reason || "Booking cancelled",
-          },
-        },
-      );
-
-      booking.refundAmount = refundAmount;
-      booking.refundStatus = "PROCESSED";
-      await booking.save();
-
+    const client = await Gateway.getClient();
+    if (!client || !booking.paymentTransactionId) {
+      // Refusing beats the old behaviour of marking a refund PROCESSED when no
+      // money had moved — that told staff and customer a lie they would only
+      // discover at the bank.
       return {
-        success: true,
-        refundId: refund.id,
-        amount: refundAmount,
-        message: "Refund processed successfully",
-      };
-    } else {
-      // Mock refund
-      booking.refundAmount = refundAmount;
-      booking.refundStatus = "PROCESSED";
-      await booking.save();
-
-      return {
-        success: true,
-        refundId: `refund_${Date.now()}`,
-        amount: refundAmount,
-        message: "Refund processed successfully (mock)",
+        success: false,
+        message: !booking.paymentTransactionId
+          ? "This booking has no gateway payment to refund."
+          : "Payments are not configured, so no refund can be issued.",
       };
     }
+
+    const refund = await client.payments.refund(booking.paymentTransactionId, {
+      amount: Math.round(refundAmount * 100), // paise
+      notes: {
+        bookingId: bookingId.toString(),
+        reason: reason || "Booking cancelled",
+      },
+    });
+
+    booking.refundAmount = refundAmount;
+    booking.refundStatus = "PROCESSED";
+    await booking.save();
+
+    return {
+      success: true,
+      refundId: refund.id,
+      amount: refundAmount,
+      message: "Refund processed successfully",
+    };
   } catch (error: any) {
     console.error("Failed to process refund:", error);
     return {
@@ -297,17 +299,21 @@ export const createWalletRechargeOrder = async (
   amount: number,
 ): Promise<RazorpayOrder | null> => {
   try {
-    const order = await createOrder(
-      amount,
-      "INR",
-      `wallet_${userId}_${Date.now()}`,
-      {
-        userId: userId.toString(),
-        type: "wallet_recharge",
-      },
-    );
-
-    return order;
+    // Same path as /wallet/topup/start, so a recharge started here is
+    // recognised by the webhook and credited exactly once either way.
+    const order = await startTopUp(userId, amount);
+    return {
+      id: order.orderId,
+      entity: "order",
+      amount: order.amount,
+      amount_paid: 0,
+      amount_due: order.amount,
+      currency: order.currency,
+      receipt: `wallet_${userId}`,
+      status: "created",
+      attempts: 0,
+      created_at: Date.now(),
+    };
   } catch (error) {
     console.error("Failed to create wallet recharge order:", error);
     return null;
@@ -322,48 +328,22 @@ export const verifyWalletRecharge = async (
   orderId: string,
   paymentId: string,
   signature: string,
-  amount: number,
+  /**
+   * Accepted for backwards compatibility with existing callers and IGNORED.
+   * This parameter is exactly how the old version could be exploited: it
+   * credited whatever number the client sent. The amount now comes from the
+   * gateway's record of the payment.
+   */
+  _amount?: number,
 ): Promise<PaymentVerificationResult> => {
   try {
-    const isValid = razorpayInstance
-      ? verifyPaymentSignature(orderId, paymentId, signature)
-      : true;
-
-    if (!isValid) {
-      return {
-        success: false,
-        message: "Invalid payment signature",
-      };
+    const result = await confirmTopUp(userId, { orderId, paymentId, signature });
+    if (!result.credited) {
+      return { success: false, message: result.reason || "Wallet recharge failed" };
     }
-
-    // Find or create wallet
-    let wallet = await Wallet.findOne({ userId });
-    if (!wallet) {
-      wallet = new Wallet({
-        userId,
-        balance: 0,
-      });
-    }
-
-    // Add amount to wallet
-    wallet.balance += amount;
-    await wallet.save();
-
-    // Create transaction record
-    await WalletTransaction.create({
-      userId,
-      type: "CREDIT",
-      amount,
-      balanceBefore: wallet.balance - amount,
-      balanceAfter: wallet.balance,
-      description: "Wallet recharge",
-      referenceId: paymentId,
-      status: "COMPLETED",
-    });
-
     return {
       success: true,
-      message: "Wallet recharged successfully",
+      message: `₹${result.amount} added to your wallet.`,
       paymentId,
       orderId,
     };
@@ -397,21 +377,30 @@ export const payUsingWallet = async (
       return { success: false, message: "Already paid" };
     }
 
-    if (!wallet || wallet.balance < booking.finalFare) {
+    const fare = booking.finalFare;
+    if (!wallet || wallet.balance < fare) {
       return { success: false, message: "Insufficient wallet balance" };
     }
 
-    // Deduct from wallet
-    wallet.balance -= booking.finalFare;
-    await wallet.save();
+    // Debit in one conditional update. Read-then-write let two taps on the pay
+    // button both see the same balance and each deduct it, taking the wallet
+    // negative; requiring the balance to still cover the fare in the same
+    // operation means the second one simply finds nothing to match.
+    const debited = await Wallet.findOneAndUpdate(
+      { userId, balance: { $gte: fare } },
+      { $inc: { balance: -fare } },
+      { returnDocument: "after" },
+    );
+    if (!debited) {
+      return { success: false, message: "Insufficient wallet balance" };
+    }
 
-    // Create transaction
     await WalletTransaction.create({
       userId,
       type: "DEBIT",
-      amount: booking.finalFare,
-      balanceBefore: wallet.balance + booking.finalFare,
-      balanceAfter: wallet.balance,
+      amount: fare,
+      balanceBefore: debited.balance + fare,
+      balanceAfter: debited.balance,
       description: `Payment for booking ${booking.bookingNumber || "N/A"}`,
       referenceId: bookingId.toString(),
       status: "COMPLETED",
@@ -421,6 +410,13 @@ export const payUsingWallet = async (
     booking.paymentStatus = "PAID";
     booking.paymentMethod = "WALLET";
     await booking.save();
+
+    emitToUser(String(userId), "wallet:updated", {
+      balance: debited.balance,
+      lockedBalance: debited.lockedBalance ?? 0,
+      reason: "booking_payment",
+      at: new Date().toISOString(),
+    });
 
     return { success: true, message: "Payment successful" };
   } catch (error: any) {
@@ -462,16 +458,17 @@ export const getPaymentMethods = async (userId: Types.ObjectId) => {
 export const handleWebhook = async (
   payload: any,
   signature: string,
+  /**
+   * The exact bytes Razorpay sent. The signature covers those, so
+   * re-serialising `payload` produces a different string and never matches —
+   * which is why the previous JSON.stringify version rejected every real
+   * delivery. Provided by the raw-body capture in server.ts.
+   */
+  rawBody?: string,
 ): Promise<{ success: boolean; message: string }> => {
   try {
-    // Verify webhook signature
-    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || "";
-    const expectedSignature = crypto
-      .createHmac("sha256", webhookSecret)
-      .update(JSON.stringify(payload))
-      .digest("hex");
-
-    if (signature !== expectedSignature) {
+    const body = rawBody ?? JSON.stringify(payload);
+    if (!(await Gateway.verifyWebhookSignature(body, signature))) {
       return { success: false, message: "Invalid webhook signature" };
     }
 
@@ -479,13 +476,22 @@ export const handleWebhook = async (
     const paymentEntity = payload.payload?.payment?.entity;
 
     switch (event) {
-      case "payment.captured":
-        console.log("Payment captured:", paymentEntity?.id);
+      case "payment.captured": {
+        const userId = paymentEntity && (await resolveTopUpUser(paymentEntity));
+        if (userId) {
+          const res = await creditCapturedPayment(userId, paymentEntity);
+          console.log(
+            `[payments] webhook ${paymentEntity.id}: ${res.credited ? `credited ₹${res.amount}` : res.reason}`,
+          );
+        }
         break;
+      }
 
       case "payment.failed":
-        console.log("Payment failed:", paymentEntity?.id);
-        // Update booking status if needed
+        await WalletTransaction.updateOne(
+          { referenceId: paymentEntity?.order_id, status: "PENDING" },
+          { $set: { status: "FAILED", description: "Payment failed at the gateway" } },
+        );
         break;
 
       case "refund.processed":
