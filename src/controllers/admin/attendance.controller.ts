@@ -11,6 +11,8 @@ import {
   applyHolidaysToAttendance,
 } from "../../services/attendance.service";
 import { formatDuration } from "../../services/working-hours";
+import { getCycleStartDay } from "../../services/payroll-settings.service";
+import { payrollPeriod } from "../../services/payroll-period";
 
 /**
  * HR — Attendance. Marking is idempotent via upsert on {employeeId, date}.
@@ -105,6 +107,7 @@ export const byEmployeeMonth = async (
     new Set(),
     "hr_employee",
     { joiningDate: emp?.joiningDate, exitDate: emp?.exitDate },
+    await getCycleStartDay(),
   );
 
   req.rData = {
@@ -261,17 +264,29 @@ export const monthlySummary = async (
     .sort({ fullName: 1 })
     .lean();
 
+  const cycleStartDay = await getCycleStartDay();
   const rows = await Promise.all(
     employees.map(async (e) => ({
       employee: e,
-      summary: await buildAttendanceSummary(e._id, month, year, new Set(), "hr_employee", {
-        joiningDate: e.joiningDate,
-        exitDate: e.exitDate,
-      }),
+      summary: await buildAttendanceSummary(
+        e._id,
+        month,
+        year,
+        new Set(),
+        "hr_employee",
+        { joiningDate: e.joiningDate, exitDate: e.exitDate },
+        cycleStartDay,
+      ),
     })),
   );
 
-  req.rData = { month, year, rows };
+  req.rData = {
+    month,
+    year,
+    // So the screen can say which days these numbers actually cover.
+    period: payrollPeriod(month, year, cycleStartDay).label,
+    rows,
+  };
   req.msg = "attendance_summary";
   return next();
 };

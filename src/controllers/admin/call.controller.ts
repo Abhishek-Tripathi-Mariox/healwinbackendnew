@@ -28,12 +28,56 @@ const SUBJECTS = [
   "other",
 ];
 
+/**
+ * The three kinds of call, as separate views.
+ *
+ * They are different things to look at: an IVR recording is a customer
+ * navigating the menu, a click-to-call recording is an agent's own outbound
+ * conversation, and a plain inbound call is neither. Mixed into one list the
+ * recordings are impossible to tell apart without opening them.
+ *
+ * IVR is identified by the flow/input the provider reports rather than by
+ * direction — an IVR call arrives as `inbound`, so direction alone cannot
+ * separate it from a normal incoming call.
+ */
+const HAS_IVR = {
+  $or: [
+    { ivrFlow: { $nin: [null, ""] } },
+    { ivrInput: { $nin: [null, ""] } },
+  ],
+};
+const NO_IVR = {
+  $and: [
+    { $or: [{ ivrFlow: { $in: [null, ""] } }, { ivrFlow: { $exists: false } }] },
+    { $or: [{ ivrInput: { $in: [null, ""] } }, { ivrInput: { $exists: false } }] },
+  ],
+};
+
+export const KIND_FILTERS: Record<string, any> = {
+  ivr: HAS_IVR,
+  click_to_call: { direction: "click_to_call" },
+  // A plain incoming call — inbound, but not one that went through the menu.
+  inbound: { $and: [{ direction: "inbound" }, NO_IVR] },
+};
+
 /** GET /admin/calls — the call log, newest first. */
 export const list = async (req: Request, _res: Response, next: NextFunction) => {
   const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
   const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "25"), 10)));
 
   const query: any = {};
+
+  /**
+   * Conditions that each need their own `$or` are collected here and combined
+   * under one `$and`. Assigning `query.$or` twice — once for the kind, once for
+   * the search box — would silently drop the first: the second assignment
+   * simply overwrites it, and the list would quietly ignore the tab.
+   */
+  const and: any[] = [];
+
+  const kind = String(req.query.kind || "");
+  if (kind && KIND_FILTERS[kind]) and.push(KIND_FILTERS[kind]);
+
   if (req.query.direction) query.direction = String(req.query.direction);
   if (req.query.status) query.status = String(req.query.status);
   if (req.query.subjectType) query.subjectType = String(req.query.subjectType);
@@ -46,12 +90,14 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
     // and a crafted one must not become a CPU-burning backtrack.
     const raw = String(req.query.search).trim();
     const rx = new RegExp(raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    query.$or = [
-      { customerNumber: rx },
-      { agentNumber: rx },
-      { subjectLabel: rx },
-      { agentName: rx },
-    ];
+    and.push({
+      $or: [
+        { customerNumber: rx },
+        { agentNumber: rx },
+        { subjectLabel: rx },
+        { agentName: rx },
+      ],
+    });
   }
   if (req.query.dateFrom || req.query.dateTo) {
     query.createdAt = {};
@@ -62,6 +108,8 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
       query.createdAt.$lte = end;
     }
   }
+
+  if (and.length) query.$and = and;
 
   const [items, total] = await Promise.all([
     CallLog.find(query)
@@ -218,16 +266,57 @@ export const saveNotes = async (
 export const stats = async (req: Request, _res: Response, next: NextFunction) => {
   const since = new Date();
   since.setHours(0, 0, 0, 0);
-  const [today, missedToday, recorded, total] = await Promise.all([
+  const HAS_RECORDING = { recordingUrl: { $exists: true, $nin: ["", null] } };
+  /** Count a kind, optionally only the ones carrying a recording. */
+  const ofKind = (kind: string, recordedOnly = false) =>
+    CallLog.countDocuments(
+      recordedOnly
+        ? { $and: [KIND_FILTERS[kind], HAS_RECORDING] }
+        : KIND_FILTERS[kind],
+    );
+
+  const [
+    today,
+    missedToday,
+    recorded,
+    total,
+    ivr,
+    ivrRecorded,
+    clickToCall,
+    clickToCallRecorded,
+    inbound,
+    inboundRecorded,
+  ] = await Promise.all([
     CallLog.countDocuments({ createdAt: { $gte: since } }),
     CallLog.countDocuments({
       createdAt: { $gte: since },
       status: { $in: ["missed", "no_answer"] },
     }),
-    CallLog.countDocuments({ recordingUrl: { $exists: true, $nin: ["", null] } }),
+    CallLog.countDocuments(HAS_RECORDING),
     CallLog.countDocuments({}),
+    ofKind("ivr"),
+    ofKind("ivr", true),
+    ofKind("click_to_call"),
+    ofKind("click_to_call", true),
+    ofKind("inbound"),
+    ofKind("inbound", true),
   ]);
-  req.rData = { today, missedToday, recorded, total, configured: isConfigured() };
+
+  req.rData = {
+    today,
+    missedToday,
+    recorded,
+    total,
+    // Per-tab totals, so each tab can say how many calls and how many
+    // recordings it holds before you open it.
+    byKind: {
+      all: { calls: total, recordings: recorded },
+      ivr: { calls: ivr, recordings: ivrRecorded },
+      click_to_call: { calls: clickToCall, recordings: clickToCallRecorded },
+      inbound: { calls: inbound, recordings: inboundRecorded },
+    },
+    configured: isConfigured(),
+  };
   req.msg = "success";
   return next();
 };

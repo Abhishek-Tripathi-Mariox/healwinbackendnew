@@ -99,8 +99,14 @@ export const applyHolidaysToAttendance = async (
   const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
   const end = new Date(year, month, 0, 23, 59, 59, 999);
 
+  // Only holidays the organisation actually closes for write a day off into
+  // attendance. A hospital keeps running on public holidays, so those are
+  // marked `isWorkingDay` and handled the other way round: staff work them and
+  // HR grants a compensatory off. Blanket-marking everyone "holiday" would
+  // erase the fact that they worked and take the comp-off with it.
   const holidays = await Holiday.find({
     isActive: true,
+    isWorkingDay: false,
     date: { $gte: start, $lte: end },
   })
     .select("date")

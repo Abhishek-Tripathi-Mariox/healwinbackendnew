@@ -16,6 +16,11 @@ import HrEmployee from "../models/hr-employee.model";
 import EmployeeShift from "../models/employee-shift.model";
 import Attendance from "../models/attendance.model";
 import Holiday from "../models/holiday.model";
+import PayrollSettings from "../models/payroll-settings.model";
+import {
+  setCycleStartDay,
+  resetCycleCache,
+} from "../services/payroll-settings.service";
 import { LeaveType } from "../models/leave-type.model";
 import { LeaveRequest } from "../models/leave-request.model";
 import { LeaveBalance } from "../models/leave-balance.model";
@@ -132,6 +137,18 @@ const run = async () => {
   await mongoose.connect(config.database.url);
   console.log("✅ Connected to MongoDB\n");
   await cleanup(); // clear anything a previous aborted run left behind
+
+  /**
+   * Pin the payroll calendar to a plain calendar month for this suite.
+   *
+   * The proration assertions below are about the salary maths (3/31 of a
+   * month, days on the rolls), not about which days a period spans. Leaving
+   * them at the mercy of an org setting would make the suite pass or fail
+   * depending on configuration rather than on the code. The 16th-to-15th cycle
+   * has its own suite: npm run e2e:payroll-cycle.
+   */
+  const savedPayrollSettings = await PayrollSettings.find({}).lean();
+  await setCycleStartDay(1);
 
   const admin = await Admin.findOne().select("_id").lean();
   const adminId = admin?._id;
@@ -285,7 +302,29 @@ const run = async () => {
 
     // ══ §7 HOLIDAYS → ATTENDANCE ══
     section("§7 Holiday integration");
-    await Holiday.create({ name: `${TAG} Festival`, date: new Date(YEAR, MONTH - 1, 10), year: YEAR, isActive: true });
+    // A hospital does not close for a public holiday, so a holiday defaults to
+    // `isWorkingDay` and writes NOTHING into attendance — staff work it and HR
+    // grants a compensatory off instead (covered by e2e:comp-off). Only a real
+    // closure marks everyone off, which is what the rest of this section tests.
+    const workingHoliday: any = await Holiday.create({
+      name: `${TAG} Working Festival`,
+      date: new Date(YEAR, MONTH - 1, 12),
+      year: YEAR,
+      isActive: true,
+    });
+    r = await call(attC.applyHolidays, { adminId, body: { month: MONTH, year: YEAR } });
+    ok("a working holiday is not written into attendance",
+       !(await Attendance.findOne({ employeeId: emp._id, date: new Date(YEAR, MONTH - 1, 12) })),
+       JSON.stringify(r.data));
+    await Holiday.deleteOne({ _id: workingHoliday._id });
+
+    await Holiday.create({
+      name: `${TAG} Festival`,
+      date: new Date(YEAR, MONTH - 1, 10),
+      year: YEAR,
+      isWorkingDay: false, // the organisation genuinely closes
+      isActive: true,
+    });
     r = await call(attC.applyHolidays, { adminId, body: { month: MONTH, year: YEAR } });
     ok("apply holidays to attendance", r.code === 1 && r.data?.daysMarked > 0, JSON.stringify(r.data));
     const holidayRow: any = await Attendance.findOne({ employeeId: emp._id, date: new Date(YEAR, MONTH - 1, 10) }).lean();
@@ -513,6 +552,12 @@ const run = async () => {
     await cleanup();
     if (payrollRunId) await PayrollRun.deleteOne({ _id: payrollRunId });
     await Payslip.deleteMany({ employeeCode: new RegExp(`^${TAG}`) });
+    // Put the organisation's real payroll calendar back.
+    await PayrollSettings.deleteMany({});
+    if (savedPayrollSettings.length) {
+      await PayrollSettings.insertMany(savedPayrollSettings);
+    }
+    resetCycleCache();
     console.log("  ✅ test data removed");
     await mongoose.disconnect();
   }

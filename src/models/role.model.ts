@@ -709,6 +709,7 @@ export const SIDEBAR_MODULES = {
   attendance: [PERMISSIONS.ATTENDANCE_VIEW],
   "attendance-regularization": [PERMISSIONS.ATTENDANCE_VIEW],
   leave: [PERMISSIONS.LEAVE_VIEW],
+  "comp-off": [PERMISSIONS.LEAVE_VIEW],
   holidays: [PERMISSIONS.HOLIDAYS_VIEW],
   payroll: [PERMISSIONS.PAYROLL_VIEW],
   catalog: [PERMISSIONS.CATALOG_VIEW],

@@ -747,6 +747,23 @@ export const generatePayslipPDF = async (
         `Payslip — ${MONTH_NAMES[payslip.month - 1]} ${payslip.year}`,
       );
 
+      // With a 16th-to-15th cycle the month name alone is misleading: a
+      // "September" payslip covers 16 Sep to 15 Oct. Print the days it was
+      // actually computed from, whenever the run recorded them.
+      if ((payslip as any).periodLabel) {
+        doc
+          .font("Helvetica")
+          .fontSize(9)
+          .fillColor(DOC.muted)
+          .text(`Pay period: ${(payslip as any).periodLabel}`, margin, doc.y, {
+            width: pageWidth,
+            align: "center",
+          });
+        doc.x = margin;
+        doc.moveDown(0.8);
+        doc.fillColor(DOC.ink);
+      }
+
       // ===== Employee meta =====
       let y = doc.y;
       const lineH = 16;

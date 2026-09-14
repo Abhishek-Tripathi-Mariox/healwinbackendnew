@@ -6,6 +6,11 @@ import { Payslip } from "../../models/payslip.model";
 import { LeaveType } from "../../models/leave-type.model";
 import { LeaveRequest } from "../../models/leave-request.model";
 import Attendance from "../../models/attendance.model";
+import { payrollPeriod } from "../../services/payroll-period";
+import {
+  getCycleStartDay,
+  setCycleStartDay,
+} from "../../services/payroll-settings.service";
 import {
   buildAttendanceSummary,
   computePayslip,
@@ -21,6 +26,69 @@ import { generatePayslipPDF } from "../../services/pdf.service";
 /**
  * POST /admin/hr/payroll/generate  body: { month, year, tds?: {employeeId: amount} }
  */
+/**
+ * GET /admin/hr/payroll/settings — the payroll calendar.
+ *
+ * Also returns the period the current and next runs would cover, so the screen
+ * can show what the setting actually means rather than a bare number.
+ */
+export const settingsGet = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const cycleStartDay = await getCycleStartDay();
+  const now = new Date();
+  const cur = payrollPeriod(now.getMonth() + 1, now.getFullYear(), cycleStartDay);
+  req.rData = {
+    cycleStartDay,
+    currentPeriod: {
+      month: cur.month,
+      year: cur.year,
+      label: cur.label,
+      totalDays: cur.totalDays,
+    },
+  };
+  req.msg = "success";
+  return next();
+};
+
+/** PUT /admin/hr/payroll/settings */
+export const settingsUpdate = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const day = Number(req.body?.cycleStartDay);
+  if (!Number.isFinite(day) || day < 1 || day > 31) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "cycleStartDay must be a day of the month (1-31)." };
+    return next();
+  }
+
+  // Changing the calendar under a run that is already locked would make its
+  // payslips describe days it never covered.
+  const finalized = await PayrollRun.countDocuments({ status: "finalized" });
+  const saved = await setCycleStartDay(day, (req as any).adminId);
+  const preview = payrollPeriod(
+    new Date().getMonth() + 1,
+    new Date().getFullYear(),
+    saved,
+  );
+  req.rData = {
+    cycleStartDay: saved,
+    currentPeriod: { label: preview.label, totalDays: preview.totalDays },
+    ...(finalized
+      ? {
+          note: `${finalized} finalized run(s) keep the period they were run under — only future runs use the new cycle.`,
+        }
+      : {}),
+  };
+  req.msg = "saved";
+  return next();
+};
+
 export const generate = async (
   req: Request,
   _res: Response,
@@ -52,12 +120,20 @@ export const generate = async (
     return next();
   }
 
-  // Resolve unpaid leave-request ids that overlap this month (so unpaid leave
+  // The period this run covers. With the hospital's 16th-to-15th cycle this is
+  // NOT the calendar month, and every window below — unpaid-leave overlap, the
+  // "was anything marked?" check, and the joined/left eligibility test — has to
+  // use it. Reading the calendar month instead would look at the wrong days and
+  // quietly pay the wrong people the wrong amounts.
+  const cycleStartDay = await getCycleStartDay();
+  const period = payrollPeriod(month, year, cycleStartDay);
+  const monthStart = period.start;
+  const monthEnd = period.end;
+
+  // Resolve unpaid leave-request ids that overlap this period (so unpaid leave
   // days are treated as LOP by the attendance summary).
   const unpaidTypes = await LeaveType.find({ isPaid: false }).select("_id").lean();
   const unpaidTypeIds = unpaidTypes.map((t) => t._id);
-  const monthStart = new Date(year, month - 1, 1);
-  const monthEnd = new Date(year, month, 0, 23, 59, 59, 999);
   const unpaidReqs = unpaidTypeIds.length
     ? await LeaveRequest.find({
         leaveTypeId: { $in: unpaidTypeIds },
@@ -89,8 +165,8 @@ export const generate = async (
     req.msg = "validation_failed";
     req.rData = {
       hint:
-        "No attendance was marked for this month, so every employee would be paid in full. " +
-        "Mark attendance first, or re-submit with acknowledgeUnmarked=true to pay a full month deliberately.",
+        `No attendance was marked for ${period.label}, so every employee would be paid in full. ` +
+        "Mark attendance first, or re-submit with acknowledgeUnmarked=true to pay a full period deliberately.",
       unmarkedMonth: true,
     };
     return next();
@@ -113,9 +189,18 @@ export const generate = async (
     run = await PayrollRun.create({
       month,
       year,
+      periodStart: period.start,
+      periodEnd: period.end,
+      periodLabel: period.label,
       status: "draft",
       runByAdminId: adminId,
     });
+  } else {
+    // A re-run may happen after the cycle setting changed — record what this
+    // run actually covered.
+    run.periodStart = period.start;
+    run.periodEnd = period.end;
+    run.periodLabel = period.label;
   }
 
   let totalGross = 0;
@@ -134,6 +219,7 @@ export const generate = async (
       unpaidReqIds,
       "hr_employee",
       { joiningDate: emp.joiningDate, exitDate: emp.exitDate },
+      cycleStartDay,
     );
     const computed = computePayslip(salaryOf(emp), summary, {
       tds: tdsMap[String(emp._id)] || 0,
@@ -161,6 +247,7 @@ export const generate = async (
           employeeId: emp._id,
           month,
           year,
+          periodLabel: period.label,
           employeeCode: emp.employeeCode,
           employeeName: emp.fullName,
           totalDays: computed.totalDays,
@@ -189,7 +276,15 @@ export const generate = async (
     "salaryStructure.ctcAnnual": { $gt: 0 },
   }).lean();
   for (const s of crew as any[]) {
-    const summary = await buildAttendanceSummary(s._id, month, year, unpaidReqIds, "ambulance_staff");
+    const summary = await buildAttendanceSummary(
+      s._id,
+      month,
+      year,
+      unpaidReqIds,
+      "ambulance_staff",
+      {},
+      cycleStartDay,
+    );
     const computed = computePayslip(s.salaryStructure, summary, {
       tds: tdsMap[String(s._id)] || 0,
       overtimeMultiplier,
@@ -207,6 +302,7 @@ export const generate = async (
           ambulanceStaffId: s._id,
           month,
           year,
+          periodLabel: period.label,
           employeeCode: s.role === "attendant" ? "ATT" : "DRV",
           employeeName: s.fullName,
           designation: s.role === "attendant" ? "Ambulance Attendant" : "Ambulance Driver",

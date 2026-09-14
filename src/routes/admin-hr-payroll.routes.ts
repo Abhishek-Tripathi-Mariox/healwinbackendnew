@@ -9,6 +9,24 @@ import { PERMISSIONS } from "../models/role.model";
 const router = Router();
 const auth = AdminAuthMiddleware();
 
+// Payroll calendar (the 16th-to-15th cycle). Viewing is part of seeing
+// payroll; changing it moves everyone's pay period, so it needs process rights.
+router.get(
+  "/settings",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.PAYROLL_VIEW),
+  ErrorHandlerMiddleware(C.settingsGet),
+  ResponseMiddleware,
+);
+
+router.put(
+  "/settings",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.PAYROLL_PROCESS),
+  ErrorHandlerMiddleware(C.settingsUpdate),
+  ResponseMiddleware,
+);
+
 router.get(
   "/runs",
   auth.verifyAdminToken,

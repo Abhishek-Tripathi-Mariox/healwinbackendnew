@@ -36,6 +36,8 @@ export interface IPayslip {
   ambulanceStaffId?: Types.ObjectId;
   month: number;
   year: number;
+  /** Human label of the period, e.g. "16 Sep 2026 – 15 Oct 2026". */
+  periodLabel?: string;
   // Snapshot for stable display / PDF.
   employeeCode: string;
   employeeName: string;
@@ -107,6 +109,7 @@ const PayslipSchema = new Schema<IPayslip>(
     ambulanceStaffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff", index: true },
     month: { type: Number, required: true },
     year: { type: Number, required: true },
+    periodLabel: String,
     employeeCode: { type: String, required: true },
     employeeName: { type: String, required: true },
     designation: String,

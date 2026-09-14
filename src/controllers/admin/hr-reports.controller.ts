@@ -9,6 +9,7 @@ import EmployeeShift from "../../models/employee-shift.model";
 import Holiday from "../../models/holiday.model";
 import { buildAttendanceSummary, daysInMonth } from "../../services/payroll.service";
 import { formatDuration } from "../../services/working-hours";
+import { getCycleStartDay } from "../../services/payroll-settings.service";
 
 /**
  * HR — Reports & data (§13).
@@ -114,12 +115,21 @@ export const attendance = async (
     .sort({ fullName: 1 })
     .lean();
 
+  const cycleStartDay = await getCycleStartDay();
   const rows: Row[] = [];
   for (const e of emps) {
-    const s = await buildAttendanceSummary(e._id, month, year, new Set(), "hr_employee", {
-      joiningDate: e.joiningDate,
-      exitDate: e.exitDate,
-    });
+    // Same cycle as payroll — a report that counted calendar months while
+    // payroll paid 16th-to-15th would disagree with the payslips it is meant
+    // to explain.
+    const s = await buildAttendanceSummary(
+      e._id,
+      month,
+      year,
+      new Set(),
+      "hr_employee",
+      { joiningDate: e.joiningDate, exitDate: e.exitDate },
+      cycleStartDay,
+    );
     rows.push({
       employeeCode: e.employeeCode || "",
       fullName: e.fullName || "",

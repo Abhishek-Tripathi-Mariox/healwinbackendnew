@@ -37,6 +37,9 @@ export const save = async (req: Request, _res: Response, next: NextFunction) => 
     date,
     year: date.getFullYear(),
     type: b.type || "public",
+    // Defaults to a working day: the hospital does not close for holidays.
+    // Staff rostered on one work it and HR grants a compensatory off.
+    isWorkingDay: b.isWorkingDay !== false,
     isActive: b.isActive !== false,
   };
   const item = (req.params.id as string)

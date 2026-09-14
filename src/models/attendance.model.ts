@@ -91,8 +91,31 @@ const AttendanceSchema = new Schema<IAttendance>(
 );
 
 // Per-subject uniqueness per day (sparse so the unused id doesn't collide).
-AttendanceSchema.index({ employeeId: 1, date: 1 }, { unique: true, sparse: true });
-AttendanceSchema.index({ ambulanceStaffId: 1, date: 1 }, { unique: true, sparse: true });
+/**
+ * One attendance row per person per day — partial, NOT sparse.
+ *
+ * `sparse` on a COMPOUND index only skips a document missing *every* indexed
+ * field. `date` is always present, so an hr_employee row (which has no
+ * `ambulanceStaffId`) was still indexed, as `{ ambulanceStaffId: null, date }`
+ * — and the second employee marked on any given day collided with the first.
+ * The effect was that attendance could not be marked for more than one person
+ * per day: the extra rows were rejected, and payroll then treated those days
+ * as unmarked and paid them in full on no record.
+ *
+ * A partial filter on the field's type indexes only the rows that actually
+ * carry that subject, which is what was meant all along.
+ */
+AttendanceSchema.index(
+  { employeeId: 1, date: 1 },
+  { unique: true, partialFilterExpression: { employeeId: { $type: "objectId" } } },
+);
+AttendanceSchema.index(
+  { ambulanceStaffId: 1, date: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { ambulanceStaffId: { $type: "objectId" } },
+  },
+);
 
 export const Attendance = mongoose.model<IAttendance>(
   "Attendance",

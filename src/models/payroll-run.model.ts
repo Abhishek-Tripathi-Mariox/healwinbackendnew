@@ -20,6 +20,14 @@ export interface IPayrollRun {
   _id: Types.ObjectId;
   month: number; // 1-12
   year: number;
+  /**
+   * The days this run actually covered. Stored rather than recomputed: the
+   * cycle start day is a setting, and a run finalized under a 16th-to-15th
+   * cycle must keep reporting those dates even if the setting changes later.
+   */
+  periodStart?: Date;
+  periodEnd?: Date;
+  periodLabel?: string;
   status: PayrollRunStatus;
   employeeCount: number;
   totalGross: number;
@@ -40,6 +48,9 @@ const PayrollRunSchema = new Schema<IPayrollRun>(
   {
     month: { type: Number, required: true, min: 1, max: 12 },
     year: { type: Number, required: true },
+    periodStart: Date,
+    periodEnd: Date,
+    periodLabel: String,
     status: {
       type: String,
       enum: ["draft", "verified", "finalized"],

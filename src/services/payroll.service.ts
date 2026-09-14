@@ -1,5 +1,6 @@
 import { Types } from "mongoose";
 import Attendance from "../models/attendance.model";
+import { payrollPeriod } from "./payroll-period";
 import { IHrEmployee, ISalaryStructure } from "../models/hr-employee.model";
 
 /**
@@ -95,10 +96,20 @@ export const buildAttendanceSummary = async (
   unpaidLeaveRequestIds: Set<string> = new Set(),
   subjectType: "hr_employee" | "ambulance_staff" = "hr_employee",
   service: { joiningDate?: Date | string; exitDate?: Date | string } = {},
+  /**
+   * Day of the month the payroll cycle begins. 1 is a calendar month; 16 gives
+   * the hospital's 16th-to-15th period. Passed in rather than read here so one
+   * run resolves the setting once.
+   */
+  cycleStartDay = 1,
 ): Promise<AttendanceSummary> => {
-  const total = daysInMonth(month, year);
-  const monthStart = new Date(year, month - 1, 1, 0, 0, 0, 0);
-  const monthEnd = new Date(year, month - 1, total, 0, 0, 0, 0);
+  // The period, which is NOT the calendar month once the cycle starts on the
+  // 16th. The proration denominator, the attendance window and the service
+  // clipping below all work from it.
+  const period = payrollPeriod(month, year, cycleStartDay);
+  const total = period.totalDays;
+  const monthStart = period.start;
+  const monthEnd = dayStart(period.end);
 
   // Clip to the employment window.
   const joined = service.joiningDate ? dayStart(service.joiningDate) : null;
