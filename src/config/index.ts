@@ -86,16 +86,6 @@ const config = {
     email: optional("support_email"),
   },
 
-  // Coin system configuration
-  coins: {
-    earnRate: Number(process.env.COIN_EARN_RATE) || 2, // Coins per 100 rupees spent
-    conversionRate: Number(process.env.COIN_CONVERSION_RATE) || 1, // 1 coin = 1 rupee
-    expiryDays: Number(process.env.COIN_EXPIRY_DAYS) || 365,
-    minTransferToWallet: Number(process.env.COIN_MIN_WALLET_TRANSFER) || 100,
-    minBankTransfer: Number(process.env.COIN_MIN_BANK_TRANSFER) || 500,
-    maxDiscountPercent: Number(process.env.COIN_MAX_DISCOUNT_PERCENT) || 10,
-  },
-
   // Fare calculation defaults
   fare: {
     baseFare: Number(process.env.DEFAULT_BASE_FARE) || 50,

@@ -70,7 +70,6 @@ export const generateInvoice = async (
 
     // Discounts
     promoDiscount: booking.promoDiscount || 0,
-    coinDiscount: booking.coinDiscount || 0,
     enterpriseDiscount: booking.enterpriseDiscount || 0,
 
     // Taxes

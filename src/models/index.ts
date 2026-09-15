@@ -23,7 +23,6 @@ import PromoUsage from "./promo-usage.model";
 import ServiceType from "./service-type.model";
 import AddonService from "./addon-service.model";
 import GoodsType from "./goods-type.model";
-import { CoinWallet, CoinTransaction } from "./coin.model";
 import { SupportTicket, SupportMessage } from "./support-ticket.model";
 import { Enterprise, EnterpriseUser } from "./enterprise.model";
 import CancellationReason from "./cancellation-reason.model";
@@ -113,8 +112,6 @@ export const models = {
   Wallet,
   WalletTransaction,
   RewardTransaction,
-  CoinWallet,
-  CoinTransaction,
 
   // Promo related
   PromoCode,

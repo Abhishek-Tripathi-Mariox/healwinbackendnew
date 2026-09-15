@@ -19,7 +19,6 @@ export interface IInvoice {
 
   // Discounts
   promoDiscount: number;
-  coinDiscount: number;
   enterpriseDiscount: number;
 
   // Taxes
@@ -80,8 +79,7 @@ const InvoiceSchema = new Schema<IInvoice>(
 
     // Discounts
     promoDiscount: { type: Number, default: 0, min: 0 },
-    coinDiscount: { type: Number, default: 0, min: 0 },
-    enterpriseDiscount: { type: Number, default: 0, min: 0 },
+      enterpriseDiscount: { type: Number, default: 0, min: 0 },
 
     // Taxes
     gstAmount: { type: Number, required: true, min: 0 },

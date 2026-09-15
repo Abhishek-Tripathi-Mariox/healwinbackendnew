@@ -32,8 +32,6 @@ router.get("/:bookingId/track", bookingController.trackBooking);
 // Apply promo code
 router.post("/:bookingId/apply-promo", bookingController.applyPromoCode);
 
-// Apply coins
-router.post("/:bookingId/apply-coins", bookingController.applyCoins);
 
 // Schedule booking
 router.post(

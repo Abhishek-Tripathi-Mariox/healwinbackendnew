@@ -114,10 +114,6 @@ All errors follow this format:
       description: "Promo codes and offers",
     },
     {
-      name: "Coins",
-      description: "Reward coins system",
-    },
-    {
       name: "Enterprise",
       description: "Enterprise/Business account management",
     },

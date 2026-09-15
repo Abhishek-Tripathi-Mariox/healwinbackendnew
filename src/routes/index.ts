@@ -27,7 +27,6 @@ import trackingRoutes from "./tracking.routes";
 import sosRoutes from "./sos.routes";
 import walletRoutes from "./wallet.routes";
 import promoRoutes from "./promo.routes";
-import coinRoutes from "./coin.routes";
 import supportRoutes from "./support.routes";
 import driverRoutes from "./driver.routes";
 import driverAuthRoutes from "./driver-auth.routes";
@@ -160,7 +159,6 @@ router.use("/tracking", trackingRoutes);
 router.use("/sos", sosRoutes);
 router.use("/wallet", walletRoutes);
 router.use("/promo", promoRoutes);
-router.use("/coins", coinRoutes);
 router.use("/support", supportRoutes);
 router.use("/enterprise", enterpriseRoutes);
 

@@ -118,10 +118,6 @@ const BookingSchema = new Schema<IBooking>(
     promoCode: String,
     promoDiscount: { type: Number, default: 0 },
 
-    // Coins
-    coinsUsed: { type: Number, default: 0 },
-    coinDiscount: { type: Number, default: 0 },
-    coinsEarned: { type: Number, default: 0 },
 
     // Enterprise discount
     enterpriseDiscount: { type: Number, default: 0 },

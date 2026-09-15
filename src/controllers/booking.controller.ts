@@ -11,7 +11,6 @@ import CancellationReason from "../models/cancellation-reason.model";
 import { TimeSlot } from "../models/time-slot.model";
 import * as FareService from "../services/fare.service";
 import * as PromoService from "../services/promo.service";
-import * as CoinService from "../services/coin.service";
 import * as InvoiceService from "../services/invoice.service";
 import * as BookingDispatchService from "../services/booking-dispatch.service";
 import { cache } from "../utils/redis.util";
@@ -30,7 +29,6 @@ export const getFareEstimate = async (req: Request, res: Response) => {
       addons,
       loadingUnloadingCharge,
       promoCode,
-      useCoins,
     } = req.body;
 
     if (!distanceKm || !durationMin || !vehicleTypeId) {
@@ -53,7 +51,6 @@ export const getFareEstimate = async (req: Request, res: Response) => {
 
     let finalAmount = fareBreakdown.finalFare;
     let promoDiscount = 0;
-    let coinDiscount = 0;
 
     // Apply promo code if provided
     if (promoCode) {
@@ -71,23 +68,11 @@ export const getFareEstimate = async (req: Request, res: Response) => {
       }
     }
 
-    // Calculate coin discount if requested
-    if (useCoins) {
-      const coinWallet = await CoinService.getCoinWallet((req as any).user._id);
-      const maxCoinDiscount = Math.min(
-        coinWallet?.balance || 0,
-        Math.floor(finalAmount * 0.1), // Max 10% discount with coins
-      );
-      coinDiscount = maxCoinDiscount;
-      finalAmount -= coinDiscount;
-    }
-
     res.json({
       success: true,
       data: {
         fareBreakdown,
         promoDiscount,
-        coinDiscount,
         finalAmount: Math.max(finalAmount, 0),
       },
     });
@@ -125,8 +110,6 @@ export const createBooking = async (req: Request, res: Response) => {
       addons,
       loadingUnloading,
       promoCode,
-      useCoins,
-      coinsToUse,
       paymentMethod,
       scheduledDate,
       scheduledTimeSlotId,
@@ -166,8 +149,6 @@ export const createBooking = async (req: Request, res: Response) => {
     let totalAmount = fareBreakdown.finalFare;
     let promoDiscount = 0;
     let promoCodeId = null;
-    let coinDiscount = 0;
-    let coinsUsed = 0;
 
     // Validate and apply promo code
     if (promoCode) {
@@ -183,26 +164,6 @@ export const createBooking = async (req: Request, res: Response) => {
         promoDiscount = promoResult.discountAmount || 0;
         promoCodeId = promoResult.promo._id;
         totalAmount -= promoDiscount;
-      }
-    }
-
-    // Apply coins
-    if (useCoins && coinsToUse > 0) {
-      try {
-        await CoinService.debitCoins(
-          userId,
-          coinsToUse,
-          "REDEMPTION",
-          undefined,
-          undefined,
-          `Used ${coinsToUse} coins for booking discount`,
-        );
-        coinsUsed = coinsToUse;
-        coinDiscount = coinsToUse; // 1 coin = 1 rupee
-        totalAmount -= coinDiscount;
-      } catch (coinError) {
-        // If coin debit fails, continue without coin discount
-        console.error("Failed to debit coins:", coinError);
       }
     }
 
@@ -263,8 +224,6 @@ export const createBooking = async (req: Request, res: Response) => {
       },
       promoCodeId,
       promoDiscount,
-      coinsUsed,
-      coinDiscount,
       gstAmount: fareBreakdown.gstAmount,
       gstPercentage: fareBreakdown.gstPercentage,
       totalFare: totalAmount,
@@ -495,70 +454,6 @@ export const applyPromoCode = async (req: Request, res: Response) => {
 };
 
 /**
- * Apply coins to booking
- */
-export const applyCoins = async (req: Request, res: Response) => {
-  try {
-    const { bookingId } = req.params as Record<string, string>;
-    const { coinsToUse } = req.body;
-    const userId = (req as any).user._id;
-
-    const booking = await Booking.findOne({
-      _id: bookingId,
-      userId,
-      status: "PENDING",
-    });
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: "Booking not found or cannot apply coins",
-      });
-    }
-
-    if ((booking.coinsUsed ?? 0) > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Coins already applied",
-      });
-    }
-
-    const coinWallet = await CoinService.getCoinWallet(userId);
-    if (!coinWallet || coinWallet.balance < coinsToUse) {
-      return res.status(400).json({
-        success: false,
-        message: "Insufficient coin balance",
-      });
-    }
-
-    // Max 10% discount with coins
-    const maxDiscount = Math.floor(booking.finalFare * 0.1);
-    const actualCoins = Math.min(coinsToUse, maxDiscount, coinWallet.balance);
-
-    // Update booking
-    booking.coinsUsed = actualCoins;
-    booking.coinDiscount = actualCoins;
-    booking.finalFare -= actualCoins;
-    await booking.save();
-
-    res.json({
-      success: true,
-      message: "Coins applied successfully",
-      data: {
-        coinsUsed: actualCoins,
-        coinDiscount: actualCoins,
-        newTotal: booking.finalFare,
-      },
-    });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      message: error.message || "Failed to apply coins",
-    });
-  }
-};
-
-/**
  * Schedule a booking
  */
 export const scheduleBooking = async (req: Request, res: Response) => {
@@ -670,7 +565,6 @@ export const cancelBooking = async (req: Request, res: Response) => {
     await booking.save();
 
     // TODO: Process refund if payment was made
-    // TODO: Restore coins if used
     // TODO: Notify driver if assigned
 
     res.json({

@@ -106,10 +106,6 @@ export interface IBooking {
   promoCode?: string;
   promoDiscount?: number;
 
-  // Coins
-  coinsUsed?: number;
-  coinDiscount?: number;
-  coinsEarned?: number;
 
   // Enterprise
   enterpriseDiscount?: number;

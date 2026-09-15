@@ -523,13 +523,6 @@ const seedDatabase = async () => {
         category: "BOOKING",
         sortOrder: 4,
       },
-      {
-        question: "How do coins work?",
-        answer:
-          "You earn 2 coins for every ₹100 spent. Coins can be used for discounts or transferred to wallet/bank.",
-        category: "PROMO",
-        sortOrder: 5,
-      },
     ];
 
     for (const faq of faqs) {

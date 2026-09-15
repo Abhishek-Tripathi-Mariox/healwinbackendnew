@@ -2,7 +2,6 @@ import { Request, Response } from "express";
 import User from "../../models/Users";
 import Booking from "../../models/booking.model";
 import Wallet from "../../models/wallet.model";
-import { CoinWallet } from "../../models/coin.model";
 import UserAddress from "../../models/UserAddress";
 import WalletTransaction from "../../models/wallet-transaction.model";
 import { EmergencyContact } from "../../models/sos.model";
@@ -96,16 +95,6 @@ export const getAllUsers = async (req: Request, res: Response) => {
     addressMap.get(key)!.push(address);
   });
 
-  // Fetch coin wallets for all users
-  const coinWallets = await CoinWallet.find({
-    userId: { $in: userIds },
-  }).lean();
-
-  const coinWalletMap = new Map<string, (typeof coinWallets)[number]>();
-  coinWallets.forEach((wallet) => {
-    coinWalletMap.set(wallet.userId.toString(), wallet);
-  });
-
   // Fetch wallet balances for all users
   const wallets = await Wallet.find({
     userId: { $in: userIds },
@@ -134,7 +123,6 @@ export const getAllUsers = async (req: Request, res: Response) => {
       const userAddresses = addressMap.get(user._id.toString()) || [];
       const primaryAddress =
         userAddresses.find((a) => a.isSelected) || userAddresses[0] || null;
-      const coinWallet = coinWalletMap.get(user._id.toString());
       const wallet = walletMap.get(user._id.toString());
 
       return {
@@ -142,7 +130,6 @@ export const getAllUsers = async (req: Request, res: Response) => {
         bookingCount,
         completedBookings: completedCount,
         totalSpent,
-        coinBalance: coinWallet?.balance ?? 0,
         walletBalance: wallet?.balance ?? 0,
         addressCount: userAddresses.length,
         primaryAddress: primaryAddress
@@ -210,9 +197,8 @@ export const getUserById = async (req: Request, res: Response) => {
   }
 
   // Get additional data
-  const [wallet, coinWallet, addresses, emergencyContacts, bookingStats] = await Promise.all([
+  const [wallet, addresses, emergencyContacts, bookingStats] = await Promise.all([
     Wallet.findOne({ userId: id }),
-    CoinWallet.findOne({ userId: id }),
     UserAddress.find({ userId: id, isActive: true }),
     EmergencyContact.find({ userId: id, isActive: true }).sort({ createdAt: -1 }).lean(),
     Booking.aggregate([
@@ -230,7 +216,6 @@ export const getUserById = async (req: Request, res: Response) => {
   res.locals.data = {
     user,
     wallet: wallet || { balance: 0, lockedBalance: 0 },
-    coinWallet: coinWallet || { balance: 0, totalEarned: 0, totalRedeemed: 0 },
     addresses,
     emergencyContacts,
     bookingStats,
@@ -452,11 +437,9 @@ export const getUserWallet = async (req: Request, res: Response) => {
   const { id } = req.params as Record<string, string>;
 
   const wallet = await Wallet.findOne({ userId: id });
-  const coinWallet = await CoinWallet.findOne({ userId: id });
 
   res.locals.data = {
     wallet: wallet || { balance: 0, lockedBalance: 0 },
-    coinWallet: coinWallet || { balance: 0, totalEarned: 0, totalRedeemed: 0 },
   };
 };
 
