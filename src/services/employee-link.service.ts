@@ -1,9 +1,10 @@
 import { Types } from "mongoose";
 import HrEmployee from "../models/hr-employee.model";
-import { Admin } from "../models/admin.model";
+import { Admin, AdminSession } from "../models/admin.model";
 import Role from "../models/role.model";
 import { nextSequence } from "../models/counter.model";
 import bcrypt from "bcryptjs";
+import { sendPanelCredentials } from "./account-email.service";
 
 /**
  * Keeping panel logins and HR records in step.
@@ -111,6 +112,9 @@ export interface AdminForEmployeeInput {
 export interface AdminForEmployeeResult {
   adminId: Types.ObjectId;
   roleName: string;
+  /** Whether the credentials email actually went out. */
+  emailSent?: boolean;
+  emailError?: string;
   /**
    * Only present when this call generated one. Returned once so it can be
    * handed to the person; it is stored hashed and cannot be read back.
@@ -174,6 +178,37 @@ export const setPanelRole = async (
   return null;
 };
 
+/**
+ * Reset a panel password and tell the owner.
+ *
+ * Every session is signed out: a reset happens when access needs to change
+ * hands, and leaving the old sessions alive would mean the previous holder
+ * keeps working until their token expires.
+ */
+export const resetAdminPassword = async (
+  adminId: Types.ObjectId | string,
+  password?: string,
+): Promise<{ email: string; password: string; emailSent: boolean }> => {
+  const admin = await Admin.findOne({ _id: adminId, isDeleted: { $ne: true } });
+  if (!admin) throw new Error("That panel login no longer exists.");
+
+  const value = password || generatePassword();
+  admin.password = await bcrypt.hash(value, 12);
+  admin.passwordChangedAt = new Date();
+  await admin.save();
+
+  await AdminSession.updateMany({ adminId: admin._id }, { isActive: false });
+
+  const mail = await sendPanelCredentials({
+    fullName: admin.fullName,
+    email: admin.email,
+    password: value,
+    roleName: admin.roleName || "",
+  });
+
+  return { email: admin.email, password: value, emailSent: mail.sent };
+};
+
 /** A readable one-time password — no ambiguous characters to mistype. */
 const generatePassword = (): string => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
@@ -228,9 +263,21 @@ export const createAdminForEmployee = async (
     createdBy: input.createdBy,
   });
 
+  // The one moment the password exists in readable form — it is hashed from
+  // here on and cannot be recovered, so if it is not sent now the only way
+  // back in is a reset.
+  const mail = await sendPanelCredentials({
+    fullName: input.fullName,
+    email,
+    password,
+    roleName: role.name,
+  });
+
   return {
     adminId: admin._id,
     roleName: role.name,
     temporaryPassword: generated,
+    emailSent: mail.sent,
+    emailError: mail.error,
   };
 };

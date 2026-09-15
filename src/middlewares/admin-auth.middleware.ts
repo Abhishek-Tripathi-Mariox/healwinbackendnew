@@ -57,6 +57,10 @@ const AdminAuthMiddleware = () => {
         });
       }
 
+      // The caller's own session, so an action that signs out "everywhere
+      // else" can tell which one to leave alone.
+      (req as any).sessionToken = token;
+
       // Get admin details with role populated
       const admin = await Admin.findOne({
         _id: decoded.adminId,

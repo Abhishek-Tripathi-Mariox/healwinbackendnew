@@ -203,6 +203,19 @@ const config = {
   // names, which remain as a fallback for existing deployments.
   //
   /**
+   * Where the admin panel is served from.
+   *
+   * Emails have to send people somewhere — a password reset link and a
+   * welcome message are useless without it. Falls back to the first configured
+   * CORS origin, which in practice IS the panel, so a deployment that has set
+   * that up already works.
+   */
+  adminPanelUrl: optional(
+    "ADMIN_PANEL_URL",
+    optional("CORS_ORIGIN", "http://localhost:5173"),
+  ).split(",")[0].trim().replace(/\/$/, ""),
+
+  /**
    * Organisation identity printed on every generated document — the letterhead
    * on offer and appointment letters, invoices, prescriptions, discharge
    * summaries and payslips. Kept here rather than passed in per call so the

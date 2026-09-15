@@ -9,6 +9,7 @@ import { uploadFileToAws } from "../../utils/s3";
 import {
   createAdminForEmployee,
   setPanelRole,
+  resetAdminPassword,
 } from "../../services/employee-link.service";
 
 /**
@@ -207,6 +208,65 @@ export const create = async (
       : {}),
   };
   req.msg = "employee_created";
+  return next();
+};
+
+/**
+ * POST /admin/hr/employees/:id/reset-password
+ *
+ * Reset an employee's panel password from the roster, so HR does not have to
+ * find the same person again under Team Management. A password may be given;
+ * otherwise one is generated. It is emailed and returned once — it is stored
+ * hashed and cannot be read back.
+ */
+export const resetPanelPassword = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const employee = await HrEmployee.findOne({
+    _id: req.params.id as string,
+    isDeleted: false,
+  }).lean();
+  if (!employee) {
+    req.rCode = 5;
+    req.msg = "employee_not_found";
+    req.rData = {};
+    return next();
+  }
+  if (!employee.linkedAdminId) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = {
+      hint: "This employee has no panel login. Give them a role first to create one.",
+    };
+    return next();
+  }
+
+  const given = String(req.body?.password || "").trim();
+  if (given && given.length < 8) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "The password must be at least 8 characters." };
+    return next();
+  }
+
+  try {
+    const result = await resetAdminPassword(employee.linkedAdminId, given || undefined);
+    req.rData = {
+      email: result.email,
+      temporaryPassword: result.password,
+      emailSent: result.emailSent,
+      ...(result.emailSent
+        ? {}
+        : { warning: "The password was reset, but the email could not be sent. Pass it on another way." }),
+    };
+    req.msg = "saved";
+  } catch (err: any) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: err?.message || "The password could not be reset." };
+  }
   return next();
 };
 

@@ -64,6 +64,14 @@ adminRouter.post(
   ResponseMiddleware,
 );
 
+// Your own password. Behind auth but no permission: it is your account.
+adminRouter.put(
+  "/auth/me/password",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminAuthController.changeMyPassword),
+  ResponseMiddleware,
+);
+
 adminRouter.get(
   "/auth/me",
   verifyAdminToken,

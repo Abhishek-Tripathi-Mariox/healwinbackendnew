@@ -9,6 +9,7 @@ import {
   DEFAULT_ROLES,
 } from "../../models/role.model";
 import { escapeRegex } from "../../utils/helpers";
+import { sendPanelCredentials } from "../../services/account-email.service";
 import {
   ensureEmployeeForAdmin,
   type LinkResult,
@@ -184,6 +185,17 @@ export const createStaff = async (req: Request, res: Response) => {
     console.error("[staff] HR record creation failed:", err);
   }
 
+  // Send them their sign-in details. The password was chosen by whoever
+  // filled this form, so it is theirs to pass on either way — but emailing it
+  // means the person can actually get in without being told verbally.
+  const mail = await sendPanelCredentials({
+    fullName,
+    email: String(email).toLowerCase(),
+    password,
+    roleName: role.name,
+    employeeCode: hrRecord?.employeeCode,
+  });
+
   const staffData = await Admin.findById(newStaff._id)
     .select("-password -resetPasswordToken -resetPasswordExpires")
     .populate("roleId", "name description permissions");
@@ -197,6 +209,12 @@ export const createStaff = async (req: Request, res: Response) => {
     staff: staffData,
     employeeId: hrRecord?.employeeId,
     employeeCode: hrRecord?.employeeCode,
+    credentialsEmailed: mail.sent,
+    ...(mail.sent
+      ? {}
+      : {
+          emailWarning: `The account was created, but the credentials email could not be sent (${mail.error}). Pass the password on another way.`,
+        }),
     ...(hrError
       ? { hrWarning: `${hrError} Add them under Employees to complete their record.` }
       : {}),

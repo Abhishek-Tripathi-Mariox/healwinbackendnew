@@ -33,6 +33,16 @@ router.get(
   ErrorHandlerMiddleware(Import.template),
 );
 
+// Reset an employee's panel password. Gated on EMPLOYEES_UPDATE: handing out
+// a new password is a change to that person's access.
+router.post(
+  "/:id/reset-password",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.EMPLOYEES_UPDATE),
+  ErrorHandlerMiddleware(C.resetPanelPassword),
+  ResponseMiddleware,
+);
+
 router.post(
   "/import",
   auth.verifyAdminToken,

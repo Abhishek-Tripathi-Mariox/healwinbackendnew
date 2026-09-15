@@ -34,6 +34,7 @@
     "e2e:staff-link": "ts-node --files src/scripts/e2e-staff-employee-link.ts",
     "e2e:punch": "ts-node --files src/scripts/e2e-punch.ts",
     "e2e:salary-chain": "ts-node --files src/scripts/e2e-salary-chain.ts",
+    "e2e:account-security": "ts-node --files src/scripts/e2e-account-security.ts",
     "e2e:payments": "ts-node src/scripts/e2e-payments.ts",
     "migrate:wallet-indexes": "ts-node src/scripts/ensure-wallet-indexes.ts",
     "verify:hr-drilldown": "ts-node src/scripts/verify-hr-drilldown.ts",
