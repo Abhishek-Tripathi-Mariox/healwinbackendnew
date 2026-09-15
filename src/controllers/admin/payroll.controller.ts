@@ -172,6 +172,17 @@ export const generate = async (
     return next();
   }
 
+  /**
+   * Anyone without a salary configured is left out, and named in the response.
+   *
+   * Every panel user now also has an HR record — which is right, they are
+   * employees — but HR has not necessarily filled in their pay yet. Running
+   * them through the engine produces a payslip of zero: not wrong exactly, but
+   * it buries the real payroll in blank rows and looks like everyone was paid
+   * nothing. Skipping them and saying who was skipped is the useful behaviour.
+   */
+  const noSalary: { name: string; employeeCode: string }[] = [];
+
   const employees = (
     await HrEmployee.find({
       isDeleted: false,
@@ -182,6 +193,10 @@ export const generate = async (
     const exited = e.exitDate ? new Date(e.exitDate) : null;
     if (joined && joined > monthEnd) return false;
     if (exited && exited < monthStart) return false;
+    if (!(Number(e.salaryStructure?.ctcAnnual) > 0)) {
+      noSalary.push({ name: e.fullName, employeeCode: e.employeeCode });
+      return false;
+    }
     return true;
   });
 
@@ -341,7 +356,13 @@ export const generate = async (
   }
   await run.save();
 
-  req.rData = { run, unmarkedWarnings };
+  req.rData = {
+    run,
+    unmarkedWarnings,
+    // Who was left out for want of a salary, so HR can complete them rather
+    // than wonder why the headcount and the payslip count differ.
+    skippedNoSalary: noSalary,
+  };
   req.msg = "payroll_generated";
   return next();
 };

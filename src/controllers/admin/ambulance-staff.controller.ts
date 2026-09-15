@@ -179,15 +179,55 @@ export const detail = async (
   next();
 };
 
+/**
+ * Fields an admin may change on a crew member.
+ *
+ * The update used to pass `req.body` straight through, so anything in the
+ * schema could be set by anyone who could reach this route — including
+ * `isOnline`, `providerId` and `hospitalId`, which decide who a dispatch can
+ * be assigned to and which party is billed. Now that the Employees screen
+ * edits crew too, that surface is wider, so it is whitelisted.
+ */
+const CREW_ASSIGNABLE = [
+  "fullName",
+  "mobileNumber",
+  "countryCode",
+  "role",
+  "isActive",
+  "licenseNumber",
+  "licenseImage",
+  "photo",
+  "bloodGroup",
+  "address",
+  "emergencyContact",
+  "salaryStructure",
+] as const;
+
 export const update = async (
   req: Request,
   res: Response,
   next: NextFunction,
 ) => {
+  const body = req.body || {};
+  const patch: Record<string, unknown> = {};
+  for (const f of CREW_ASSIGNABLE) {
+    if (body[f] !== undefined) patch[f] = body[f];
+  }
+  // Who operates a crew member is a billing and dispatch decision, so it keeps
+  // its own flow rather than riding along with a name edit.
+  if (body.providerId !== undefined || body.hospitalId !== undefined) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = {
+      hint: "Provider and hospital assignment is changed from Ambulance Operations, not here.",
+    };
+    return next();
+  }
+
   const staff = await AmbulanceStaff.findOneAndUpdate(
     { _id: (req.params.id as string), isDeleted: false },
-    req.body,
-    { returnDocument: "after" },
+    patch,
+    { returnDocument: "after", runValidators: true },
   );
   if (!staff) {
     req.rCode = 5;

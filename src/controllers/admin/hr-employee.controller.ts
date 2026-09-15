@@ -6,6 +6,10 @@ import { Payslip } from "../../models/payslip.model";
 import { nextSequence } from "../../models/counter.model";
 import { EMPLOYEE_CATEGORIES } from "../../models/hr-employee.model";
 import { uploadFileToAws } from "../../utils/s3";
+import {
+  createAdminForEmployee,
+  setPanelRole,
+} from "../../services/employee-link.service";
 
 /**
  * HR — Employee CRUD. Employee codes are minted atomically as HWE-000123.
@@ -71,7 +75,9 @@ export const detail = async (
     .populate("designationId", "name")
     .populate("employmentTypeId", "name")
     .populate("reportingToId", "fullName employeeCode")
-    .populate("linkedAdminId", "fullName roleName")
+    // roleId too: the edit form preselects their current role, and without
+    // it the dropdown would open blank and look like they had none.
+    .populate("linkedAdminId", "fullName roleName roleId isActive")
     .lean();
 
   if (!employee) {
@@ -141,6 +147,35 @@ export const create = async (
     return next();
   }
 
+  /**
+   * A panel login, when a role is chosen.
+   *
+   * Created BEFORE the employee on purpose: it is the step that can fail
+   * (an email already taken, an invalid role), and failing after the employee
+   * exists would leave a half-made person behind with no way to finish them
+   * from this form.
+   */
+  let panelLogin:
+    | { adminId: any; roleName: string; temporaryPassword?: string }
+    | null = null;
+  if (b.roleId) {
+    try {
+      panelLogin = await createAdminForEmployee({
+        fullName: b.fullName,
+        email: b.email,
+        phone: b.phone,
+        roleId: String(b.roleId),
+        password: b.password,
+        createdBy: adminId,
+      });
+    } catch (err: any) {
+      req.rCode = 0;
+      req.msg = "validation_failed";
+      req.rData = { hint: err?.message || "The panel login could not be created." };
+      return next();
+    }
+  }
+
   const seq = await nextSequence("hr_employee");
   const employeeCode = `HWE-${pad(seq)}`;
 
@@ -153,10 +188,24 @@ export const create = async (
   if (b.dob) doc.dob = new Date(b.dob);
   if (b.exitDate) doc.exitDate = new Date(b.exitDate);
   if (b.salaryStructure) doc.salaryStructure = b.salaryStructure;
+  if (panelLogin) doc.linkedAdminId = panelLogin.adminId;
 
   const employee = await HrEmployee.create(doc);
 
-  req.rData = { employee };
+  req.rData = {
+    employee,
+    ...(panelLogin
+      ? {
+          panelLogin: {
+            role: panelLogin.roleName,
+            email: b.email,
+            // Shown once. It is stored hashed and cannot be retrieved later,
+            // so the screen has to pass it on now.
+            temporaryPassword: panelLogin.temporaryPassword,
+          },
+        }
+      : {}),
+  };
   req.msg = "employee_created";
   return next();
 };
@@ -185,8 +234,52 @@ export const update = async (
   if (b.exitDate !== undefined)
     employee.exitDate = b.exitDate ? new Date(b.exitDate) : undefined;
 
+  /**
+   * The panel role.
+   *
+   * The form offers a role rather than a list of account names: which login
+   * row someone is attached to is an implementation detail, and picking the
+   * wrong name silently gave one person another person's permissions. Setting
+   * a role here changes it on their existing login, or creates one if they do
+   * not yet have access.
+   *
+   * Done BEFORE saving the employee, so a refusal — an email already taken, an
+   * invalid role — leaves the record untouched rather than half-applied.
+   */
+  let panelLogin: { role: string; temporaryPassword?: string } | null = null;
+  if (b.roleId) {
+    try {
+      const created = await setPanelRole(
+        {
+          _id: employee._id,
+          fullName: employee.fullName,
+          email: employee.email,
+          phone: employee.phone,
+          linkedAdminId: employee.linkedAdminId,
+        },
+        String(b.roleId),
+        (req as any).adminId,
+      );
+      if (created) {
+        employee.linkedAdminId = created.adminId;
+        panelLogin = {
+          role: created.roleName,
+          temporaryPassword: created.temporaryPassword,
+        };
+      }
+    } catch (err: any) {
+      req.rCode = 0;
+      req.msg = "validation_failed";
+      req.rData = { hint: err?.message || "The panel role could not be set." };
+      return next();
+    }
+  }
+
   await employee.save();
-  req.rData = { employee };
+  req.rData = {
+    employee,
+    ...(panelLogin ? { panelLogin: { ...panelLogin, email: employee.email } } : {}),
+  };
   req.msg = "employee_updated";
   return next();
 };

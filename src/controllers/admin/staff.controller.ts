@@ -9,6 +9,10 @@ import {
   DEFAULT_ROLES,
 } from "../../models/role.model";
 import { escapeRegex } from "../../utils/helpers";
+import {
+  ensureEmployeeForAdmin,
+  type LinkResult,
+} from "../../services/employee-link.service";
 
 // ==================== STAFF MANAGEMENT ====================
 
@@ -157,13 +161,45 @@ export const createStaff = async (req: Request, res: Response) => {
     createdBy: req.adminId,
   });
 
+  /**
+   * A panel login is an employee too.
+   *
+   * Adding someone here used to create only a login, so they never reached HR
+   * — no department, no attendance, no payslip, and invisible on the employee
+   * roster. The HR record is created alongside and linked, carrying just what
+   * this form knows; HR fills in the rest.
+   *
+   * A failure here must not lose the login that was just created, so it is
+   * reported alongside rather than thrown.
+   */
+  let hrRecord: LinkResult | null = null;
+  let hrError: string | undefined;
+  try {
+    hrRecord = await ensureEmployeeForAdmin(
+      { _id: newStaff._id, fullName, email, phone },
+      req.adminId,
+    );
+  } catch (err: any) {
+    hrError = err?.message || "The HR record could not be created.";
+    console.error("[staff] HR record creation failed:", err);
+  }
+
   const staffData = await Admin.findById(newStaff._id)
     .select("-password -resetPasswordToken -resetPasswordExpires")
     .populate("roleId", "name description permissions");
 
   res.locals.data = {
-    message: "Staff member created successfully",
+    message: hrRecord?.created
+      ? `Staff member created, and added to Employees as ${hrRecord.employeeCode}.`
+      : hrRecord
+        ? `Staff member created and linked to existing employee ${hrRecord.employeeCode}.`
+        : "Staff member created successfully",
     staff: staffData,
+    employeeId: hrRecord?.employeeId,
+    employeeCode: hrRecord?.employeeCode,
+    ...(hrError
+      ? { hrWarning: `${hrError} Add them under Employees to complete their record.` }
+      : {}),
   };
 };
 

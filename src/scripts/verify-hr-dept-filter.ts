@@ -80,7 +80,8 @@ const run = async () => {
     ok(`"${d.name}" headcount matches`, scoped.headcount === expected,
       `dashboard=${scoped.headcount} db=${expected}`);
     ok(`"${d.name}" breakdown still lists every department`,
-      scoped.byDepartment.length === all.byDepartment.length);
+      scoped.byDepartment.length === all.byDepartment.length,
+      `${scoped.byDepartment.length} vs ${all.byDepartment.length}`);
     checked++;
   }
 
@@ -94,7 +95,10 @@ const run = async () => {
     `dashboard=${none.headcount} db=${noneExpected}`);
 
   ok("scoped counts never exceed the unscoped total", none.headcount <= all.headcount);
-  ok("the filter is echoed back so the screen can show it", none.departmentId === "none");
+  // The summary now returns its filters under `filters`, so the screen can
+  // show what it is scoped to.
+  ok("the filter is echoed back so the screen can show it",
+    none.filters?.departmentId === "none", JSON.stringify(none.filters));
 
   // The seeded department, where the expected numbers are known exactly.
   const s = await call(String(seeded._id));
