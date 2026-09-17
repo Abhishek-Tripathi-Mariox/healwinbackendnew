@@ -284,7 +284,16 @@ export const setPolicyApproval = async (
   policy.reviewNote = req.body?.reviewNote || undefined;
   policy.approvedByAdminId = adminId;
   policy.approvedAt = status === "approved" ? new Date() : undefined;
-  await policy.save();
+  /**
+   * Validate only what this decision changes.
+   *
+   * A plain save() re-validates the whole document, so a policy registered
+   * before a field became required — an uploaded document with no `name`,
+   * say — could not be approved at all: the save threw on a field the reviewer
+   * never touched, and the policy sat in "pending" no matter how many times
+   * Confirm was pressed.
+   */
+  await policy.save({ validateModifiedOnly: true });
 
   req.rData = { item: policy };
   req.msg = "saved";

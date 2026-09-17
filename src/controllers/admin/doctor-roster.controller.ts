@@ -8,8 +8,17 @@ const SHIFTS = new Set(["morning", "evening", "night", "full"]);
 // GET /?date=YYYY-MM-DD (or ?from&to) — roster entries.
 export const list = async (req: Request, _res: Response, next: NextFunction) => {
   const query: any = {};
-  if (req.query.date) query.date = req.query.date;
-  else if (req.query.from && req.query.to) query.date = { $gte: req.query.from, $lte: req.query.to };
+  if (req.query.date) {
+    query.date = req.query.date;
+  } else if (req.query.from && req.query.to) {
+    // An inverted range (from after to) matches nothing, and reads as "no
+    // roster" rather than as a mistake. Dates are YYYY-MM-DD, so ordering them
+    // as strings is ordering them as dates.
+    let from = String(req.query.from);
+    let to = String(req.query.to);
+    if (from > to) [from, to] = [to, from];
+    query.date = { $gte: from, $lte: to };
+  }
   if (req.query.doctorId) query.doctorId = req.query.doctorId;
   const items = await DoctorRoster.find(query)
     .sort({ date: 1, shift: 1 })
