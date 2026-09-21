@@ -144,7 +144,7 @@ export const setUserInRedisByTxnId = async (otpData: any) => {
   const txnId = otpData.txnId;
 
   try {
-    await redis().SetRedis(`USER|txnId:${txnId}`, otpData, 60);
+    await redis().SetRedis(`USER|txnId:${txnId}`, otpData, 600);
     console.log("SetRedis success");
   } catch (err) {
     console.log("Err=>>", err);

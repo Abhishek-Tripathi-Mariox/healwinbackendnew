@@ -48,12 +48,12 @@ export const driverLogin = async (
 
   await redis().SetRedis(
     `DRIVER|txnId:${newTxnId}`,
-    JSON.stringify(otpData),
+    otpData,
     600,
   );
   await redis().SetRedis(
     `DRIVER|Mob:${mobileNumber}`,
-    JSON.stringify(otpData),
+    otpData,
     600,
   );
 
@@ -135,9 +135,12 @@ export const verifyDriverOtp = async (
     return next();
   }
 
-  // GetRedis already JSON-parses, so result[0] is the OTP record object
-  // (matching how the patient auth flow reads it — do NOT JSON.parse again).
-  const otpData = result[0];
+  // SetRedis JSON-encodes and GetRedis decodes once, so this is normally the
+  // record object. OTPs issued by older builds were stored pre-stringified
+  // (encoded twice) and come back as a string — accept both, otherwise
+  // `otpData.otp` is undefined and every correct OTP reads as incorrect.
+  const otpData =
+    typeof result[0] === "string" ? JSON.parse(result[0]) : result[0];
   const { mobileNumber, countryCode } = otpData;
 
   const providedOtp = String(otp).trim();
@@ -730,12 +733,12 @@ export const resendDriverOtp = async (
 
   await redis().SetRedis(
     `DRIVER|txnId:${newTxnId}`,
-    JSON.stringify(otpData),
+    otpData,
     600,
   );
   await redis().SetRedis(
     `DRIVER|Mob:${mobileNumber}`,
-    JSON.stringify(otpData),
+    otpData,
     600,
   );
 
