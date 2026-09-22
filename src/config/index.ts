@@ -145,6 +145,10 @@ const config = {
     // registered phone. When unset we fall back to "anonymous dial" (two raw
     // numbers), which MyOperator only allows once they enable it on the account.
     myOperatorUserId: optional("MYOPERATOR_USER_ID"),
+    // "Authentication" token from MyOperator → APIs & Webhook → Calling. Lets
+    // us read the account's user list and match the calling admin's phone to
+    // their MyOperator user automatically (no per-admin setup).
+    myOperatorAuthToken: optional("MYOPERATOR_AUTH_TOKEN"),
     // Shared secret for the inbound webhook. The endpoint has to be public
     // (MyOperator can't hold a session), so this is what protects it. Leave
     // unset only in development.
