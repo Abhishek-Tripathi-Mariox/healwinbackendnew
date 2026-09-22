@@ -140,6 +140,11 @@ const config = {
     myOperatorSecretToken: optional("MYOPERATOR_SECRET_TOKEN"),
     myOperatorCallType: optional("MYOPERATOR_CALL_TYPE", "1"),
     myOperatorPublicIvrId: optional("MYOPERATOR_PUBLIC_IVR_ID"),
+    // MyOperator panel user to ring first ("user dial"). When set, we send
+    // user_id + the customer number and MyOperator rings that user's own
+    // registered phone. When unset we fall back to "anonymous dial" (two raw
+    // numbers), which MyOperator only allows once they enable it on the account.
+    myOperatorUserId: optional("MYOPERATOR_USER_ID"),
     // Shared secret for the inbound webhook. The endpoint has to be public
     // (MyOperator can't hold a session), so this is what protects it. Leave
     // unset only in development.

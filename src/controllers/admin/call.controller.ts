@@ -6,6 +6,7 @@ import config from "../../config";
 import {
   clickToCall,
   isConfigured,
+  usesUserDial,
   tenDigits,
 } from "../../services/myoperator.service";
 
@@ -184,7 +185,7 @@ export const placeCall = async (
     agentNumber = tenDigits(String(admin?.phone || admin?.mobileNumber || ""));
   }
   if (!agentNumber) agentNumber = tenDigits(String(config.ivr.operatorNumber || ""));
-  if (agentNumber.length !== 10) {
+  if (agentNumber.length !== 10 && !usesUserDial()) {
     req.rCode = 0;
     req.msg = "validation_failed";
     req.rData = {

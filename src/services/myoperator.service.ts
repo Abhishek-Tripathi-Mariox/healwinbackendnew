@@ -32,6 +32,9 @@ export const isConfigured = (): boolean => {
   );
 };
 
+/** True when calls go out as "user dial" — no agent phone number needed. */
+export const usesUserDial = (): boolean => !!config.ivr.myOperatorUserId;
+
 /**
  * Click-to-call: MyOperator rings `agentNumber` first and, when the agent
  * picks up, bridges them to `customerNumber`.
@@ -52,6 +55,7 @@ export const clickToCall = async (
     myOperatorSecretToken,
     myOperatorCallType,
     myOperatorPublicIvrId,
+    myOperatorUserId,
   } = config.ivr;
 
   if (!isConfigured()) {
@@ -65,7 +69,7 @@ export const clickToCall = async (
   }
   const agent = tenDigits(agentNumber);
   const customer = tenDigits(customerNumber);
-  if (agent.length !== 10) {
+  if (!myOperatorUserId && agent.length !== 10) {
     return { provider: "myoperator", status: "failed", note: "invalid agent number" };
   }
   if (customer.length !== 10) {
@@ -88,10 +92,13 @@ export const clickToCall = async (
         secret_token: myOperatorSecretToken,
         type: myOperatorCallType,
         public_ivr_id: myOperatorPublicIvrId,
-        // E.164, as in MyOperator's own examples ("+919876543210").
-        number: `+91${agent}`,
-        number_2: `+91${customer}`,
         reference_id: refId,
+        // E.164, as in MyOperator's own examples ("+919876543210").
+        ...(myOperatorUserId
+          ? // User dial: MyOperator rings this panel user, then the customer.
+            { user_id: myOperatorUserId, number: `+91${customer}` }
+          : // Anonymous dial: ring agent number, then bridge to customer.
+            { number: `+91${agent}`, number_2: `+91${customer}` }),
       }),
     });
     const data: any = await resp.json().catch(() => ({}));

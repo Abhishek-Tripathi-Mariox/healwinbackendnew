@@ -10,7 +10,7 @@ import { randomUUID } from "crypto";
 import CallLog from "../../models/call-log.model";
 import { Admin } from "../../models/admin.model";
 import config from "../../config";
-import { clickToCall, isConfigured, tenDigits } from "../../services/myoperator.service";
+import { clickToCall, isConfigured, tenDigits, usesUserDial } from "../../services/myoperator.service";
 import { escapeRegex } from "../../utils/helpers";
 
 /**
@@ -342,7 +342,7 @@ export const callSubmitter = async (req: Request, res: Response) => {
       agentNumber = tenDigits(String(admin?.phone || admin?.mobileNumber || ""));
     }
     if (!agentNumber) agentNumber = tenDigits(String(config.ivr.operatorNumber || ""));
-    if (agentNumber.length !== 10) {
+    if (agentNumber.length !== 10 && !usesUserDial()) {
       return res.status(400).json({
         success: false,
         message:
