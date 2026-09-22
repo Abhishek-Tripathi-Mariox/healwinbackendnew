@@ -8,7 +8,7 @@ import { normalizeWebhook } from "../services/myoperator.service";
  * MyOperator webhook — every call event and recording lands here.
  *
  * Point MyOperator's callback URL at:
- *   POST  https://<your-domain>/api/v1/webhooks/myoperator?token=<MYOPERATOR_WEBHOOK_TOKEN>
+ *   POST  https://<your-domain>/v1/api/webhooks/myoperator?token=<MYOPERATOR_WEBHOOK_TOKEN>
  *
  * The endpoint is public (MyOperator's servers cannot hold an admin session),
  * so it is protected by a shared token instead. It is deliberately forgiving:

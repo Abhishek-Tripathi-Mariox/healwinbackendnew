@@ -200,8 +200,8 @@ export const placeCall = async (
     req.msg = "validation_failed";
     req.rData = {
       hint:
-        "MyOperator is not configured — set MYOPERATOR_API_KEY, MYOPERATOR_COMPANY_ID " +
-        "and MYOPERATOR_SECRET_TOKEN in the backend .env",
+        "MyOperator is not configured — set MYOPERATOR_API_KEY, MYOPERATOR_COMPANY_ID, " +
+        "MYOPERATOR_SECRET_TOKEN and MYOPERATOR_PUBLIC_IVR_ID in the backend .env",
       notConfigured: true,
     };
     return next();

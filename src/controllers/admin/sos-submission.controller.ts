@@ -329,7 +329,7 @@ export const callSubmitter = async (req: Request, res: Response) => {
         success: false,
         message:
           "MyOperator is not configured — set MYOPERATOR_API_KEY, " +
-          "MYOPERATOR_COMPANY_ID and MYOPERATOR_SECRET_TOKEN in the backend .env",
+          "MYOPERATOR_COMPANY_ID, MYOPERATOR_SECRET_TOKEN and MYOPERATOR_PUBLIC_IVR_ID in the backend .env",
       });
     }
 

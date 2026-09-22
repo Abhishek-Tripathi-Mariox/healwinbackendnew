@@ -130,14 +130,16 @@ const config = {
   // Telephony — MyOperator handles both the IVR and click-to-call.
   ivr: {
     // MyOperator OBD (outbound dialer) API. Rings the agent first, then
-    // bridges to the customer. `callType` defaults to a peer-to-peer bridge;
-    // check the MyOperator dashboard (Manage → API integration) for the exact
-    // value your account expects if calls don't connect.
+    // bridges to the customer. Type "1" is MyOperator's peer-to-peer bridge
+    // (agent ↔ customer); "2" is bulk IVR dialling. `public_ivr_id` is required
+    // by the API for every call — copy it from the MyOperator panel
+    // (Manage → API integration / IVR settings).
     myOperatorApiUrl: optional("MYOPERATOR_API_URL", "https://obd-api.myoperator.co/obd-api-v1"),
     myOperatorApiKey: optional("MYOPERATOR_API_KEY"), // x-api-key header
     myOperatorCompanyId: optional("MYOPERATOR_COMPANY_ID"),
     myOperatorSecretToken: optional("MYOPERATOR_SECRET_TOKEN"),
-    myOperatorCallType: optional("MYOPERATOR_CALL_TYPE", "peer_to_peer"),
+    myOperatorCallType: optional("MYOPERATOR_CALL_TYPE", "1"),
+    myOperatorPublicIvrId: optional("MYOPERATOR_PUBLIC_IVR_ID"),
     // Shared secret for the inbound webhook. The endpoint has to be public
     // (MyOperator can't hold a session), so this is what protects it. Leave
     // unset only in development.

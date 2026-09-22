@@ -27,7 +27,8 @@ export const isConfigured = (): boolean => {
   return !!(
     c.myOperatorApiKey &&
     c.myOperatorCompanyId &&
-    c.myOperatorSecretToken
+    c.myOperatorSecretToken &&
+    c.myOperatorPublicIvrId
   );
 };
 
@@ -50,6 +51,7 @@ export const clickToCall = async (
     myOperatorCompanyId,
     myOperatorSecretToken,
     myOperatorCallType,
+    myOperatorPublicIvrId,
   } = config.ivr;
 
   if (!isConfigured()) {
@@ -57,8 +59,8 @@ export const clickToCall = async (
       provider: "myoperator",
       status: "failed",
       note:
-        "MyOperator is not configured — set MYOPERATOR_API_KEY, " +
-        "MYOPERATOR_COMPANY_ID and MYOPERATOR_SECRET_TOKEN in the backend .env",
+        "MyOperator is not configured — set MYOPERATOR_API_KEY, MYOPERATOR_COMPANY_ID, " +
+        "MYOPERATOR_SECRET_TOKEN and MYOPERATOR_PUBLIC_IVR_ID in the backend .env",
     };
   }
   const agent = tenDigits(agentNumber);
@@ -85,8 +87,10 @@ export const clickToCall = async (
         company_id: myOperatorCompanyId,
         secret_token: myOperatorSecretToken,
         type: myOperatorCallType,
-        number: agent,
-        number_2: customer,
+        public_ivr_id: myOperatorPublicIvrId,
+        // E.164, as in MyOperator's own examples ("+919876543210").
+        number: `+91${agent}`,
+        number_2: `+91${customer}`,
         reference_id: refId,
       }),
     });
