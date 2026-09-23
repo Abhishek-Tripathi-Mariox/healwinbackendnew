@@ -7,6 +7,7 @@ import {
   clickToCall,
   isConfigured,
   usesUserDial,
+  recordingLink,
   tenDigits,
 } from "../../services/myoperator.service";
 
@@ -61,6 +62,22 @@ export const KIND_FILTERS: Record<string, any> = {
   inbound: { $and: [{ direction: "inbound" }, NO_IVR] },
 };
 
+/**
+ * Fill in a playable recording URL for rows that only carry MyOperator's
+ * file name. Their links are signed and expire, so they're resolved per read
+ * (cached in the service) rather than stored. Best-effort: a telephony
+ * hiccup must not fail the call log itself.
+ */
+const withRecordingLinks = async (rows: any[]): Promise<void> => {
+  await Promise.all(
+    rows
+      .filter((r) => r?.recordingFile && !r.recordingUrl)
+      .map(async (r) => {
+        r.recordingUrl = await recordingLink(String(r.recordingFile));
+      }),
+  );
+};
+
 /** GET /admin/calls — the call log, newest first. */
 export const list = async (req: Request, _res: Response, next: NextFunction) => {
   const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
@@ -84,7 +101,12 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
   if (req.query.subjectType) query.subjectType = String(req.query.subjectType);
   if (req.query.subjectId) query.subjectId = req.query.subjectId;
   if (req.query.hasRecording === "true") {
-    query.recordingUrl = { $exists: true, $nin: ["", null] };
+    and.push({
+      $or: [
+        { recordingUrl: { $exists: true, $nin: ["", null] } },
+        { recordingFile: { $exists: true, $nin: ["", null] } },
+      ],
+    });
   }
   if (req.query.search) {
     // Escaped: a stray "(" in a search box must not become a broken regex,
@@ -124,6 +146,8 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
     CallLog.countDocuments(query),
   ]);
 
+  await withRecordingLinks(items as any[]);
+
   req.rData = {
     items,
     pagination: { page, limit, total, pages: Math.ceil(total / limit) },
@@ -144,6 +168,7 @@ export const detail = async (req: Request, _res: Response, next: NextFunction) =
     req.rData = {};
     return next();
   }
+  await withRecordingLinks([item as any]);
   req.rData = { item };
   req.msg = "success";
   return next();
@@ -267,7 +292,12 @@ export const saveNotes = async (
 export const stats = async (req: Request, _res: Response, next: NextFunction) => {
   const since = new Date();
   since.setHours(0, 0, 0, 0);
-  const HAS_RECORDING = { recordingUrl: { $exists: true, $nin: ["", null] } };
+  const HAS_RECORDING = {
+    $or: [
+      { recordingUrl: { $exists: true, $nin: ["", null] } },
+      { recordingFile: { $exists: true, $nin: ["", null] } },
+    ],
+  };
   /** Count a kind, optionally only the ones carrying a recording. */
   const ofKind = (kind: string, recordedOnly = false) =>
     CallLog.countDocuments(

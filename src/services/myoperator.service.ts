@@ -329,7 +329,41 @@ export interface NormalizedCall {
   durationSeconds: number;
   ringSeconds: number;
   recordingUrl?: string;
+  /** MyOperator recording file name; resolve with `recordingLink()`. */
+  recordingFile?: string;
 }
+
+/* ────────────── Recordings ────────────── */
+
+const RECORDING_URL = "https://developers.myoperator.co/recordings/link";
+const RECORDING_TTL_MS = 15 * 60 * 1000;
+const recordingCache = new Map<string, { at: number; url: string }>();
+
+/**
+ * Turn a recording file name from a webhook into a playable link.
+ *
+ * MyOperator hands out signed S3 URLs that expire, so these are resolved when
+ * the call log is read rather than stored, and cached briefly so paging
+ * through the log doesn't re-ask for every row.
+ */
+export const recordingLink = async (file: string): Promise<string | undefined> => {
+  const token = config.ivr.myOperatorAuthToken;
+  if (!file || !token) return undefined;
+  const hit = recordingCache.get(file);
+  if (hit && Date.now() - hit.at < RECORDING_TTL_MS) return hit.url;
+  try {
+    const fetchFn: any = (globalThis as any).fetch;
+    const resp = await fetchFn(
+      `${RECORDING_URL}?token=${encodeURIComponent(token)}&file=${encodeURIComponent(file)}`,
+    );
+    const data: any = await resp.json().catch(() => ({}));
+    const url = typeof data?.url === "string" ? data.url : undefined;
+    if (url) recordingCache.set(file, { at: Date.now(), url });
+    return url;
+  } catch {
+    return undefined;
+  }
+};
 
 /**
  * Map a MyOperator webhook body onto our call shape.
@@ -383,6 +417,24 @@ const str = (v: any): string | undefined =>
   v === undefined || v === null || v === "" ? undefined : String(v);
 
 /**
+ * MyOperator reports each side of a call as a "leg": leg 1 is the agent,
+ * leg 2 the customer. The agent's number, name and ring/talk time all live
+ * there, so the legs are read separately from the flat fields.
+ */
+const legInfo = (body: any) => {
+  const legs: any[] = Array.isArray(body?.payload?.legs) ? body.payload.legs : [];
+  const agent = legs.find((l) => String(l?.type) === "agent");
+  const customer = legs.find((l) => String(l?.type) === "customer");
+  return {
+    agentNumber: agent ? tenDigits(String(agent.phone_number || "")) || undefined : undefined,
+    agentName: str(agent?.agent?.name),
+    answeredAt: toDate(agent?.answered_at),
+    // What the panel shows as "ring" is how long the customer's phone rang.
+    ringSeconds: toSeconds((customer || agent)?.ring_duration),
+  };
+};
+
+/**
  * Map a MyOperator webhook body onto our call shape.
  *
  * MyOperator sends two shapes: the older flat after-call webhook, and the
@@ -396,6 +448,8 @@ export const normalizeWebhook = (body: any): NormalizedCall | null => {
   if (!body || typeof body !== "object") return null;
   const p = flatten(body);
   const eventType = str(p.event_type)?.toLowerCase();
+
+  const leg = legInfo(body);
 
   const customerRaw = pick(p, [
     "customer_identifier", "caller_number", "callerNumber", "customer_number",
@@ -461,27 +515,31 @@ export const normalizeWebhook = (body: any): NormalizedCall | null => {
   return {
     // session_id ties every event of one call together.
     providerCallId: str(pick(p, ["session_id", "call_id", "callId", "unique_id", "uniqueid", "uuid", "id"])),
-    refId: str(pick(p, ["reference_id", "referenceId", "refid", "ref_id"])),
+    // client_ref_id is OUR reference (the one passed to clickToCall);
+    // ref_id is MyOperator's own and must not be mistaken for it.
+    refId: str(pick(p, ["client_ref_id", "reference_id", "referenceId", "refid", "ref_id"])),
     direction,
     status,
     eventType,
     customerNumber,
-    agentNumber: agentRaw ? tenDigits(String(agentRaw)) || undefined : undefined,
+    agentNumber: leg.agentNumber || (agentRaw ? tenDigits(String(agentRaw)) || undefined : undefined),
     didNumber: str(didRaw),
     ivrFlow: str(pick(p, ["ivr_flow", "ivr_name", "ivr", "department", "department_name", "queue", "group_name"])),
     ivrInput: str(pick(p, ["ivr_input", "dtmf", "key_pressed", "input", "digits"])),
-    agentName: str(pick(p, ["agent_name", "agentName", "answered_agent_name", "user_name"])),
+    agentName: leg.agentName || str(pick(p, ["agent_name", "agentName", "answered_agent_name", "user_name"])),
     startedAt:
       toDate(pick(p, ["start_time", "startTime", "call_time", "initiated_at", "date"])) ||
       (status === "initiated" ? at : undefined),
     answeredAt:
+      leg.answeredAt ||
       toDate(pick(p, ["answer_time", "answered_at", "answerTime"])) ||
       (status === "answered" ? at : undefined),
     endedAt:
       toDate(pick(p, ["end_time", "endTime", "hangup_time", "completed_at", "ended_at"])) ||
       (eventType && status && !["initiated", "ringing", "answered"].includes(status) ? at : undefined),
     durationSeconds: duration,
-    ringSeconds: ring,
+    ringSeconds: ring || leg.ringSeconds,
+    recordingFile: str(pick(p, ["recording_filename", "recording_file", "recording_name"])),
     // Only a real link — a bare "1"/"true" recording flag is not a URL.
     recordingUrl: recording && /^https?:\/\//i.test(recording) ? recording : undefined,
   };

@@ -73,6 +73,12 @@ export interface ICallLog {
   ringSeconds: number;
 
   recordingUrl?: string;
+  /**
+   * MyOperator's recording file name. The playable URL it resolves to is a
+   * short-lived signed link, so the file name is what we keep — a fresh URL
+   * is fetched when the log is read.
+   */
+  recordingFile?: string;
   recordingDurationSeconds?: number;
 
   /** Who clicked the call button, for click-to-call. */
@@ -135,6 +141,7 @@ const CallLogSchema = new Schema<ICallLog>(
     ringSeconds: { type: Number, default: 0 },
 
     recordingUrl: { type: String, trim: true },
+    recordingFile: { type: String, trim: true },
     recordingDurationSeconds: { type: Number, default: 0 },
 
     placedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },

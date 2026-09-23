@@ -125,6 +125,7 @@ export const receive = async (req: Request, res: Response) => {
       ["answeredAt", call.answeredAt],
       ["endedAt", call.endedAt],
       ["recordingUrl", call.recordingUrl],
+      ["recordingFile", call.recordingFile],
     ];
     for (const [k, v] of maybe) if (v !== undefined && v !== "") patch[k] = v;
     if (call.durationSeconds > 0) patch.durationSeconds = call.durationSeconds;
