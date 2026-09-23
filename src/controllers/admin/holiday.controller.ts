@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { Holiday } from "../../models/holiday.model";
+import { paginate } from "../../utils/paginate.util";
 
 /**
  * HR — Holiday calendar. Days listed here are excluded from absent/LOP
@@ -17,8 +18,10 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
     (req.query.year as string) || String(new Date().getFullYear()),
     10,
   );
-  const items = await Holiday.find({ year }).sort({ date: 1 }).lean();
-  req.rData = { year, items };
+  const { items, pagination } = await paginate(Holiday, { year }, req, {
+    date: 1,
+  });
+  req.rData = { year, items, pagination };
   req.msg = "holiday_list";
   return next();
 };

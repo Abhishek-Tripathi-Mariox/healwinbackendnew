@@ -17,6 +17,8 @@ import {
   salaryOf,
 } from "../../services/payroll.service";
 import { generatePayslipPDF } from "../../services/pdf.service";
+import { paginate } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * HR — Payroll. `generate` is idempotent for a (month, year): it re-uses the
@@ -368,16 +370,16 @@ export const generate = async (
 };
 
 export const runsList = async (
-  _req: Request,
+  req: Request,
   _res: Response,
   next: NextFunction,
 ) => {
-  const items = await PayrollRun.find()
-    .sort({ year: -1, month: -1 })
-    .limit(60)
-    .lean();
-  _req.rData = { items };
-  _req.msg = "payrun_list";
+  const { items, pagination } = await paginate(PayrollRun, {}, req, {
+    year: -1,
+    month: -1,
+  });
+  req.rData = { items, pagination };
+  req.msg = "payrun_list";
   return next();
 };
 
@@ -393,10 +395,16 @@ export const runDetail = async (
     req.rData = {};
     return next();
   }
-  const payslips = await Payslip.find({ runId: run._id })
-    .sort({ employeeName: 1 })
-    .lean();
-  req.rData = { run, payslips };
+  const filter: any = { runId: run._id };
+  const search = ((req.query.search as string) || "").trim();
+  if (search) {
+    const rx = new RegExp(escapeRegex(search), "i");
+    filter.$or = [{ employeeName: rx }, { employeeCode: rx }];
+  }
+  const { items: payslips, pagination } = await paginate(Payslip, filter, req, {
+    employeeName: 1,
+  });
+  req.rData = { run, payslips, pagination };
   req.msg = "payrun_detail";
   return next();
 };

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import GeofenceLocation from "../../models/geofence-location.model";
 import { EMPLOYEE_CATEGORIES } from "../../models/hr-employee.model";
+import { paginate } from "../../utils/paginate.util";
 
 /**
  * HR — Attendance geofence locations (§4.2, §4.4). Replaces the single
@@ -14,8 +15,10 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
     { employeeCategories: req.query.category },
     { employeeCategories: { $size: 0 } },
   ];
-  const items = await GeofenceLocation.find(query).sort({ name: 1 }).lean();
-  req.rData = { items, categories: EMPLOYEE_CATEGORIES };
+  const { items, pagination } = await paginate(GeofenceLocation, query, req, {
+    name: 1,
+  });
+  req.rData = { items, categories: EMPLOYEE_CATEGORIES, pagination };
   req.msg = "success";
   return next();
 };

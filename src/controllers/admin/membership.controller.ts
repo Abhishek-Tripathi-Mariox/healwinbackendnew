@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import { MembershipPlan, UserMembership } from "../../models/membership.model";
 import { expireLapsedMemberships } from "../../services/membership.service";
+import { getPaginationParams } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Admin CRUD for membership plans (the patient-app membership carousel source).
@@ -21,18 +23,31 @@ const sanitize = (b: any) => {
 };
 
 export const list = async (req: Request, _res: Response, next: NextFunction) => {
-  const plans = await MembershipPlan.find({ isDeleted: { $ne: true } })
-    .sort({ sortOrder: 1, price: 1 })
-    .lean();
-  // Subscriber counts give the admin a quick sense of plan uptake.
+  const { search, isActive } = req.query;
+  const filter: Record<string, any> = { isDeleted: { $ne: true } };
+  if (typeof search === "string" && search.trim()) {
+    const rx = { $regex: escapeRegex(search.trim()), $options: "i" };
+    filter.$or = [{ name: rx }, { tier: rx }];
+  }
+  if (typeof isActive === "string") filter.isActive = isActive === "true";
+
+  const { page, limit, skip } = getPaginationParams(req, { defaultLimit: 25 });
+  const [plans, total] = await Promise.all([
+    MembershipPlan.find(filter).sort({ sortOrder: 1, price: 1 }).skip(skip).limit(limit).lean(),
+    MembershipPlan.countDocuments(filter),
+  ]);
+  // Subscriber counts give the admin a quick sense of plan uptake. Scoped to
+  // the plans on this page so the aggregate never scans the whole membership
+  // collection for rows nobody is looking at.
   const counts = await UserMembership.aggregate([
-    { $match: { status: "active" } },
+    { $match: { status: "active", planId: { $in: plans.map((p: any) => p._id) } } },
     { $group: { _id: "$planId", n: { $sum: 1 } } },
   ]);
   const countMap = new Map(counts.map((c: any) => [String(c._id), c.n]));
   req.rData = {
     items: plans.map((p) => ({ ...p, activeSubscribers: countMap.get(String(p._id)) || 0 })),
-    total: plans.length,
+    total,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
   };
   req.msg = "membership_plans_listed";
   next();

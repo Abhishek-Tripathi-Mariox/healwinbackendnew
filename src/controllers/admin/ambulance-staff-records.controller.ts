@@ -11,6 +11,7 @@ import {
   resolveCrewAmbulanceId,
 } from "../../services/ambulance-stock.service";
 import { sendToStaff } from "../../services/notification.service";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Admin read/management endpoints for the records the ambulance-staff app
@@ -31,15 +32,43 @@ const optionalStaffFilter = (req: Request) => {
   return staffId ? { staffId } : {};
 };
 
+/** page/limit off the query string, bounded so a caller can't ask for everything. */
+const pageParams = (req: Request) => {
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "20", 10)),
+  );
+  return { page, limit, skip: (page - 1) * limit };
+};
+
+const pageMeta = (page: number, limit: number, total: number) => ({
+  page,
+  limit,
+  total,
+  pages: Math.ceil(total / limit) || 1,
+});
+
 // ----- Patients registered by ambulance staff -----
 export const listStaffPatients = async (req: Request, _res: Response, next: NextFunction) => {
   const q: Record<string, unknown> = { source: "ambulance_staff", isDeleted: false };
   if ((req.query as any).staffId) q.registeredByStaffId = (req.query as any).staffId;
-  const items = await HospitalPatient.find(q)
-    .populate("registeredByStaffId", STAFF_FIELDS)
-    .sort({ createdAt: -1 })
-    .lean();
-  req.rData = { items };
+  const search = String(req.query.search || "").trim();
+  if (search) {
+    const rx = { $regex: escapeRegex(search), $options: "i" };
+    q.$or = [{ fullName: rx }, { phone: rx }, { patientId: rx }];
+  }
+  const { page, limit, skip } = pageParams(req);
+  const [items, total] = await Promise.all([
+    HospitalPatient.find(q)
+      .populate("registeredByStaffId", STAFF_FIELDS)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    HospitalPatient.countDocuments(q),
+  ]);
+  req.rData = { items, pagination: pageMeta(page, limit, total) };
   req.msg = "success";
   return next();
 };
@@ -50,11 +79,17 @@ export const listCaseNotes = async (req: Request, _res: Response, next: NextFunc
   const q: Record<string, unknown> = { ...optionalStaffFilter(req) };
   if (dispatchId) q.dispatchId = dispatchId;
   if (patientId) q.patientId = patientId;
-  const items = await StaffCaseNote.find(q)
-    .populate("staffId", STAFF_FIELDS)
-    .sort({ createdAt: -1 })
-    .lean();
-  req.rData = { items };
+  const { page, limit, skip } = pageParams(req);
+  const [items, total] = await Promise.all([
+    StaffCaseNote.find(q)
+      .populate("staffId", STAFF_FIELDS)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    StaffCaseNote.countDocuments(q),
+  ]);
+  req.rData = { items, pagination: pageMeta(page, limit, total) };
   req.msg = "success";
   return next();
 };
@@ -64,11 +99,17 @@ export const listStockRequests = async (req: Request, _res: Response, next: Next
   const { status } = req.query as Record<string, string>;
   const q: Record<string, unknown> = { ...optionalStaffFilter(req) };
   if (status) q.status = status;
-  const items = await StaffStockRequest.find(q)
-    .populate("staffId", STAFF_FIELDS)
-    .sort({ createdAt: -1 })
-    .lean();
-  req.rData = { items };
+  const { page, limit, skip } = pageParams(req);
+  const [items, total] = await Promise.all([
+    StaffStockRequest.find(q)
+      .populate("staffId", STAFF_FIELDS)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    StaffStockRequest.countDocuments(q),
+  ]);
+  req.rData = { items, pagination: pageMeta(page, limit, total) };
   req.msg = "success";
   return next();
 };
@@ -186,11 +227,17 @@ export const listLeaves = async (req: Request, _res: Response, next: NextFunctio
   const q: Record<string, unknown> = { subjectType: "ambulance_staff" };
   if (staffId) q.ambulanceStaffId = staffId;
   if (status) q.status = status.toLowerCase();
-  const rows = await LeaveRequest.find(q)
-    .populate("ambulanceStaffId", STAFF_FIELDS)
-    .sort({ createdAt: -1 })
-    .lean();
-  req.rData = { items: rows.map(toLegacyLeave) };
+  const { page, limit, skip } = pageParams(req);
+  const [rows, total] = await Promise.all([
+    LeaveRequest.find(q)
+      .populate("ambulanceStaffId", STAFF_FIELDS)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    LeaveRequest.countDocuments(q),
+  ]);
+  req.rData = { items: rows.map(toLegacyLeave), pagination: pageMeta(page, limit, total) };
   req.msg = "success";
   return next();
 };

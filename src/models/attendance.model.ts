@@ -116,6 +116,9 @@ AttendanceSchema.index(
     partialFilterExpression: { ambulanceStaffId: { $type: "objectId" } },
   },
 );
+// The roster reads one day at a time, and filtering it by status resolves who
+// was marked that way from here — a day's rows only, never the whole history.
+AttendanceSchema.index({ date: 1, subjectType: 1, status: 1 });
 
 export const Attendance = mongoose.model<IAttendance>(
   "Attendance",

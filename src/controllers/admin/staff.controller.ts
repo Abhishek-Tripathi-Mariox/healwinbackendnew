@@ -446,9 +446,24 @@ export const resetStaffPassword = async (req: Request, res: Response) => {
  * Get all roles
  */
 export const getAllRoles = async (req: Request, res: Response) => {
-  const roles = await Role.find({ isActive: true })
-    .populate("createdBy", "fullName email")
-    .sort({ isSystem: -1, name: 1 });
+  const { search } = req.query;
+  const query: any = { isActive: true };
+  if (typeof search === "string" && search.trim()) {
+    const rx = { $regex: escapeRegex(search.trim()), $options: "i" };
+    query.$or = [{ name: rx }, { description: rx }];
+  }
+
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25));
+
+  const [roles, total] = await Promise.all([
+    Role.find(query)
+      .populate("createdBy", "fullName email")
+      .sort({ isSystem: -1, name: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+    Role.countDocuments(query),
+  ]);
 
   // Add staff count for each role
   const rolesWithCount = await Promise.all(
@@ -464,7 +479,50 @@ export const getAllRoles = async (req: Request, res: Response) => {
     }),
   );
 
-  res.locals.data = { roles: rolesWithCount };
+  /**
+   * The page's header cards count every matching role, not just the ones on
+   * screen — so they have to be totalled here. Once the list is paged, summing
+   * the returned rows would silently turn "Assigned Staff" into "assigned
+   * staff on page 1".
+   */
+  const [summaryRow] = await Role.aggregate([
+    { $match: query },
+    {
+      $lookup: {
+        from: Admin.collection.name,
+        let: { roleId: "$_id" },
+        pipeline: [
+          {
+            $match: {
+              isDeleted: false,
+              $expr: { $eq: ["$roleId", "$$roleId"] },
+            },
+          },
+          { $count: "n" },
+        ],
+        as: "staff",
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        systemRoles: { $sum: { $cond: ["$isSystem", 1, 0] } },
+        assignedStaff: {
+          $sum: { $ifNull: [{ $arrayElemAt: ["$staff.n", 0] }, 0] },
+        },
+      },
+    },
+  ]);
+
+  res.locals.data = {
+    roles: rolesWithCount,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+    summary: {
+      totalRoles: total,
+      systemRoles: summaryRow?.systemRoles || 0,
+      assignedStaff: summaryRow?.assignedStaff || 0,
+    },
+  };
 };
 
 /**

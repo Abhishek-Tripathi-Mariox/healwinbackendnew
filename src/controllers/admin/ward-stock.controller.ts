@@ -3,13 +3,23 @@ import Ward from "../../models/ward.model";
 import InventoryItem from "../../models/inventory-item.model";
 import { WardStock, WardStockTransaction } from "../../models/ward-stock.model";
 import { issueToWard, adjustWardStock, transferBetweenWards } from "../../services/ward-stock.service";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
- * GET /admin/ward-stock — every ward's on-hand summary + consumption spend.
- * Mirrors admin/controllers/ambulance-stock.controller.ts#reports.
+ * GET /admin/ward-stock?search=&page=&limit= — every ward's on-hand summary +
+ * consumption spend. Mirrors admin/controllers/ambulance-stock.controller.ts#reports.
  */
 export const reports = async (req: Request, _res: Response, next: NextFunction) => {
-  const [consumedAgg, onHandAgg, wards] = await Promise.all([
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "20", 10)),
+  );
+  const wardQuery: any = { isActive: { $ne: false } };
+  const search = String(req.query.search || "").trim();
+  if (search) wardQuery.name = { $regex: escapeRegex(search), $options: "i" };
+
+  const [consumedAgg, onHandAgg, wards, total] = await Promise.all([
     WardStockTransaction.aggregate([
       { $match: { type: "out" } },
       {
@@ -23,7 +33,13 @@ export const reports = async (req: Request, _res: Response, next: NextFunction) 
       { $match: { quantity: { $gt: 0 } } },
       { $group: { _id: "$wardId", lines: { $sum: 1 }, qty: { $sum: "$quantity" } } },
     ]),
-    Ward.find({ isActive: { $ne: false } }).select("name").lean(),
+    Ward.find(wardQuery)
+      .select("name")
+      .sort({ name: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    Ward.countDocuments(wardQuery),
   ]);
 
   const consumedMap = new Map(consumedAgg.map((c: any) => [String(c._id), c]));
@@ -42,7 +58,10 @@ export const reports = async (req: Request, _res: Response, next: NextFunction) 
     };
   });
 
-  req.rData = { byWard };
+  req.rData = {
+    byWard,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  };
   req.msg = "success";
   return next();
 };

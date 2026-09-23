@@ -3,6 +3,7 @@ import { InsurancePayer, PatientPolicy, InsuranceClaim } from "../../models/insu
 import { nextSequence } from "../../models/counter.model";
 import { HospitalInvoice } from "../../models/hospital-invoice.model";
 import { payablePoliciesFor } from "../../services/insurance-payment.service";
+import { escapeRegex } from "../../utils/helpers";
 
 /** Recompute amountPaid / balanceDue / status from an invoice's payments. */
 const recomputeInvoice = (inv: any) => {
@@ -22,10 +23,30 @@ const recomputeInvoice = (inv: any) => {
 
 /** Admin: insurance payers (insurer/TPA), patient policies, and claims. */
 
+/** page/limit off the query string, bounded so a caller can't ask for everything. */
+const pageParams = (req: Request, defaultLimit = 20) => {
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || String(defaultLimit), 10)),
+  );
+  return { page, limit, skip: (page - 1) * limit };
+};
+
 // ===== Payers =====
 export const listPayers = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = await InsurancePayer.find({ isDeleted: { $ne: true } }).sort({ name: 1 }).lean();
-  req.rData = { items };
+  const query: any = { isDeleted: { $ne: true } };
+  const search = String(req.query.search || "").trim();
+  if (search) {
+    const rx = { $regex: escapeRegex(search), $options: "i" };
+    query.$or = [{ name: rx }, { code: rx }];
+  }
+  const { page, limit, skip } = pageParams(req);
+  const [items, total] = await Promise.all([
+    InsurancePayer.find(query).sort({ name: 1 }).skip(skip).limit(limit).lean(),
+    InsurancePayer.countDocuments(query),
+  ]);
+  req.rData = { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 } };
   req.msg = "success";
   return next();
 };
@@ -62,19 +83,29 @@ export const listPolicies = async (req: Request, _res: Response, next: NextFunct
   if (req.query.patientId) query.patientId = req.query.patientId;
   if (req.query.approvalStatus) query.approvalStatus = String(req.query.approvalStatus);
 
-  const [items, pendingCount] = await Promise.all([
+  const search = String(req.query.search || "").trim();
+  if (search) query.policyNumber = { $regex: escapeRegex(search), $options: "i" };
+  const { page, limit, skip } = pageParams(req);
+
+  const [items, total, pendingCount] = await Promise.all([
     PatientPolicy.find(query)
       // Pending first: a verifier opening this page is here to clear the
       // queue, not to browse policies that were approved last month.
       .sort({ approvalStatus: 1, createdAt: -1 })
-      .limit(200)
+      .skip(skip)
+      .limit(limit)
       .populate("payerId", "name type")
       .populate("patientId", "fullName patientId phone")
       .lean(),
+    PatientPolicy.countDocuments(query),
     PatientPolicy.countDocuments({ approvalStatus: "pending" }),
   ]);
 
-  req.rData = { items, pendingCount };
+  req.rData = {
+    items,
+    pendingCount,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  };
   req.msg = "success";
   return next();
 };
@@ -120,14 +151,21 @@ export const listClaims = async (req: Request, _res: Response, next: NextFunctio
   const query: any = {};
   if (req.query.status) query.status = req.query.status;
   if (req.query.patientId) query.patientId = req.query.patientId;
-  const items = await InsuranceClaim.find(query)
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .populate("payerId", "name type")
-    .populate("patientId", "fullName patientId phone")
-    .populate("policyId", "policyNumber")
-    .lean();
-  req.rData = { items };
+  const search = String(req.query.search || "").trim();
+  if (search) query.claimNumber = { $regex: escapeRegex(search), $options: "i" };
+  const { page, limit, skip } = pageParams(req);
+  const [items, total] = await Promise.all([
+    InsuranceClaim.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate("payerId", "name type")
+      .populate("patientId", "fullName patientId phone")
+      .populate("policyId", "policyNumber")
+      .lean(),
+    InsuranceClaim.countDocuments(query),
+  ]);
+  req.rData = { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 } };
   req.msg = "success";
   return next();
 };

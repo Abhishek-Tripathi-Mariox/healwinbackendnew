@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import HomePromo from "../../models/home-promo.model";
+import { getPaginationParams } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Admin CRUD for patient-app home promo shortcut cards. `target` must be one of
@@ -19,10 +21,25 @@ const sanitize = (b: any) => {
 };
 
 export const list = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = await HomePromo.find({ isDeleted: { $ne: true } })
-    .sort({ sortOrder: 1, createdAt: 1 })
-    .lean();
-  req.rData = { items, total: items.length };
+  const { search, isActive } = req.query;
+  const filter: Record<string, any> = { isDeleted: { $ne: true } };
+  if (typeof search === "string" && search.trim()) {
+    const rx = { $regex: escapeRegex(search.trim()), $options: "i" };
+    // titleBold is an array of lines; a scalar regex matches any element.
+    filter.$or = [{ titleTop: rx }, { titleBold: rx }, { cta: rx }, { target: rx }];
+  }
+  if (typeof isActive === "string") filter.isActive = isActive === "true";
+
+  const { page, limit, skip } = getPaginationParams(req, { defaultLimit: 25 });
+  const [items, total] = await Promise.all([
+    HomePromo.find(filter).sort({ sortOrder: 1, createdAt: 1 }).skip(skip).limit(limit).lean(),
+    HomePromo.countDocuments(filter),
+  ]);
+  req.rData = {
+    items,
+    total,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  };
   req.msg = "home_promos_listed";
   next();
 };

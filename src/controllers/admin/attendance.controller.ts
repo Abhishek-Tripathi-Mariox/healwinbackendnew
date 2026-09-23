@@ -13,6 +13,7 @@ import {
 import { formatDuration } from "../../services/working-hours";
 import { getCycleStartDay } from "../../services/payroll-settings.service";
 import { payrollPeriod } from "../../services/payroll-period";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * HR — Attendance. Marking is idempotent via upsert on {employeeId, date}.
@@ -41,22 +42,54 @@ export const byDate = async (
   next: NextFunction,
 ) => {
   const date = dayStart((req.query.date as string) || new Date().toISOString());
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "25", 10)),
+  );
+  const search = ((req.query.search as string) || "").trim();
+  // An unrecognised status would otherwise narrow the roster to nobody.
+  const statusFilter = VALID.includes(req.query.status as AttendanceStatus)
+    ? (req.query.status as AttendanceStatus)
+    : null;
 
-  const employees = await HrEmployee.find({
-    isDeleted: false,
-    status: { $ne: "terminated" },
-  })
-    .select("fullName employeeCode departmentId designationId")
-    .populate("departmentId", "name")
-    .populate("designationId", "name")
-    .sort({ fullName: 1 })
-    .lean();
+  const query: any = { isDeleted: false, status: { $ne: "terminated" } };
+  if (search) {
+    const rx = new RegExp(escapeRegex(search), "i");
+    query.$or = [{ fullName: rx }, { employeeCode: rx }];
+  }
+  // The status is on the attendance row, not on the employee, so narrowing by
+  // it means resolving that day's marked people first. The id set is bounded
+  // by one day's headcount rather than by the whole attendance history.
+  if (statusFilter) {
+    const marked = await Attendance.find({
+      date,
+      subjectType: "hr_employee",
+      status: statusFilter,
+    })
+      .select("employeeId")
+      .lean();
+    query._id = { $in: marked.map((r: any) => r.employeeId) };
+  }
+
+  const [employees, total] = await Promise.all([
+    HrEmployee.find(query)
+      .select("fullName employeeCode departmentId designationId")
+      .populate("departmentId", "name")
+      .populate("designationId", "name")
+      .sort({ fullName: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    HrEmployee.countDocuments(query),
+  ]);
 
   // Scope to HR employees — ambulance crew mark their own attendance against
   // ambulanceStaffId and would otherwise be pulled into this roster's map.
   const records = await Attendance.find({
     date,
     subjectType: "hr_employee",
+    employeeId: { $in: employees.map((e) => e._id) },
   }).lean();
   const byEmp = new Map(records.map((r) => [String(r.employeeId), r]));
 
@@ -65,7 +98,11 @@ export const byDate = async (
     attendance: byEmp.get(String(e._id)) || null,
   }));
 
-  req.rData = { date, roster };
+  req.rData = {
+    date,
+    roster,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  };
   req.msg = "attendance_list";
   return next();
 };

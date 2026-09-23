@@ -4,13 +4,35 @@ import { nextSequence } from "../../models/counter.model";
 import InventoryItem from "../../models/inventory-item.model";
 import StockTransaction from "../../models/stock-transaction.model";
 import { receiveBatch } from "../../services/inventory-batch.service";
+import { escapeRegex } from "../../utils/helpers";
 
 /** Admin: suppliers + purchase orders (received = GRN). */
 
+/** page/limit off the query string, bounded so a caller can't ask for everything. */
+const pageParams = (req: Request, defaultLimit = 20) => {
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || String(defaultLimit), 10)),
+  );
+  return { page, limit, skip: (page - 1) * limit };
+};
+
 // ===== Suppliers =====
 export const listSuppliers = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = await Supplier.find({ isDeleted: { $ne: true } }).sort({ name: 1 }).lean();
-  req.rData = { items }; req.msg = "success"; return next();
+  const query: any = { isDeleted: { $ne: true } };
+  const search = String(req.query.search || "").trim();
+  if (search) {
+    const rx = { $regex: escapeRegex(search), $options: "i" };
+    query.$or = [{ name: rx }, { contactPerson: rx }, { phone: rx }, { gstin: rx }];
+  }
+  const { page, limit, skip } = pageParams(req);
+  const [items, total] = await Promise.all([
+    Supplier.find(query).sort({ name: 1 }).skip(skip).limit(limit).lean(),
+    Supplier.countDocuments(query),
+  ]);
+  req.rData = { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 } };
+  req.msg = "success"; return next();
 };
 export const createSupplier = async (req: Request, _res: Response, next: NextFunction) => {
   const b = req.body || {};
@@ -131,12 +153,20 @@ export const listPurchaseOrders = async (req: Request, _res: Response, next: Nex
   const query: any = {};
   if (req.query.status) query.status = req.query.status;
   if (req.query.supplierId) query.supplierId = req.query.supplierId;
-  const items = await PurchaseOrder.find(query)
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .populate("supplierId", "name gstin")
-    .lean();
-  req.rData = { items }; req.msg = "success"; return next();
+  const search = String(req.query.search || "").trim();
+  if (search) query.poNumber = { $regex: escapeRegex(search), $options: "i" };
+  const { page, limit, skip } = pageParams(req);
+  const [items, total] = await Promise.all([
+    PurchaseOrder.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate("supplierId", "name gstin")
+      .lean(),
+    PurchaseOrder.countDocuments(query),
+  ]);
+  req.rData = { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 } };
+  req.msg = "success"; return next();
 };
 export const createPurchaseOrder = async (req: Request, _res: Response, next: NextFunction) => {
   const b = req.body || {};

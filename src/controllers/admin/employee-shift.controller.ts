@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import EmployeeShift from "../../models/employee-shift.model";
 import HrEmployee from "../../models/hr-employee.model";
 import { Types } from "mongoose";
+import { paginate } from "../../utils/paginate.util";
 
 /** Admin: hospital/HR staff shift scheduling. */
 const SHIFTS = new Set(["morning", "evening", "night", "general"]);
@@ -53,19 +54,23 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
   }
   if (req.query.shift) query.shift = req.query.shift;
 
-  const items = await EmployeeShift.find(query)
-    .sort({ date: 1, shift: 1 })
-    .limit(1000)
-    .populate({
-      path: "employeeId",
-      select: "fullName employeeCode departmentId designationId",
-      populate: [
-        { path: "departmentId", select: "name" },
-        { path: "designationId", select: "name" },
-      ],
-    })
-    .lean();
-  req.rData = { items };
+  const { items, pagination } = await paginate(
+    EmployeeShift,
+    query,
+    req,
+    { date: 1, shift: 1 },
+    [
+      {
+        path: "employeeId",
+        select: "fullName employeeCode departmentId designationId",
+        populate: [
+          { path: "departmentId", select: "name" },
+          { path: "designationId", select: "name" },
+        ],
+      },
+    ],
+  );
+  req.rData = { items, pagination };
   req.msg = "success";
   return next();
 };

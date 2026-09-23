@@ -3,10 +3,26 @@ import { OperationTheatre, Surgery } from "../../models/operation-theatre.model"
 
 /** Admin: Operation Theatres + scheduled surgeries. */
 
+/** page/limit off the query string, bounded so a caller can't ask for everything. */
+const pageParams = (req: Request, defaultLimit = 20) => {
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || String(defaultLimit), 10)),
+  );
+  return { page, limit, skip: (page - 1) * limit };
+};
+
 // ===== Theatres =====
 export const listTheatres = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = await OperationTheatre.find({ isDeleted: { $ne: true } }).sort({ name: 1 }).lean();
-  req.rData = { items }; req.msg = "success"; return next();
+  const { page, limit, skip } = pageParams(req);
+  const query = { isDeleted: { $ne: true } };
+  const [items, total] = await Promise.all([
+    OperationTheatre.find(query).sort({ name: 1 }).skip(skip).limit(limit).lean(),
+    OperationTheatre.countDocuments(query),
+  ]);
+  req.rData = { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 } };
+  req.msg = "success"; return next();
 };
 export const createTheatre = async (req: Request, _res: Response, next: NextFunction) => {
   const b = req.body || {};
@@ -34,14 +50,20 @@ export const listSurgeries = async (req: Request, _res: Response, next: NextFunc
   const query: any = {};
   if (req.query.status) query.status = req.query.status;
   if (req.query.otId) query.otId = req.query.otId;
-  const items = await Surgery.find(query)
-    .sort({ scheduledAt: -1 })
-    .limit(200)
-    .populate("otId", "name")
-    .populate("patientId", "fullName patientId phone")
-    .populate("surgeonId", "fullName")
-    .lean();
-  req.rData = { items }; req.msg = "success"; return next();
+  const { page, limit, skip } = pageParams(req);
+  const [items, total] = await Promise.all([
+    Surgery.find(query)
+      .sort({ scheduledAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate("otId", "name")
+      .populate("patientId", "fullName patientId phone")
+      .populate("surgeonId", "fullName")
+      .lean(),
+    Surgery.countDocuments(query),
+  ]);
+  req.rData = { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 } };
+  req.msg = "success"; return next();
 };
 export const createSurgery = async (req: Request, _res: Response, next: NextFunction) => {
   const b = req.body || {};

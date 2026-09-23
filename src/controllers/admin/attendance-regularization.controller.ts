@@ -4,6 +4,7 @@ import Attendance from "../../models/attendance.model";
 import HrEmployee from "../../models/hr-employee.model";
 import { resolveShiftFor, applyDayComputation } from "../../services/attendance.service";
 import { withTransaction } from "../../utils/txn.util";
+import { paginate } from "../../utils/paginate.util";
 
 /**
  * HR — Attendance Regularization (§4.5).
@@ -32,12 +33,14 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
   const query: any = {};
   if (req.query.status) query.status = String(req.query.status);
   if (req.query.employeeId) query.employeeId = req.query.employeeId;
-  const items = await AttendanceRegularization.find(query)
-    .sort({ createdAt: -1 })
-    .limit(300)
-    .populate("employeeId", "fullName employeeCode")
-    .lean();
-  req.rData = { items };
+  const { items, pagination } = await paginate(
+    AttendanceRegularization,
+    query,
+    req,
+    { createdAt: -1 },
+    [{ path: "employeeId", select: "fullName employeeCode" }],
+  );
+  req.rData = { items, pagination };
   req.msg = "success";
   return next();
 };

@@ -5,6 +5,7 @@ import { LeaveBalance } from "../../models/leave-balance.model";
 import Attendance from "../../models/attendance.model";
 import { sendToStaff } from "../../services/notification.service";
 import { withTransaction } from "../../utils/txn.util";
+import { paginate } from "../../utils/paginate.util";
 
 const fmtD = (d: Date) => new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
 
@@ -34,13 +35,18 @@ const notifyStaffDecision = (lr: any, approved: boolean) => {
 // ---------- Leave Types ----------
 
 export const listTypes = async (
-  _req: Request,
+  req: Request,
   _res: Response,
   next: NextFunction,
 ) => {
-  const items = await LeaveType.find().sort({ createdAt: 1 }).lean();
-  _req.rData = { items };
-  _req.msg = "leave_type_list";
+  const { items, pagination } = await paginate(
+    LeaveType,
+    {},
+    req,
+    { createdAt: 1 },
+  );
+  req.rData = { items, pagination };
+  req.msg = "leave_type_list";
   return next();
 };
 
@@ -94,13 +100,17 @@ export const listRequests = async (
   if (req.query.employeeId) query.employeeId = req.query.employeeId;
   if (req.query.subjectType) query.subjectType = req.query.subjectType;
 
-  const rows: any[] = await LeaveRequest.find(query)
-    .sort({ createdAt: -1 })
-    .limit(300)
-    .populate("employeeId", "fullName employeeCode")
-    .populate("ambulanceStaffId", "fullName mobileNumber role")
-    .populate("leaveTypeId", "name code isPaid")
-    .lean();
+  const { items: rows, pagination } = await paginate<any>(
+    LeaveRequest,
+    query,
+    req,
+    { createdAt: -1 },
+    [
+      { path: "employeeId", select: "fullName employeeCode" },
+      { path: "ambulanceStaffId", select: "fullName mobileNumber role" },
+      { path: "leaveTypeId", select: "name code isPaid" },
+    ],
+  );
 
   // Unified row: a single `subjectName` + `typeName` regardless of staff kind,
   // so one HR Leave page renders HR employees and ambulance crew together.
@@ -117,7 +127,7 @@ export const listRequests = async (
     typeName: lr.leaveTypeId?.name || lr.leaveTypeName || "Leave",
   }));
 
-  req.rData = { items };
+  req.rData = { items, pagination };
   req.msg = "leave_request_list";
   return next();
 };

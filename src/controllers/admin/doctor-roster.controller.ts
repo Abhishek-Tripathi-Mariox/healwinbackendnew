@@ -20,12 +20,24 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
     query.date = { $gte: from, $lte: to };
   }
   if (req.query.doctorId) query.doctorId = req.query.doctorId;
-  const items = await DoctorRoster.find(query)
-    .sort({ date: 1, shift: 1 })
-    .limit(500)
-    .populate("doctorId", "fullName doctorProfile.speciality")
-    .lean();
-  req.rData = { items };
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "25", 10)),
+  );
+  const [items, total] = await Promise.all([
+    DoctorRoster.find(query)
+      .sort({ date: 1, shift: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate("doctorId", "fullName doctorProfile.speciality")
+      .lean(),
+    DoctorRoster.countDocuments(query),
+  ]);
+  req.rData = {
+    items,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  };
   req.msg = "success";
   return next();
 };

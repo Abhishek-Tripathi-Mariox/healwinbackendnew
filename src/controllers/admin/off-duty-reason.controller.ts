@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import OffDutyReason from "../../models/off-duty-reason.model";
 import { escapeRegex } from "../../utils/helpers";
+import { getPaginationParams } from "../../utils/paginate.util";
 
 export const list = async (
   req: Request,
@@ -13,10 +14,16 @@ export const list = async (
   if (typeof search === "string" && search.trim()) {
     q.label = { $regex: escapeRegex(search).trim(), $options: "i" };
   }
-  const items = await OffDutyReason.find(q)
-    .sort({ sortOrder: 1, createdAt: -1 })
-    .lean();
-  req.rData = { items, total: items.length };
+  const { page, limit, skip } = getPaginationParams(req, { defaultLimit: 25 });
+  const [items, total] = await Promise.all([
+    OffDutyReason.find(q).sort({ sortOrder: 1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+    OffDutyReason.countDocuments(q),
+  ]);
+  req.rData = {
+    items,
+    total,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  };
   req.msg = "off_duty_reasons_listed";
   next();
 };

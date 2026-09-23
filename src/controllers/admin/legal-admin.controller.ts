@@ -24,14 +24,27 @@ export const listLegalDocuments = async (
   _req: Request,
   res: Response,
 ) => {
-  const docs = await LegalDocument.find()
+  // There is one row per (type, audience), so the whole collection is at most
+  // LEGAL_DOC_TYPES x LEGAL_AUDIENCES rows — bound the read to that anyway.
+  // autoIndex is off in production, so the unique compound key is only there
+  // once the index migration has run; until then a duplicate row is possible
+  // and an unbounded find() would be the thing that grew.
+  const docs = await LegalDocument.find({
+    type: { $in: LEGAL_DOC_TYPES },
+    audience: { $in: LEGAL_AUDIENCES },
+  })
+    .sort({ type: 1, audience: 1, updatedAt: -1 })
+    .limit(LEGAL_DOC_TYPES.length * LEGAL_AUDIENCES.length)
     .populate("updatedBy", "name email")
     .lean();
 
   // Index by `${type}:${audience}` for cheap lookups in the response shape.
+  // First wins: the sort puts the most recently edited row of a duplicated
+  // cell first, which is the one an editor would expect to see.
   const byKey: Record<string, any> = {};
   for (const d of docs) {
-    byKey[`${d.type}:${d.audience}`] = d;
+    const key = `${d.type}:${d.audience}`;
+    if (!byKey[key]) byKey[key] = d;
   }
 
   const cells: any[] = [];

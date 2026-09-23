@@ -3,6 +3,7 @@ import WorkShift from "../../models/work-shift.model";
 import EmployeeShift from "../../models/employee-shift.model";
 import HrEmployee from "../../models/hr-employee.model";
 import { parseHHmm, shiftLengthMinutes } from "../../services/working-hours";
+import { paginate } from "../../utils/paginate.util";
 
 /**
  * HR — Shift master (§3). Defines the shifts themselves; EmployeeShift only
@@ -44,6 +45,7 @@ const validate = (b: any): string | null => {
 export const list = async (req: Request, _res: Response, next: NextFunction) => {
   const query: any = {};
   if (req.query.active === "true") query.isActive = true;
+  if (req.query.active === "false") query.isActive = false;
   if (req.query.departmentId) {
     // A shift with no departments is open to all, so it must still appear.
     query.$or = [
@@ -51,16 +53,21 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
       { departmentIds: { $size: 0 } },
     ];
   }
-  const items = await WorkShift.find(query)
-    .sort({ startTime: 1 })
-    .populate("departmentIds", "name")
-    .lean();
+
+  const { items, pagination } = await paginate<any>(
+    WorkShift,
+    query,
+    req,
+    { startTime: 1 },
+    [{ path: "departmentIds", select: "name" }],
+  );
   req.rData = {
     items: items.map((s: any) => ({
       ...s,
       lengthMinutes: shiftLengthMinutes(s),
       isOvernight: (parseHHmm(s.endTime) ?? 0) <= (parseHHmm(s.startTime) ?? 0),
     })),
+    pagination,
   };
   req.msg = "success";
   return next();

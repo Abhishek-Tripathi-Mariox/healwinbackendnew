@@ -425,12 +425,21 @@ const legInfo = (body: any) => {
   const legs: any[] = Array.isArray(body?.payload?.legs) ? body.payload.legs : [];
   const agent = legs.find((l) => String(l?.type) === "agent");
   const customer = legs.find((l) => String(l?.type) === "customer");
+  // The department the call was routed to ("Helpline") — this is what makes a
+  // call an IVR call rather than a plain direct-dial. Only the summary event
+  // spells out the name; the earlier ones carry just a dept_id.
+  const departmentLeg = legs.find((l) => l?.department?.name || l?.department_name);
   return {
     agentNumber: agent ? tenDigits(String(agent.phone_number || "")) || undefined : undefined,
     agentName: str(agent?.agent?.name),
+    department: str(departmentLeg?.department?.name || departmentLeg?.department_name),
     answeredAt: toDate(agent?.answered_at),
-    // What the panel shows as "ring" is how long the customer's phone rang.
-    ringSeconds: toSeconds((customer || agent)?.ring_duration),
+    // "Ring" is however long the phone we were waiting on rang: the
+    // customer's on an outgoing call, the agent's on an incoming one. Only
+    // one of the two legs reports it, so take whichever actually did.
+    ringSeconds: toSeconds(
+      [customer, agent].find((l) => l?.ring_duration != null)?.ring_duration,
+    ),
   };
 };
 
@@ -524,7 +533,9 @@ export const normalizeWebhook = (body: any): NormalizedCall | null => {
     customerNumber,
     agentNumber: leg.agentNumber || (agentRaw ? tenDigits(String(agentRaw)) || undefined : undefined),
     didNumber: str(didRaw),
-    ivrFlow: str(pick(p, ["ivr_flow", "ivr_name", "ivr", "department", "department_name", "queue", "group_name"])),
+    ivrFlow:
+      leg.department ||
+      str(pick(p, ["ivr_flow", "ivr_name", "ivr", "department_name", "queue", "group_name"])),
     ivrInput: str(pick(p, ["ivr_input", "dtmf", "key_pressed", "input", "digits"])),
     agentName: leg.agentName || str(pick(p, ["agent_name", "agentName", "answered_agent_name", "user_name"])),
     startedAt:

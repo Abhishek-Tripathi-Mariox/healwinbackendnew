@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import Appointment from "../../models/appointment.model";
 import HospitalPatient from "../../models/hospital-patient.model";
+import { escapeRegex } from "../../utils/helpers";
 import { createConsultationInvoice } from "./billing.controller";
 
 /**
@@ -24,7 +25,7 @@ const dayBounds = (d: Date) => {
   return { start, end };
 };
 
-/** GET /admin/opd?date=&doctorId=&status= — queue board (defaults to today). */
+/** GET /admin/opd?date=&doctorId=&status=&search=&page=&limit= — queue board (defaults to today). */
 export const list = async (
   req: Request,
   res: Response,
@@ -32,18 +33,52 @@ export const list = async (
 ) => {
   const date = req.query.date ? new Date(req.query.date as string) : new Date();
   const { start, end } = dayBounds(date);
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "25", 10)),
+  );
   const query: any = { scheduledAt: { $gte: start, $lt: end } };
   if (req.query.doctorId) query.doctorId = req.query.doctorId;
   if (req.query.status) query.status = req.query.status;
 
-  const appointments = await Appointment.find(query)
-    .sort({ scheduledAt: 1, tokenNumber: 1 })
-    .populate("patientId", "patientId fullName phone gender age")
-    .populate("doctorId", "fullName")
-    .populate("invoiceId", "invoiceNo total amountPaid balanceDue status")
-    .lean();
+  const search = String(req.query.search || "").trim();
+  if (search) {
+    // Name, phone and patient-id live on the patient document, so they can't
+    // be matched from the appointment query — resolve them to ids first. The
+    // cap bounds that intermediate id list, not the page: a term matching
+    // thousands of patients is a mis-typed search, not a lookup.
+    const rx = { $regex: escapeRegex(search), $options: "i" };
+    const patients = await HospitalPatient.find({
+      isDeleted: false,
+      $or: [{ fullName: rx }, { phone: rx }, { patientId: rx }],
+    })
+      .select("_id")
+      .limit(1000)
+      .lean();
+    const or: any[] = [{ patientId: { $in: patients.map((p: any) => p._id) } }];
+    const token = Number(search);
+    if (Number.isInteger(token) && token > 0) or.push({ tokenNumber: token });
+    query.$or = or;
+  }
 
-  req.rData = { date: start, appointments };
+  const [appointments, total] = await Promise.all([
+    Appointment.find(query)
+      .sort({ scheduledAt: 1, tokenNumber: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate("patientId", "patientId fullName phone gender age")
+      .populate("doctorId", "fullName")
+      .populate("invoiceId", "invoiceNo total amountPaid balanceDue status")
+      .lean(),
+    Appointment.countDocuments(query),
+  ]);
+
+  req.rData = {
+    date: start,
+    appointments,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  };
   req.msg = "appointment_list";
   return next();
 };

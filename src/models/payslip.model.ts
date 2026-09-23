@@ -163,6 +163,9 @@ PayslipSchema.index(
     partialFilterExpression: { ambulanceStaffId: { $type: "objectId" } },
   },
 );
+// A run's payslips are paged through in name order; the plain `runId` index
+// leaves that sort to be done in memory over the whole month's sheet.
+PayslipSchema.index({ runId: 1, employeeName: 1 });
 
 export const Payslip = mongoose.model<IPayslip>("Payslip", PayslipSchema);
 

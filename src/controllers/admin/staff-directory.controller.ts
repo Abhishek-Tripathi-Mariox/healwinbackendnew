@@ -4,6 +4,7 @@ import HrEmployee from "../../models/hr-employee.model";
 import AmbulanceStaff from "../../models/ambulance-staff.model";
 import Driver from "../../models/driver.model";
 import Attendance from "../../models/attendance.model";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Unified staff directory — one read-only view of EVERY person across the
@@ -120,11 +121,41 @@ export const attendance = async (req: Request, _res: Response, next: NextFunctio
   const dateStr = (req.query.date as string) || "";
   const day = dateStr ? new Date(dateStr) : new Date();
   day.setHours(0, 0, 0, 0);
-  const crew: any[] = await AmbulanceStaff.find({ isDeleted: { $ne: true } })
-    .select("fullName mobileNumber role")
-    .sort({ fullName: 1 })
-    .lean();
-  const rows: any[] = await Attendance.find({ subjectType: "ambulance_staff", date: day }).lean();
+
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "25", 10)),
+  );
+  const search = ((req.query.search as string) || "").trim();
+  const query: any = { isDeleted: { $ne: true } };
+  if (search) {
+    const rx = new RegExp(escapeRegex(search), "i");
+    query.$or = [{ fullName: rx }, { mobileNumber: rx }];
+  }
+
+  // `present` counts the whole day, not this page — it is the headline figure
+  // next to the date, and a per-page count would fall as you scroll.
+  const [crew, total, present] = await Promise.all([
+    AmbulanceStaff.find(query)
+      .select("fullName mobileNumber role")
+      .sort({ fullName: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean() as Promise<any[]>,
+    AmbulanceStaff.countDocuments(query),
+    Attendance.countDocuments({
+      subjectType: "ambulance_staff",
+      date: day,
+      status: "present",
+    }),
+  ]);
+
+  const rows: any[] = await Attendance.find({
+    subjectType: "ambulance_staff",
+    date: day,
+    ambulanceStaffId: { $in: crew.map((s) => s._id) },
+  }).lean();
   const byId = new Map(rows.map((r) => [String(r.ambulanceStaffId), r]));
   const items = crew.map((s) => {
     const a: any = byId.get(String(s._id));
@@ -140,8 +171,13 @@ export const attendance = async (req: Request, _res: Response, next: NextFunctio
       checkInWithinGeofence: a?.checkInWithinGeofence ?? null,
     };
   });
-  const present = items.filter((i) => i.status === "present").length;
-  req.rData = { date: day.toISOString().slice(0, 10), present, total: items.length, items };
+  req.rData = {
+    date: day.toISOString().slice(0, 10),
+    present,
+    total,
+    items,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  };
   req.msg = "success";
   return next();
 };

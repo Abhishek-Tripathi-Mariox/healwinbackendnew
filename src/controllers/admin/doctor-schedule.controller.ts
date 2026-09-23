@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import DoctorSchedule from "../../models/doctor-schedule.model";
 import { Admin } from "../../models/admin.model";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Admin: manage per-doctor weekly OPD availability. The patient app turns these
@@ -10,15 +11,36 @@ import { Admin } from "../../models/admin.model";
 const WEEKDAY_OK = (n: any) => Number.isInteger(n) && n >= 0 && n <= 6;
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-// GET / — list Doctor-role admins with whether they have a schedule.
+// GET /?search=&page=&limit= — list Doctor-role admins with whether they have a schedule.
 export const listDoctors = async (req: Request, _res: Response, next: NextFunction) => {
-  const doctors: any[] = await Admin.find({ roleName: "Doctor", isDeleted: false })
-    .select("fullName email doctorProfile.speciality")
-    .sort({ fullName: 1 })
+  const query: any = { roleName: "Doctor", isDeleted: false };
+  const search = String(req.query.search || "").trim();
+  if (search) {
+    const rx = { $regex: escapeRegex(search), $options: "i" };
+    query.$or = [{ fullName: rx }, { email: rx }, { "doctorProfile.speciality": rx }];
+  }
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "25", 10)),
+  );
+  const [doctors, total] = await Promise.all([
+    Admin.find(query)
+      .select("fullName email doctorProfile.speciality")
+      .sort({ fullName: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean() as Promise<any[]>,
+    Admin.countDocuments(query),
+  ]);
+  // Only the page's doctors — loading every schedule to answer "has one?" is
+  // what made this grow with the whole collection.
+  const schedules = await DoctorSchedule.find({ doctorId: { $in: doctors.map((d) => d._id) } })
+    .select("doctorId windows isActive slotMinutes")
     .lean();
-  const schedules = await DoctorSchedule.find({}).select("doctorId windows isActive slotMinutes").lean();
   const byId = new Map(schedules.map((s: any) => [String(s.doctorId), s]));
   req.rData = {
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
     items: doctors.map((d) => {
       const s: any = byId.get(String(d._id));
       return {

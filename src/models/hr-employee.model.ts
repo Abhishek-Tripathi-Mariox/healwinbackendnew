@@ -235,6 +235,9 @@ HrEmployeeSchema.index({ fullName: "text", employeeCode: "text", email: "text" }
 HrEmployeeSchema.index({ isDeleted: 1, createdAt: -1 });
 HrEmployeeSchema.index({ isDeleted: 1, status: 1, createdAt: -1 });
 HrEmployeeSchema.index({ isDeleted: 1, departmentId: 1 });
+// The daily attendance roster pages through the rolls in name order; without
+// this the sort is done in memory and blows the 32 MB limit on a real payroll.
+HrEmployeeSchema.index({ isDeleted: 1, status: 1, fullName: 1 });
 
 export const HrEmployee = mongoose.model<IHrEmployee>(
   "HrEmployee",

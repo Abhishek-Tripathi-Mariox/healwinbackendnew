@@ -9,6 +9,7 @@ import { notifyHospitalPatient } from "../../services/hms-notify.service";
 import { autoDraftInvoiceOnDischarge } from "./billing.controller";
 import { getMarForDate } from "../../services/mar.service";
 import { computeAdmissionCharges } from "./billing.controller";
+import { escapeRegex } from "../../utils/helpers";
 
 /**
  * Doctor Panel / HMS — IPD: bed master + admissions (admit, transfer,
@@ -27,15 +28,31 @@ const mintAdmissionNo = async (): Promise<string> => {
 export const listWards = async (req: Request, _res: Response, next: NextFunction) => {
   // Default to active wards; ?all=true returns soft-deleted ones too.
   const query: any = req.query.all === "true" ? {} : { isActive: true };
-  const wards = await Ward.find(query).sort({ name: 1 }).lean();
-  // Live bed count per ward so the admin sees usage at a glance.
+  const search = String(req.query.search || "").trim();
+  if (search) query.name = { $regex: escapeRegex(search), $options: "i" };
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "20", 10)),
+  );
+  const [wards, total] = await Promise.all([
+    Ward.find(query)
+      .sort({ name: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    Ward.countDocuments(query),
+  ]);
+  // Live bed count per ward so the admin sees usage at a glance. Counting only
+  // the wards on this page keeps the aggregate off the whole bed collection.
   const counts = await Bed.aggregate([
-    { $match: { isActive: true } },
+    { $match: { isActive: true, ward: { $in: wards.map((w: any) => w.name) } } },
     { $group: { _id: "$ward", count: { $sum: 1 } } },
   ]);
   const countMap = new Map(counts.map((c: any) => [c._id, c.count]));
   req.rData = {
     wards: wards.map((w: any) => ({ ...w, bedCount: countMap.get(w.name) ?? 0 })),
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
   };
   req.msg = "ward_list";
   return next();
@@ -121,8 +138,17 @@ export const listBeds = async (
   const query: any = { isActive: true };
   if (req.query.ward) query.ward = req.query.ward;
   if (req.query.status) query.status = req.query.status;
-  const beds = await Bed.find(query)
+  const search = String(req.query.search || "").trim();
+  if (search) query.bedNumber = { $regex: escapeRegex(search), $options: "i" };
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "20", 10)),
+  );
+  const bedQuery = Bed.find(query)
     .sort({ ward: 1, bedNumber: 1 })
+    .skip((page - 1) * limit)
+    .limit(limit)
     .populate({
       // admittedAt + attending doctor so the bed detail can show who is in it
       // and since when, not just a name.
@@ -132,9 +158,15 @@ export const listBeds = async (
         { path: "patientId", select: "patientId fullName phone gender age" },
         { path: "attendingDoctorId", select: "fullName" },
       ],
-    })
-    .lean();
-  req.rData = { beds };
+    });
+  const [beds, total] = await Promise.all([
+    bedQuery.lean(),
+    Bed.countDocuments(query),
+  ]);
+  req.rData = {
+    beds,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  };
   req.msg = "bed_list";
   return next();
 };

@@ -1,12 +1,24 @@
 import { Request, Response, NextFunction } from "express";
 import FirstAidGuide from "../../models/first-aid-guide.model";
+import { paginate } from "../../utils/paginate.util";
+import { escapeRegex } from "../../utils/helpers";
 
 /** Admin CRUD for patient-app first-aid / emergency education content. */
 export const list = async (req: Request, _res: Response, next: NextFunction) => {
-  const items = await FirstAidGuide.find({ isDeleted: { $ne: true } })
-    .sort({ sortOrder: 1, createdAt: -1 })
-    .lean();
-  req.rData = { items };
+  const { search, type, isActive } = req.query;
+  const filter: Record<string, any> = { isDeleted: { $ne: true } };
+  if (typeof search === "string" && search.trim()) {
+    const rx = { $regex: escapeRegex(search.trim()), $options: "i" };
+    filter.$or = [{ title: rx }, { category: rx }];
+  }
+  if (type === "video" || type === "article") filter.type = type;
+  if (typeof isActive === "string") filter.isActive = isActive === "true";
+
+  const { items, pagination } = await paginate<any>(FirstAidGuide, filter, req, {
+    sortOrder: 1,
+    createdAt: -1,
+  });
+  req.rData = { items, pagination };
   req.msg = "success";
   return next();
 };
