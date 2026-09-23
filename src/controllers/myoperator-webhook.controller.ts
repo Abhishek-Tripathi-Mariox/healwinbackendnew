@@ -26,6 +26,26 @@ const tokenMatches = (given: string, expected: string): boolean => {
   return crypto.timingSafeEqual(a, b);
 };
 
+/**
+ * How far along a call is. Webhook events can arrive out of order (and a
+ * recording event carries no state at all), so a status only ever moves
+ * forward — a late "ringing" must not undo "answered".
+ */
+const STATUS_RANK: Record<string, number> = {
+  initiated: 0,
+  ringing: 1,
+  answered: 2,
+  completed: 3,
+  missed: 3,
+  busy: 3,
+  failed: 3,
+  no_answer: 3,
+  cancelled: 3,
+};
+
+/** Event types already dumped in full to the log (once each per process). */
+const loggedEventTypes = new Set<string>();
+
 export const receive = async (req: Request, res: Response) => {
   const expected = config.ivr.myOperatorWebhookToken;
   if (expected) {
@@ -43,6 +63,14 @@ export const receive = async (req: Request, res: Response) => {
     req.body && Object.keys(req.body).length ? req.body : req.query;
   const call = normalizeWebhook(body);
 
+  // Print the first payload of each event type in full, so the exact field
+  // names MyOperator uses can be read off the server log.
+  const evKey = call?.eventType || (call ? "legacy" : "unrecognised");
+  if (!loggedEventTypes.has(evKey)) {
+    loggedEventTypes.add(evKey);
+    console.log(`[myoperator] first "${evKey}" payload:`, JSON.stringify(body).slice(0, 4000));
+  }
+
   if (!call) {
     // Unparseable, but still acknowledged: MyOperator retries on failure and
     // we would rather investigate one stored oddity than absorb a retry loop.
@@ -58,13 +86,32 @@ export const receive = async (req: Request, res: Response) => {
     if (call.providerCallId) or.push({ providerCallId: call.providerCallId });
     if (call.refId) or.push({ refId: call.refId });
 
-    const existing = or.length ? await CallLog.findOne({ $or: or }) : null;
+    let existing = or.length ? await CallLog.findOne({ $or: or }) : null;
+
+    // A click-to-call we placed is logged before MyOperator knows about it.
+    // If the events don't echo our reference id back, attach them to the
+    // most recent still-unlinked click-to-call to the same number instead
+    // of creating a duplicate row.
+    if (!existing) {
+      existing = await CallLog.findOne({
+        direction: "click_to_call",
+        customerNumber: call.customerNumber,
+        providerCallId: { $exists: false },
+        createdAt: { $gte: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      }).sort({ createdAt: -1 });
+    }
 
     const patch: any = {
       provider: "myoperator",
-      status: call.status,
       customerNumber: call.customerNumber,
     };
+    if (
+      call.status &&
+      (!existing ||
+        (STATUS_RANK[call.status] ?? 0) >= (STATUS_RANK[existing.status] ?? 0))
+    ) {
+      patch.status = call.status;
+    }
     // Only overwrite with values the provider actually sent — a later
     // recording callback carries few fields, and must not blank the rest.
     const maybe: [string, any][] = [
@@ -91,6 +138,7 @@ export const receive = async (req: Request, res: Response) => {
     }
 
     const created = await CallLog.create({
+      status: "initiated",
       ...patch,
       refId: call.refId,
       direction: call.direction,

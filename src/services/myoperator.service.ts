@@ -313,7 +313,10 @@ export interface NormalizedCall {
   providerCallId?: string;
   refId?: string;
   direction: CallDirection;
-  status: CallStatus;
+  /** Absent for events that say nothing about the call's state (recordings). */
+  status?: CallStatus;
+  /** MyOperator event type (new event-style webhooks), e.g. "call.answered". */
+  eventType?: string;
   customerNumber: string;
   agentNumber?: string;
   didNumber?: string;
@@ -337,83 +340,150 @@ export interface NormalizedCall {
  * one. Anything unrecognised still lands in `rawPayloads` on the log, so a
  * call is never dropped just because a key was named unexpectedly.
  */
+/**
+ * Flatten nested objects so fields buried in MyOperator's `payload` (e.g.
+ * payload.user.contact_number) can be looked up by their leaf name. Shallower
+ * keys win, so a top-level field is never shadowed by a nested one.
+ */
+const flatten = (obj: any, depth = 0, out: Record<string, any> = {}): Record<string, any> => {
+  if (!obj || typeof obj !== "object" || depth > 4) return out;
+  const nested: [string, any][] = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) nested.push([k, v]);
+    else if (!(k in out)) out[k] = v;
+  }
+  for (const [k, v] of nested) {
+    // Also expose "<parent>_<leaf>" so e.g. user.name → user_name.
+    for (const [ck, cv] of Object.entries(v)) {
+      if (cv === null || typeof cv !== "object") {
+        const key = `${k}_${ck}`;
+        if (!(key in out)) out[key] = cv;
+      }
+    }
+    flatten(v, depth + 1, out);
+  }
+  return out;
+};
+
+/** MyOperator event-style webhook `event_type` → our status. */
+const EVENT_STATUS: [RegExp, CallStatus | undefined][] = [
+  [/recording/, undefined],
+  [/missed/, "missed"],
+  [/no_?answer|unanswered/, "no_answer"],
+  [/busy/, "busy"],
+  [/fail|error|reject/, "failed"],
+  [/cancel/, "cancelled"],
+  [/answer|bridge|connected/, "answered"],
+  [/end|complete|hangup|disconnect|terminat/, "completed"],
+  [/ring|dial|alert/, "ringing"],
+  [/initiat|start|creat/, "initiated"],
+];
+
+const str = (v: any): string | undefined =>
+  v === undefined || v === null || v === "" ? undefined : String(v);
+
+/**
+ * Map a MyOperator webhook body onto our call shape.
+ *
+ * MyOperator sends two shapes: the older flat after-call webhook, and the
+ * newer event stream (`event_type`: call.initiated → call.dial_begin →
+ * call.answered → … with the details nested under `payload`, one
+ * `session_id` per call). Field names are looked up across the plausible
+ * spellings rather than assuming one, and anything unrecognised still lands
+ * in `rawPayloads` on the log, so a call is never dropped for a naming quirk.
+ */
 export const normalizeWebhook = (body: any): NormalizedCall | null => {
   if (!body || typeof body !== "object") return null;
-  // Some providers nest the useful part.
-  const p = body.data && typeof body.data === "object" ? { ...body, ...body.data } : body;
+  const p = flatten(body);
+  const eventType = str(p.event_type)?.toLowerCase();
 
   const customerRaw = pick(p, [
-    "caller_number", "callerNumber", "customer_number", "from", "from_number",
-    "source", "src", "number_2", "customer", "mobile",
+    "customer_identifier", "caller_number", "callerNumber", "customer_number",
+    "customer_contact_number", "from", "from_number", "source", "src",
+    "number_2", "customer", "mobile",
   ]);
   const agentRaw = pick(p, [
-    "agent_number", "agentNumber", "to", "to_number", "destination",
-    "dst", "number", "answered_agent_number",
+    "agent_number", "agentNumber", "user_contact_number", "user_number",
+    "answered_agent_number", "agent_contact_number", "receiver_number",
+    "to", "to_number", "destination", "dst", "number",
   ]);
-  const didRaw = pick(p, ["did", "did_number", "didNumber", "virtual_number", "company_number"]);
+  const didRaw = pick(p, [
+    "system_identifier", "did", "did_number", "didNumber", "virtual_number", "company_number",
+  ]);
 
   const customerNumber = tenDigits(String(customerRaw ?? ""));
   if (!customerNumber) return null; // nothing identifiable to log
 
-  const rawStatus = String(
-    pick(p, ["status", "call_status", "callStatus", "state", "disposition"]) ?? "",
-  )
-    .toLowerCase()
-    .replace(/\s+/g, "");
-  const status: CallStatus = STATUS_MAP[rawStatus] || "completed";
+  let status: CallStatus | undefined;
+  if (eventType) {
+    status = EVENT_STATUS.find(([re]) => re.test(eventType))?.[1];
+    // A generic "ended" event may still carry the real outcome.
+    const outcome = String(pick(p, ["call_status", "status", "disposition", "hangup_reason"]) ?? "")
+      .toLowerCase()
+      .replace(/\s+/g, "");
+    if (status === "completed" && STATUS_MAP[outcome] && STATUS_MAP[outcome] !== "answered") {
+      status = STATUS_MAP[outcome];
+    }
+  } else {
+    const rawStatus = String(
+      pick(p, ["status", "call_status", "callStatus", "state", "disposition"]) ?? "",
+    )
+      .toLowerCase()
+      .replace(/\s+/g, "");
+    status = STATUS_MAP[rawStatus] || "completed";
+  }
 
   const rawDirection = String(
     pick(p, ["direction", "call_type", "callType", "type"]) ?? "",
   ).toLowerCase();
-  const direction: CallDirection = rawDirection.includes("out")
-    ? "outbound"
-    : rawDirection.includes("click")
-      ? "click_to_call"
+  const direction: CallDirection = rawDirection.includes("click")
+    ? "click_to_call"
+    : rawDirection.includes("out")
+      ? "outbound"
       : "inbound";
 
   const duration = toSeconds(
-    pick(p, ["duration", "call_duration", "answered_duration", "talk_time", "conversation_duration"]),
+    pick(p, [
+      "duration", "call_duration", "answered_duration", "talk_time", "talk_duration",
+      "conversation_duration", "billsec", "bill_duration",
+    ]),
   );
   const ring = toSeconds(pick(p, ["ring_duration", "ringing_duration", "wait_time"]));
 
+  const at = toDate(pick(p, ["timestamp"]));
+  const recording = str(
+    pick(p, [
+      "recording_url", "recordingUrl", "recording", "record_url", "recording_file",
+      "recording_link", "audio_url", "voice_url", "call_recording", "file_url",
+    ]),
+  );
+
   return {
-    providerCallId: (() => {
-      const v = pick(p, ["call_id", "callId", "unique_id", "uniqueid", "uuid", "id"]);
-      return v === undefined ? undefined : String(v);
-    })(),
-    refId: (() => {
-      const v = pick(p, ["reference_id", "referenceId", "refid", "ref_id"]);
-      return v === undefined ? undefined : String(v);
-    })(),
+    // session_id ties every event of one call together.
+    providerCallId: str(pick(p, ["session_id", "call_id", "callId", "unique_id", "uniqueid", "uuid", "id"])),
+    refId: str(pick(p, ["reference_id", "referenceId", "refid", "ref_id"])),
     direction,
     status,
+    eventType,
     customerNumber,
-    agentNumber: agentRaw ? tenDigits(String(agentRaw)) : undefined,
-    didNumber: didRaw ? String(didRaw) : undefined,
-    ivrFlow: (() => {
-      const v = pick(p, ["ivr_flow", "ivr", "department", "queue", "group_name"]);
-      return v === undefined ? undefined : String(v);
-    })(),
-    ivrInput: (() => {
-      const v = pick(p, ["ivr_input", "dtmf", "key_pressed", "input"]);
-      return v === undefined ? undefined : String(v);
-    })(),
-    agentName: (() => {
-      const v = pick(p, ["agent_name", "agentName", "answered_agent_name", "user_name"]);
-      return v === undefined ? undefined : String(v);
-    })(),
-    startedAt: toDate(pick(p, ["start_time", "startTime", "call_time", "initiated_at", "date"])),
-    answeredAt: toDate(pick(p, ["answer_time", "answered_at", "answerTime"])),
-    endedAt: toDate(pick(p, ["end_time", "endTime", "hangup_time", "completed_at"])),
+    agentNumber: agentRaw ? tenDigits(String(agentRaw)) || undefined : undefined,
+    didNumber: str(didRaw),
+    ivrFlow: str(pick(p, ["ivr_flow", "ivr_name", "ivr", "department", "department_name", "queue", "group_name"])),
+    ivrInput: str(pick(p, ["ivr_input", "dtmf", "key_pressed", "input", "digits"])),
+    agentName: str(pick(p, ["agent_name", "agentName", "answered_agent_name", "user_name"])),
+    startedAt:
+      toDate(pick(p, ["start_time", "startTime", "call_time", "initiated_at", "date"])) ||
+      (status === "initiated" ? at : undefined),
+    answeredAt:
+      toDate(pick(p, ["answer_time", "answered_at", "answerTime"])) ||
+      (status === "answered" ? at : undefined),
+    endedAt:
+      toDate(pick(p, ["end_time", "endTime", "hangup_time", "completed_at", "ended_at"])) ||
+      (eventType && status && !["initiated", "ringing", "answered"].includes(status) ? at : undefined),
     durationSeconds: duration,
     ringSeconds: ring,
-    recordingUrl: (() => {
-      const v = pick(p, [
-        "recording_url", "recordingUrl", "recording", "record_url",
-        "audio_url", "voice_url", "call_recording", "recording_link",
-      ]);
-      return v === undefined ? undefined : String(v);
-    })(),
+    // Only a real link — a bare "1"/"true" recording flag is not a URL.
+    recordingUrl: recording && /^https?:\/\//i.test(recording) ? recording : undefined,
   };
 };
 
