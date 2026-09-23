@@ -66,15 +66,23 @@ export const reports = async (req: Request, _res: Response, next: NextFunction) 
   return next();
 };
 
-/** GET /admin/ward-stock/:wardId — on-hand stock + recent movements for one ward. */
+/** GET /admin/ward-stock/:wardId?page=&limit= — on-hand stock + recent movements for one ward. */
 export const wardStock = async (req: Request, _res: Response, next: NextFunction) => {
   const wardId = req.params.wardId as string;
-  const [ward, rows, recent] = await Promise.all([
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "20", 10)),
+  );
+  const [ward, rows, total, recent] = await Promise.all([
     Ward.findById(wardId).select("name").lean(),
     WardStock.find({ wardId })
       .populate("itemId", "name unit category sellingPrice unitCost currentStock")
       .sort({ quantity: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
       .lean(),
+    WardStock.countDocuments({ wardId }),
     WardStockTransaction.find({ wardId })
       .populate("transferWardId", "name")
       .sort({ createdAt: -1 })
@@ -97,6 +105,7 @@ export const wardStock = async (req: Request, _res: Response, next: NextFunction
   req.rData = {
     ward: ward ? { _id: String((ward as any)._id), name: (ward as any).name } : null,
     items,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
     recent: recent.map((t: any) => ({
       _id: String(t._id),
       itemName: t.itemName,

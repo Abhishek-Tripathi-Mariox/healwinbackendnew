@@ -1,19 +1,58 @@
 import { Request, Response, NextFunction } from "express";
+import { Types } from "mongoose";
 import Ambulance from "../../models/ambulance.model";
 import {
   AmbulanceStock,
   AmbulanceStockTransaction,
 } from "../../models/ambulance-stock.model";
 
-/** GET /admin/ambulance-stock/:ambulanceId — on-hand stock + recent movements. */
+/** GET /admin/ambulance-stock/:ambulanceId?page=&limit= — on-hand stock + recent movements. */
 export const ambulanceStock = async (req: Request, _res: Response, next: NextFunction) => {
   const ambulanceId = req.params.ambulanceId as string;
-  const [amb, rows, recent] = await Promise.all([
+  // The value aggregate below casts this itself, and an id that isn't an
+  // ObjectId would throw there rather than come back as "no such vehicle".
+  if (!Types.ObjectId.isValid(ambulanceId)) {
+    req.rCode = 5;
+    req.msg = "not_available";
+    req.rData = {};
+    return next();
+  }
+  const page = Math.max(1, parseInt((req.query.page as string) || "1", 10));
+  const limit = Math.min(
+    100,
+    Math.max(1, parseInt((req.query.limit as string) || "20", 10)),
+  );
+  const [amb, rows, total, valueAgg, recent] = await Promise.all([
     Ambulance.findById(ambulanceId).select("registrationNumber ambulanceType").lean(),
     AmbulanceStock.find({ ambulanceId })
       .populate("itemId", "name unit category sellingPrice unitCost")
       .sort({ quantity: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
       .lean(),
+    AmbulanceStock.countDocuments({ ambulanceId }),
+    // On-hand value is the whole vehicle's, not the page's — summing the page
+    // would make the badge shrink as you page through the same stock.
+    AmbulanceStock.aggregate([
+      { $match: { ambulanceId: new Types.ObjectId(ambulanceId) } },
+      {
+        $lookup: {
+          from: "inventoryitems",
+          localField: "itemId",
+          foreignField: "_id",
+          as: "item",
+        },
+      },
+      { $unwind: "$item" },
+      {
+        $group: {
+          _id: null,
+          value: {
+            $sum: { $multiply: ["$quantity", { $ifNull: ["$item.sellingPrice", 0] }] },
+          },
+        },
+      },
+    ]),
     AmbulanceStockTransaction.find({ ambulanceId })
       .sort({ createdAt: -1 })
       .limit(50)
@@ -39,7 +78,8 @@ export const ambulanceStock = async (req: Request, _res: Response, next: NextFun
       ? { _id: String((amb as any)._id), registrationNumber: (amb as any).registrationNumber, type: (amb as any).ambulanceType }
       : null,
     items,
-    onHandValue: items.reduce((s, i) => s + i.onHandValue, 0),
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+    onHandValue: Math.round(valueAgg[0]?.value || 0),
     recent: recent.map((t: any) => ({
       _id: String(t._id),
       itemName: t.itemName,
