@@ -55,12 +55,26 @@ export const receive = async (req: Request, res: Response) => {
     if (!given || !tokenMatches(given, expected)) {
       // A wrong token is a real rejection — unlike a malformed body, there is
       // nothing to retry into and it should be visible in MyOperator's logs.
+      // Say so in our log too: silently rejecting looks exactly like "the
+      // provider never called us", which is a different problem entirely.
+      console.warn(
+        `[myoperator] webhook REJECTED — token mismatch (sent ${given.length} chars, expected ${expected.length}). ` +
+          "Fix MYOPERATOR_WEBHOOK_TOKEN or the ?token= in MyOperator's webhook URL.",
+      );
       return res.status(401).json({ success: false, message: "invalid webhook token" });
     }
   }
 
   const body: any =
     req.body && Object.keys(req.body).length ? req.body : req.query;
+
+  // One short line per event, so "did MyOperator call us at all?" is always
+  // answerable from the log without turning on anything special.
+  console.log(
+    `[myoperator] webhook ${String(body?.event_type || "legacy")} ` +
+      `dir=${String(body?.direction || "?")} session=${String(body?.session_id || "-")}`,
+  );
+
   const call = normalizeWebhook(body);
 
   // Print the first payload of each event type in full, so the exact field
