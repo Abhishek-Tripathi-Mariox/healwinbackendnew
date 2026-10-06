@@ -10,6 +10,7 @@ import {
   applyDayComputation,
   applyHolidaysToAttendance,
 } from "../../services/attendance.service";
+import { applyWeekOffsToAttendance } from "../../services/week-off.service";
 import { formatDuration } from "../../services/working-hours";
 import { getCycleStartDay } from "../../services/payroll-settings.service";
 import { payrollPeriod } from "../../services/payroll-period";
@@ -271,6 +272,34 @@ export const applyHolidays = async (
     return next();
   }
   const result = await applyHolidaysToAttendance(month, year, adminId);
+  req.rData = result;
+  req.msg = "attendance_marked";
+  return next();
+};
+
+/**
+ * POST /admin/hr/attendance/apply-week-offs — body { month, year }
+ *
+ * Fills the month's week offs into attendance from each employee's pattern
+ * (or the organisation default) plus any day the roster marks `week_off`.
+ * Like the holiday pass, it never overwrites a day that already carries a
+ * decision — a week off someone actually worked stays worked.
+ */
+export const applyWeekOffs = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const adminId = (req as any).adminId;
+  const month = parseInt(req.body?.month, 10);
+  const year = parseInt(req.body?.year, 10);
+  if (!(month >= 1 && month <= 12) || !year) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "valid month (1-12) and year are required" };
+    return next();
+  }
+  const result = await applyWeekOffsToAttendance(month, year, adminId);
   req.rData = result;
   req.msg = "attendance_marked";
   return next();

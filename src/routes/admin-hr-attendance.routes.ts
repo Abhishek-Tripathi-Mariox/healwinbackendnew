@@ -51,6 +51,14 @@ router.post(
   ResponseMiddleware,
 );
 
+router.post(
+  "/apply-week-offs",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.ATTENDANCE_MANAGE),
+  ErrorHandlerMiddleware(C.applyWeekOffs),
+  ResponseMiddleware,
+);
+
 // ---- Regularization (§4.5) ----
 router.get(
   "/regularizations",

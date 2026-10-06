@@ -112,6 +112,8 @@ export const detail = async (
 const ASSIGNABLE = [
   "category",
   "defaultShiftId",
+  "weekOffDays",
+  "weekOffSaturdays",
   "fullName",
   "email",
   "phone",

@@ -14,6 +14,17 @@ export interface IPayrollSettings {
    * it starts in.
    */
   cycleStartDay: number;
+  /**
+   * Days of the week the organisation is off by default (0 = Sunday … 6 =
+   * Saturday). An employee with their own `weekOffDays` overrides this.
+   */
+  defaultWeekOffDays: number[];
+  /**
+   * Which Saturdays of the month are additionally off (e.g. [2, 4] for the
+   * 2nd and 4th) — the common Indian pattern, and not expressible as a plain
+   * weekday list. Ignored when Saturday is already a full week off.
+   */
+  defaultWeekOffSaturdays: number[];
   updatedBy?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
@@ -22,6 +33,8 @@ export interface IPayrollSettings {
 const PayrollSettingsSchema = new Schema<IPayrollSettings>(
   {
     cycleStartDay: { type: Number, default: 16, min: 1, max: 31 },
+    defaultWeekOffDays: { type: [Number], default: [0] },
+    defaultWeekOffSaturdays: { type: [Number], default: [] },
     updatedBy: { type: Schema.Types.ObjectId, ref: "Admin" },
   },
   { timestamps: true },

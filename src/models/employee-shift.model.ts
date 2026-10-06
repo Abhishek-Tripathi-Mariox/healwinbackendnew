@@ -6,7 +6,12 @@ import mongoose, { Schema, Types } from "mongoose";
  * and tied to ambulances/providers). One entry = one employee on a shift on a
  * date, optionally scoped to a department/section.
  */
-export type EmployeeShiftType = "morning" | "evening" | "night" | "general";
+export type EmployeeShiftType =
+  | "morning"
+  | "evening"
+  | "night"
+  | "general"
+  | "week_off";
 
 export interface IEmployeeShift {
   _id: Types.ObjectId;
@@ -33,7 +38,14 @@ const EmployeeShiftSchema = new Schema<IEmployeeShift>(
     employeeId: { type: Schema.Types.ObjectId, ref: "HrEmployee", required: true, index: true },
     date: { type: String, required: true, index: true },
     workShiftId: { type: Schema.Types.ObjectId, ref: "WorkShift", index: true },
-    shift: { type: String, enum: ["morning", "evening", "night", "general"], default: "general" },
+    // "week_off" is a roster decision like any other: the day is planned, it
+    // just isn't worked. Keeping it here (rather than only in attendance) is
+    // what lets the roster show and bulk-edit the pattern.
+    shift: {
+      type: String,
+      enum: ["morning", "evening", "night", "general", "week_off"],
+      default: "general",
+    },
     startTime: String,
     endTime: String,
     department: { type: String, trim: true },

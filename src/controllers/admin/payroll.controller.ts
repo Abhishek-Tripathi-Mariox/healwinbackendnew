@@ -6,7 +6,9 @@ import { Payslip } from "../../models/payslip.model";
 import { LeaveType } from "../../models/leave-type.model";
 import { LeaveRequest } from "../../models/leave-request.model";
 import Attendance from "../../models/attendance.model";
+import PayrollSettings from "../../models/payroll-settings.model";
 import { payrollPeriod } from "../../services/payroll-period";
+import { orgWeekOffPattern } from "../../services/week-off.service";
 import {
   getCycleStartDay,
   setCycleStartDay,
@@ -40,10 +42,13 @@ export const settingsGet = async (
   next: NextFunction,
 ) => {
   const cycleStartDay = await getCycleStartDay();
+  const weekOff = await orgWeekOffPattern();
   const now = new Date();
   const cur = payrollPeriod(now.getMonth() + 1, now.getFullYear(), cycleStartDay);
   req.rData = {
     cycleStartDay,
+    defaultWeekOffDays: weekOff.days,
+    defaultWeekOffSaturdays: weekOff.saturdays,
     currentPeriod: {
       month: cur.month,
       year: cur.year,
@@ -53,6 +58,22 @@ export const settingsGet = async (
   };
   req.msg = "success";
   return next();
+};
+
+/**
+ * A list of day numbers from the request, or null when it is malformed.
+ * `undefined` (field not sent) leaves the stored value alone.
+ */
+const normalizeDayList = (
+  value: unknown,
+  min: number,
+  max: number,
+): number[] | null | undefined => {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return null;
+  const nums = value.map((v) => Number(v));
+  if (nums.some((n) => !Number.isInteger(n) || n < min || n > max)) return null;
+  return [...new Set(nums)].sort((a, b) => a - b);
 };
 
 /** PUT /admin/hr/payroll/settings */
@@ -69,6 +90,32 @@ export const settingsUpdate = async (
     return next();
   }
 
+  // Week-off defaults ride along with the cycle: both are "how the working
+  // calendar is shaped", and HR sets them on the same screen.
+  const weekOffDays = normalizeDayList(req.body?.defaultWeekOffDays, 0, 6);
+  const weekOffSaturdays = normalizeDayList(req.body?.defaultWeekOffSaturdays, 1, 5);
+  if (weekOffDays === null || weekOffSaturdays === null) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = {
+      hint: "week off days must be 0-6 (Sun-Sat); week off Saturdays must be 1-5.",
+    };
+    return next();
+  }
+  if (weekOffDays || weekOffSaturdays) {
+    await PayrollSettings.updateOne(
+      {},
+      {
+        $set: {
+          ...(weekOffDays ? { defaultWeekOffDays: weekOffDays } : {}),
+          ...(weekOffSaturdays ? { defaultWeekOffSaturdays: weekOffSaturdays } : {}),
+          updatedBy: (req as any).adminId,
+        },
+      },
+      { upsert: true },
+    );
+  }
+
   // Changing the calendar under a run that is already locked would make its
   // payslips describe days it never covered.
   const finalized = await PayrollRun.countDocuments({ status: "finalized" });
@@ -78,8 +125,11 @@ export const settingsUpdate = async (
     new Date().getFullYear(),
     saved,
   );
+  const savedWeekOff = await orgWeekOffPattern();
   req.rData = {
     cycleStartDay: saved,
+    defaultWeekOffDays: savedWeekOff.days,
+    defaultWeekOffSaturdays: savedWeekOff.saturdays,
     currentPeriod: { label: preview.label, totalDays: preview.totalDays },
     ...(finalized
       ? {

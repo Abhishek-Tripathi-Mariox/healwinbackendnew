@@ -14,6 +14,8 @@ const manage = auth.requirePermission(PERMISSIONS.EMPLOYEES_UPDATE);
 router.get("/", auth.verifyAdminToken, view, ErrorHandlerMiddleware(C.list), ResponseMiddleware);
 router.get("/employees", auth.verifyAdminToken, view, ErrorHandlerMiddleware(C.employees), ResponseMiddleware);
 router.post("/", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.create), ResponseMiddleware);
+router.post("/bulk", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.bulkAssign), ResponseMiddleware);
+router.delete("/bulk", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.bulkRemove), ResponseMiddleware);
 router.delete("/:id", auth.verifyAdminToken, manage, ErrorHandlerMiddleware(C.remove), ResponseMiddleware);
 
 export default router;

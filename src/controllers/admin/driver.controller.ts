@@ -7,6 +7,68 @@ import VehicleType from "../../models/vehicle-type.model";
 import { escapeRegex } from "../../utils/helpers";
 
 /**
+ * Onboard a driver by number.
+ *
+ * Driver-app login is invite-only (see services/driver-access.service.ts), so
+ * this is the only way a driver can exist. Name + mobile is all we ask for —
+ * status stays at the model default ("draft") so the driver still completes
+ * documents and vehicle in the app.
+ */
+export const createDriver = async (req: Request, res: Response) => {
+  const {
+    fullName,
+    mobileNumber,
+    countryCode = "+91",
+    email,
+    district,
+    state,
+  } = req.body;
+
+  const mobile = String(mobileNumber || "").trim();
+
+  if (!String(fullName || "").trim()) {
+    return res.status(400).json({
+      success: false,
+      message: "Driver name is required",
+    });
+  }
+
+  // Same rule the Driver schema enforces — checked here so the admin gets a
+  // readable message instead of a Mongoose validation dump.
+  if (!/^[6-9]\d{9}$/.test(mobile)) {
+    return res.status(400).json({
+      success: false,
+      message: "Enter a valid 10-digit Indian mobile number",
+    });
+  }
+
+  const existing = await Driver.findOne({ mobileNumber: mobile, countryCode });
+
+  if (existing) {
+    return res.status(409).json({
+      success: false,
+      message: existing.isDeleted
+        ? "A deleted driver already uses this number. Restore that record instead."
+        : "A driver with this number already exists",
+    });
+  }
+
+  const driver = await Driver.create({
+    fullName: String(fullName).trim(),
+    mobileNumber: mobile,
+    countryCode,
+    ...(email ? { email: String(email).trim() } : {}),
+    ...(district ? { district } : {}),
+    ...(state ? { state } : {}),
+  });
+
+  res.locals.data = {
+    message: "Driver onboarded. They can now sign in to the driver app.",
+    driver,
+  };
+};
+
+/**
  * Get all drivers with filters
  */
 export const getAllDrivers = async (req: Request, res: Response) => {

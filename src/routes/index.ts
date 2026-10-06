@@ -40,6 +40,7 @@ import ambulanceServiceProviderRoutes from "./ambulance-service-provider.routes"
 import ambulanceRoutes from "./ambulance.routes";
 import ambulanceStaffAdminRoutes from "./ambulance-staff-admin.routes";
 import adminStaffRecordsRoutes from "./admin-staff-records.routes";
+import adminDriversRoutes from "./admin-drivers.routes";
 import adminPatientCommerceRoutes from "./admin-patient-commerce.routes";
 import adminFaqRoutes from "./admin-faq.routes";
 import adminGeocodeRoutes from "./admin-geocode.routes";
@@ -170,6 +171,7 @@ router.use("/admin/service-providers", ambulanceServiceProviderRoutes);
 router.use("/admin/ambulances", ambulanceRoutes);
 router.use("/admin/ambulance-staff", ambulanceStaffAdminRoutes);
 router.use("/admin/staff-records", adminStaffRecordsRoutes);
+router.use("/admin/drivers", adminDriversRoutes);
 router.use("/admin/patient-commerce", adminPatientCommerceRoutes);
 router.use("/admin/faqs", adminFaqRoutes);
 router.use("/admin/geocode", adminGeocodeRoutes);

@@ -11,6 +11,10 @@ export type MessageKey =
   | "otp_sent"
   | "otp_verified"
   | "incorrect_otp"
+  | "driver_not_registered"
+  | "driver_suspended"
+  | "driver_rejected"
+  | "driver_account_inactive"
   | "status_changed"
   | "interest_exists"
   | "validation_failed"
@@ -128,6 +132,18 @@ export default function messages(lang: Lang = "en"): MessageMap {
     },
     incorrect_otp: {
       en: "incorrect otp, try again!",
+    },
+    driver_not_registered: {
+      en: "This number isn't registered as a HealWin driver. Please contact the HealWin team to get onboarded.",
+    },
+    driver_suspended: {
+      en: "Your HealWin driver account is suspended. Please contact the HealWin team to have it reviewed.",
+    },
+    driver_rejected: {
+      en: "Your HealWin driver application was not approved. Please contact the HealWin team if you think this is a mistake.",
+    },
+    driver_account_inactive: {
+      en: "Your HealWin driver account has been deactivated. Please contact the HealWin team to have it restored.",
     },
     status_changed: {
       en: "status changed successfully",

@@ -88,6 +88,15 @@ export interface IHrEmployee {
   employmentTypeId?: Types.ObjectId;
   /** Default shift from the master; per-day overrides live on EmployeeShift. */
   defaultShiftId?: Types.ObjectId;
+  /**
+   * This person's weekly offs (0 = Sunday … 6 = Saturday). Empty means "use
+   * the organisation default" from payroll settings — storing [] rather than
+   * copying the default keeps a later change to the org pattern effective for
+   * everyone who never had a personal one.
+   */
+  weekOffDays?: number[];
+  /** Which Saturdays of the month are off, e.g. [2, 4]. See payroll settings. */
+  weekOffSaturdays?: number[];
   reportingToId?: Types.ObjectId;
   photo?: string;
   // Links this HR record to the employee's admin-panel login, when they have
@@ -190,6 +199,8 @@ const HrEmployeeSchema = new Schema<IHrEmployee>(
       default: [],
     },
     defaultShiftId: { type: Schema.Types.ObjectId, ref: "WorkShift" },
+    weekOffDays: { type: [Number], default: [] },
+    weekOffSaturdays: { type: [Number], default: [] },
     departmentId: { type: Schema.Types.ObjectId, ref: "Department", index: true },
     designationId: { type: Schema.Types.ObjectId, ref: "Designation" },
     employmentTypeId: { type: Schema.Types.ObjectId, ref: "EmploymentType" },

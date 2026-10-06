@@ -5,6 +5,10 @@ import { Types } from "mongoose";
 import * as DriverService from "../services/driver.service";
 import * as DriverKycService from "../services/driver-kyc.service";
 import * as DriverVehicleService from "../services/driver-vehicle.service";
+import {
+  DRIVER_NOT_REGISTERED,
+  driverLoginDenial,
+} from "../services/driver-access.service";
 import helpers from "../utils/helpers";
 import redis from "../utils/redis";
 import config from "../config";
@@ -12,23 +16,33 @@ import fileUploadService from "../utils/s3";
 import { sendOtpSms } from "../services/sms.service";
 
 /**
- * Driver Login - Step 1
+ * Mint and deliver a login OTP, but only for a number that is already on the
+ * driver roster. Shared by login and resend so the invite-only gate cannot be
+ * bypassed by calling resend directly.
  */
-export const driverLogin = async (
+const issueDriverLoginOtp = async (
   req: Request,
-  res: Response,
   next: NextFunction,
+  reason: string,
 ) => {
-  console.log("DriverAuthController => driverLogin");
-
   const { mobileNumber, countryCode = "+91" } = req.body;
-
-  const otp = helpers().generateOTP();
 
   const driver = await DriverService.getDriverByMobile(
     mobileNumber,
     countryCode,
   );
+
+  const denial = driverLoginDenial(driver);
+  if (denial) {
+    // No OTP is generated or sent — an unknown number must not be able to use
+    // this endpoint as a free SMS relay.
+    req.rCode = denial.rCode;
+    req.msg = denial.msg;
+    req.rData = { hint: denial.hint };
+    return next();
+  }
+
+  const otp = helpers().generateOTP();
 
   // Fresh txnId on every request. Reusing a previous txnId (old behavior) tied
   // the new OTP to a new Redis entry while the client kept referencing the
@@ -40,7 +54,7 @@ export const driverLogin = async (
     mobileNumber,
     countryCode,
     otp,
-    reason: "DRIVER OTP LOGIN",
+    reason,
     is_active: 1,
     date_created: new Date(),
     date_modified: new Date(),
@@ -65,12 +79,25 @@ export const driverLogin = async (
   }
 
   req.rData = {
-    driverRegistered: !!driver,
+    driverRegistered: true,
     txnId: newTxnId,
   };
 
   req.msg = "otp_sent";
   next();
+};
+
+/**
+ * Driver Login - Step 1
+ */
+export const driverLogin = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  console.log("DriverAuthController => driverLogin");
+
+  return issueDriverLoginOtp(req, next, "DRIVER OTP LOGIN");
 };
 
 export const getDriverDetails = async (
@@ -147,49 +174,31 @@ export const verifyDriverOtp = async (
   const storedOtp = String(otpData.otp).trim();
   const masterOtp = String(config.auth.masterOtp ?? "").trim();
 
-  // Master OTP check
-  if (providedOtp === masterOtp) {
-    let driver = await DriverService.getDriverByMobile(
-      mobileNumber,
-      countryCode,
-    );
+  // Master OTP bypasses the code comparison only — it does not bypass the
+  // roster check below.
+  const isMaster = providedOtp === masterOtp;
 
-    if (!driver) {
-      driver = await DriverService.createDriver({
-        mobileNumber,
-        countryCode,
-      });
-    }
-
-    const token = helpers().createJWT({ driverId: driver._id });
-
-    req.rData = {
-      token,
-      driverId: driver._id,
-      status: driver.status,
-      isNewDriver: !driver.fullName,
-    };
-    req.msg = "otp_verified";
-    return next();
-  }
-
-  // Normal OTP validation
-  if (providedOtp !== storedOtp) {
+  if (!isMaster && providedOtp !== storedOtp) {
     req.rCode = 0;
     req.msg = "incorrect_otp";
     return next();
   }
 
-  let driver = await DriverService.getDriverByMobile(mobileNumber, countryCode);
+  const driver = await DriverService.getDriverByMobile(
+    mobileNumber,
+    countryCode,
+  );
 
-  if (!driver) {
-    driver = await DriverService.createDriver({
-      mobileNumber,
-      countryCode,
-      fullName: "",
-      district: "",
-      state: "",
-    });
+  // Invite-only: verifying never creates a driver. This also catches a record
+  // that was deleted or suspended between sending the OTP and verifying it.
+  // `!driver` leads so TypeScript narrows — the gate already covers that case.
+  const denial = driverLoginDenial(driver);
+  if (!driver || denial) {
+    const reason = denial ?? DRIVER_NOT_REGISTERED;
+    req.rCode = reason.rCode;
+    req.msg = reason.msg;
+    req.rData = { hint: reason.hint };
+    return next();
   }
 
   const token = helpers().createJWT({ driverId: driver._id });
@@ -715,52 +724,7 @@ export const resendDriverOtp = async (
 ) => {
   console.log("DriverAuthController => resendDriverOtp");
 
-  const { mobileNumber, countryCode = "+91" } = req.body;
-
-  const otp = helpers().generateOTP();
-  const newTxnId = uuidv4();
-
-  const otpData = {
-    txnId: newTxnId,
-    mobileNumber,
-    countryCode,
-    otp,
-    reason: "DRIVER OTP RESEND",
-    is_active: 1,
-    date_created: new Date(),
-    date_modified: new Date(),
-  };
-
-  await redis().SetRedis(
-    `DRIVER|txnId:${newTxnId}`,
-    otpData,
-    600,
-  );
-  await redis().SetRedis(
-    `DRIVER|Mob:${mobileNumber}`,
-    otpData,
-    600,
-  );
-
-  // Deliver the resent OTP to the driver's phone.
-  try {
-    await sendOtpSms(mobileNumber, String(otp));
-  } catch (err) {
-    console.error("[DriverAuth] Failed to resend OTP SMS:", err);
-  }
-
-  const driver = await DriverService.getDriverByMobile(
-    mobileNumber,
-    countryCode,
-  );
-
-  req.rData = {
-    driverRegistered: !!driver,
-    txnId: newTxnId,
-  };
-
-  req.msg = "otp_sent";
-  next();
+  return issueDriverLoginOtp(req, next, "DRIVER OTP RESEND");
 };
 
 /**
