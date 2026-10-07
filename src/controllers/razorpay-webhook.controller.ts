@@ -1,26 +1,53 @@
+import crypto from "crypto";
 import { Request, Response } from "express";
+
 import { verifyWebhookSignature } from "../services/razorpay.service";
 import {
   creditCapturedPayment,
   resolveTopUpUser,
 } from "../services/wallet-topup.service";
+import {
+  markPaymentFailed,
+  settleCapturedPayment,
+  syncRefundStatus,
+} from "../services/checkout.service";
 import WalletTransaction from "../models/wallet-transaction.model";
+import WebhookEvent from "../models/webhook-event.model";
 
 /**
  * Razorpay webhook.
  *
  * The app's own confirm call is the fast path, but it only happens if the
  * customer's phone survives the round trip — they close the app, lose signal,
- * or the bank page hangs, and the money is taken with nothing credited. The
- * webhook is what makes the top-up eventually correct regardless.
+ * or the bank page hangs, and the money is taken with nothing recorded. The
+ * webhook is what makes every payment eventually correct regardless.
  *
- * Both paths funnel into creditCapturedPayment, which is idempotent, so a
- * payment confirmed twice is credited once.
+ * Two settlement paths live behind this. Wallet top-ups keep their own
+ * service and their own ledger; everything else — rides, orders, bookings,
+ * memberships — goes through the generic checkout service. A payment is tried
+ * against the generic one first and falls back to top-up, because the generic
+ * one can say "not mine" with certainty (it looks for its own id in the
+ * order's notes) while top-up resolution is inference.
+ *
+ * Both are idempotent, so a payment delivered five times is applied once.
  */
 
-/** Razorpay retries anything that is not a 2xx, so failures must still 200. */
+/** Razorpay retries anything that is not a 2xx, so handled failures still 200. */
 const ack = (res: Response, handled: string) =>
   res.status(200).json({ ok: true, handled });
+
+/**
+ * A stable id for this delivery.
+ *
+ * Razorpay sends `x-razorpay-event-id`, but not from every account or every
+ * older integration, so the body's own digest is the fallback — identical
+ * bytes are by definition the same event redelivered.
+ */
+const eventIdFor = (req: Request, raw: string): string => {
+  const header = req.headers["x-razorpay-event-id"];
+  if (header) return String(header);
+  return `sha:${crypto.createHash("sha256").update(raw).digest("hex")}`;
+};
 
 export const receive = async (req: Request, res: Response) => {
   const signature = String(req.headers["x-razorpay-signature"] || "");
@@ -40,37 +67,91 @@ export const receive = async (req: Request, res: Response) => {
 
   const body = req.body || {};
   const event = String(body.event || "");
-  const payment = body.payload?.payment?.entity;
-  if (!payment?.id) return ack(res, "ignored");
+  const eventId = eventIdFor(req, raw);
+
+  // Claim the event by inserting it. A unique `eventId` means the second
+  // delivery of the same event loses this insert — but only a delivery we
+  // actually FINISHED is safe to skip. One that errored out left an unhandled
+  // row behind, and Razorpay redelivering it is the retry we asked for.
+  try {
+    await WebhookEvent.create({
+      provider: "razorpay",
+      eventId,
+      event,
+      payload: body,
+    });
+  } catch (e: any) {
+    if (e?.code !== 11000) throw e;
+    const prior = await WebhookEvent.findOne({ provider: "razorpay", eventId })
+      .select("handled")
+      .lean();
+    if (prior?.handled) {
+      console.log(`[razorpay-webhook] ${event} ${eventId} — duplicate delivery, skipped`);
+      return ack(res, "duplicate");
+    }
+    console.log(`[razorpay-webhook] ${event} ${eventId} — retrying a delivery that failed`);
+  }
+
+  const done = async (result: string, error?: string) => {
+    await WebhookEvent.updateOne(
+      { provider: "razorpay", eventId },
+      { $set: { handled: !error, result, error, processedAt: new Date() } },
+    ).catch(() => undefined);
+  };
 
   try {
-    if (event === "payment.captured") {
-      // Who to credit is resolved from our own records — the notes we
-      // attached to the order, or the pending row we wrote before the customer
-      // paid. Never from anything the caller could choose.
-      const userId = await resolveTopUpUser(payment);
-      if (!userId) return ack(res, "not_a_topup");
+    const payment = body.payload?.payment?.entity;
+    const refund = body.payload?.refund?.entity;
 
+    if (event === "payment.captured" && payment?.id) {
+      // Generic checkout first: it recognises its own orders by the id it put
+      // in the notes, so a "not_ours" from it is reliable.
+      const generic = await settleCapturedPayment(payment);
+      if (generic.reason !== "not_ours") {
+        const label = generic.paid ? `applied ₹${generic.amount} to ${generic.purpose}` : generic.reason;
+        console.log(`[razorpay-webhook] ${payment.id} → ${label}`);
+        await done(generic.paid ? "settled" : String(generic.reason));
+        return ack(res, generic.paid ? "settled" : "noop");
+      }
+
+      const userId = await resolveTopUpUser(payment);
+      if (!userId) {
+        await done("not_a_topup");
+        return ack(res, "not_a_topup");
+      }
       const result = await creditCapturedPayment(userId, payment);
       console.log(
         `[razorpay-webhook] ${payment.id} → ${result.credited ? `credited ₹${result.amount}` : result.reason}`,
       );
+      await done(result.credited ? "credited" : "already_credited");
       return ack(res, result.credited ? "credited" : "already_credited");
     }
 
-    if (event === "payment.failed") {
-      await WalletTransaction.updateOne(
-        { referenceId: payment.order_id, status: "PENDING" },
-        { $set: { status: "FAILED", description: "Top-up failed at the gateway" } },
-      );
+    if (event === "payment.failed" && payment?.id) {
+      const generic = await markPaymentFailed(payment);
+      if (!generic) {
+        await WalletTransaction.updateOne(
+          { referenceId: payment.order_id, status: "PENDING" },
+          { $set: { status: "FAILED", description: "Top-up failed at the gateway" } },
+        );
+      }
+      await done("marked_failed");
       return ack(res, "marked_failed");
     }
+
+    if ((event === "refund.processed" || event === "refund.failed") && refund?.id) {
+      const synced = await syncRefundStatus(refund);
+      await done(synced ? "refund_synced" : "refund_unknown");
+      return ack(res, synced ? "refund_synced" : "refund_unknown");
+    }
   } catch (e: any) {
-    // A 500 makes Razorpay redeliver, which is what we want for a transient
-    // database problem — the credit is retried rather than lost.
+    // A 500 makes Razorpay redeliver. The row stays, marked unhandled with the
+    // error on it, and the claim above lets the redelivery through.
     console.error("[razorpay-webhook] error:", e?.message || e);
+    await done("error", e?.message || String(e));
     return res.status(500).json({ ok: false });
   }
 
+  await done("ignored");
   return ack(res, "ignored");
 };

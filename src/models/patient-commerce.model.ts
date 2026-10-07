@@ -31,6 +31,15 @@ export interface IPharmacyOrder {
   addressId?: Types.ObjectId;
   prescriptionUrl?: string;
   totalAmount: number;
+  /**
+   * Money. Nothing here is "paid" until a PaymentOrder says so — see
+   * services/checkout.service.ts. `amountPaid` is a running total because a
+   * part-refund leaves it between zero and the full amount.
+   */
+  paymentStatus: "PENDING" | "PAID" | "REFUNDED";
+  amountPaid?: number;
+  paidAt?: Date;
+  paymentMethod?: string;
   status: "PLACED" | "CONFIRMED" | "PACKED" | "OUT_FOR_DELIVERY" | "DELIVERED" | "CANCELLED";
   createdAt: Date;
   updatedAt: Date;
@@ -60,6 +69,15 @@ const PharmacyOrderSchema = new Schema<IPharmacyOrder>(
     addressId: { type: Schema.Types.ObjectId, ref: "UserAddress" },
     prescriptionUrl: String,
     totalAmount: { type: Number, default: 0 },
+    paymentStatus: {
+      type: String,
+      enum: ["PENDING", "PAID", "REFUNDED"],
+      default: "PENDING",
+      index: true,
+    },
+    amountPaid: { type: Number, default: 0 },
+    paidAt: Date,
+    paymentMethod: String,
     status: {
       type: String,
       enum: ["PLACED", "CONFIRMED", "PACKED", "OUT_FOR_DELIVERY", "DELIVERED", "CANCELLED"],
@@ -100,6 +118,15 @@ export interface ILabBooking {
   reportFiles?: { url: string; label: string; uploadedAt: Date }[];
   reportNotes?: string;
   totalAmount: number;
+  /**
+   * Money. Nothing here is "paid" until a PaymentOrder says so — see
+   * services/checkout.service.ts. `amountPaid` is a running total because a
+   * part-refund leaves it between zero and the full amount.
+   */
+  paymentStatus: "PENDING" | "PAID" | "REFUNDED";
+  amountPaid?: number;
+  paidAt?: Date;
+  paymentMethod?: string;
   status: "BOOKED" | "SAMPLE_COLLECTED" | "PROCESSING" | "REPORT_READY" | "CANCELLED";
   createdAt: Date;
   updatedAt: Date;
@@ -136,6 +163,15 @@ const LabBookingSchema = new Schema<ILabBooking>(
     },
     reportNotes: String,
     totalAmount: { type: Number, default: 0 },
+    paymentStatus: {
+      type: String,
+      enum: ["PENDING", "PAID", "REFUNDED"],
+      default: "PENDING",
+      index: true,
+    },
+    amountPaid: { type: Number, default: 0 },
+    paidAt: Date,
+    paymentMethod: String,
     status: {
       type: String,
       enum: ["BOOKED", "SAMPLE_COLLECTED", "PROCESSING", "REPORT_READY", "CANCELLED"],
@@ -166,6 +202,15 @@ export interface IConsultation {
   symptoms?: string;
   teleconsult: boolean;
   fee: number;
+  /**
+   * Money. Nothing here is "paid" until a PaymentOrder says so — see
+   * services/checkout.service.ts. `amountPaid` is a running total because a
+   * part-refund leaves it between zero and the full amount.
+   */
+  paymentStatus: "PENDING" | "PAID" | "REFUNDED";
+  amountPaid?: number;
+  paidAt?: Date;
+  paymentMethod?: string;
   // Doctor's consultation summary, filled when marked completed — what was
   // discussed / advised / prescribed to the patient.
   summary?: string;
@@ -189,6 +234,15 @@ const ConsultationSchema = new Schema<IConsultation>(
     summary: String,
     teleconsult: { type: Boolean, default: true },
     fee: { type: Number, default: 0 },
+    paymentStatus: {
+      type: String,
+      enum: ["PENDING", "PAID", "REFUNDED"],
+      default: "PENDING",
+      index: true,
+    },
+    amountPaid: { type: Number, default: 0 },
+    paidAt: Date,
+    paymentMethod: String,
     status: {
       type: String,
       enum: ["REQUESTED", "CONFIRMED", "COMPLETED", "CANCELLED"],

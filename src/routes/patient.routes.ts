@@ -39,6 +39,9 @@ import { nextSequence } from "../models/counter.model";
 import { Admission } from "../models/admission.model";
 import { calculateFare } from "../services/fare.service";
 import * as PromoService from "../services/promo.service";
+import * as Checkout from "../services/checkout.service";
+import Wallet from "../models/wallet.model";
+import PaymentOrder from "../models/payment-order.model";
 import { reverseGeocode, searchPlaces, resolvePlace } from "../services/geocode.service";
 import { haversineKm, etaMinutesFromKm } from "../utils/geo.util";
 import { generateSlots, slotToDate, slotLabelFor } from "../utils/slots.util";
@@ -131,6 +134,138 @@ const ownOrFamilyFilter = (req: Request, famIds: Types.ObjectId[]) =>
   famIds.length
     ? { $or: [{ userId: uid(req) }, { familyMemberId: { $in: famIds } }] }
     : { userId: uid(req) };
+
+// ================== Checkout (real Razorpay) ==================
+
+/**
+ * One checkout for everything the patient buys.
+ *
+ * The app never sends an amount. It names WHAT it is paying for — a ride, an
+ * order, a membership — and the server prices it from its own records. That
+ * is the whole point: an app that can state its own price can state zero.
+ *
+ * Wallet top-ups are not here. They keep their own endpoints and their own
+ * ledger under /wallet/topup/*.
+ */
+
+const checkoutFailed = (res: Response, err: any) => {
+  const status = err instanceof Checkout.CheckoutError ? err.status : 500;
+  if (status >= 500) console.error("[checkout]", err?.message || err);
+  return res.status(status).json({
+    success: false,
+    message: err?.message || "The payment could not be started.",
+  });
+};
+
+/**
+ * Attach a ready-to-open checkout to a just-created purchase.
+ *
+ * Done here rather than making the app ask separately so there is no window
+ * where an order exists and the customer has not been shown a price. A
+ * gateway that is down returns null — the order still stands and can be paid
+ * from its detail screen later, which is better than losing the order.
+ */
+const attachCheckout = async (userId: string, purpose: string, refId: string) => {
+  try {
+    return await Checkout.startCheckout({ userId, purpose, refId });
+  } catch (err: any) {
+    if (!(err instanceof Checkout.CheckoutError)) {
+      console.error("[checkout] could not start:", err?.message || err);
+    }
+    return null;
+  }
+};
+
+/** What is owed on something, before deciding how to pay for it. */
+router.get("/checkout/quote", verifyUserToken, async (req, res) => {
+  try {
+    const purpose = String(req.query.purpose || "");
+    const refId = String(req.query.refId || "");
+    const quote = await Checkout.quoteFor(uid(req), purpose, refId);
+    const wallet = await Wallet.findOne({ userId: uid(req) }).lean();
+    ok(res, { ...quote, walletBalance: wallet?.balance ?? 0 });
+  } catch (err: any) {
+    checkoutFailed(res, err);
+  }
+});
+
+/** Open a gateway checkout. Returns what the Razorpay sheet needs. */
+router.post("/checkout/start", verifyUserToken, async (req, res) => {
+  try {
+    const started = await Checkout.startCheckout({
+      userId: uid(req),
+      purpose: String(req.body?.purpose || ""),
+      refId: String(req.body?.refId || ""),
+    });
+    ok(res, started);
+  } catch (err: any) {
+    checkoutFailed(res, err);
+  }
+});
+
+/**
+ * Confirm after the sheet closes.
+ *
+ * This is the fast path, not the authority — the webhook settles the same
+ * payment independently, so a customer who closes the app mid-flight still
+ * gets what they paid for.
+ */
+router.post("/checkout/confirm", verifyUserToken, async (req, res) => {
+  try {
+    const result = await Checkout.confirmCheckout(uid(req), {
+      orderId: String(req.body?.orderId || ""),
+      paymentId: String(req.body?.paymentId || ""),
+      signature: String(req.body?.signature || ""),
+    });
+    ok(res, result);
+  } catch (err: any) {
+    checkoutFailed(res, err);
+  }
+});
+
+/** Pay from the HealWin wallet instead of the gateway. */
+router.post("/checkout/wallet", verifyUserToken, async (req, res) => {
+  try {
+    const result = await Checkout.payFromWallet({
+      userId: uid(req),
+      purpose: String(req.body?.purpose || ""),
+      refId: String(req.body?.refId || ""),
+    });
+    ok(res, result);
+  } catch (err: any) {
+    checkoutFailed(res, err);
+  }
+});
+
+/** Everything this patient has ever been charged, newest first. */
+router.get("/payments", verifyUserToken, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 25, 100);
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const filter: any = { userId: uid(req), status: { $ne: "CREATED" } };
+  const [items, total] = await Promise.all([
+    PaymentOrder.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    PaymentOrder.countDocuments(filter),
+  ]);
+  ok(res, {
+    items: items.map((p: any) => ({
+      _id: p._id,
+      purpose: p.purpose,
+      refId: p.refId,
+      description: p.description,
+      amount: p.amount,
+      status: p.status,
+      method: p.method,
+      paidAt: p.paidAt,
+      refundedAmount: p.refundedAmount || 0,
+      createdAt: p.createdAt,
+    })),
+    pagination: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) },
+  });
+});
 
 // ================== Family members (persisted) ==================
 router.get("/family-members", verifyUserToken, async (req, res) => {
@@ -415,7 +550,8 @@ router.post("/consultations", verifyUserToken, async (req, res) => {
   });
   // Real-time: light up the admin Patient Orders inbox the instant it's placed.
   emitToAdmin("consultation:new", { id: String(c._id), doctorName: doc.fullName });
-  ok(res, c);
+  const checkout = await attachCheckout(uid(req), "consultation", String(c._id));
+  ok(res, { ...c.toObject(), checkout });
 });
 router.get("/consultations", verifyUserToken, async (req, res) => {
   const famIds = await familyMemberIdsFor(req);
@@ -596,7 +732,8 @@ router.post("/pharmacy/orders", verifyUserToken, async (req, res) => {
     return res.status(500).json({ success: false, message: "Could not place order" });
   }
   emitToAdmin("pharmacy-order:new", { id: String(order._id), totalAmount });
-  ok(res, order);
+  const checkout = await attachCheckout(uid(req), "pharmacy_order", String(order._id));
+  ok(res, { ...order.toObject(), checkout });
 });
 // Upload a prescription image/PDF for a pharmacy order → returns a URL the
 // client passes back as `prescriptionUrl` when placing the order.
@@ -702,7 +839,8 @@ router.post("/lab/bookings", verifyUserToken, async (req, res) => {
     totalAmount,
   });
   emitToAdmin("lab-booking:new", { id: String(booking._id), totalAmount });
-  ok(res, booking);
+  const checkout = await attachCheckout(uid(req), "lab_booking", String(booking._id));
+  ok(res, { ...booking.toObject(), checkout });
 });
 router.get("/lab/bookings", verifyUserToken, async (req, res) => {
   const famIds = await familyMemberIdsFor(req);
@@ -1063,10 +1201,11 @@ router.get("/membership", verifyUserToken, async (req, res) => {
 /**
  * Enroll into a plan.
  *
- * Payment is NOT taken here — the gateway is still mock across the app — so
- * the price is recorded as owed rather than paid, and the response says so.
- * Writing `paid` for money nobody collected would make the membership report
- * a revenue figure that does not exist.
+ * The row is created first and paid for second: we need its id to raise a
+ * gateway order against, so enrolment and payment cannot be one step. Until
+ * the payment lands the membership exists but grants nothing — benefits are
+ * gated on `paymentStatus`, not on the row's existence (see
+ * membership.service.ts#getActiveMembership).
  *
  * Re-enrolling while already a member EXTENDS from the current expiry rather
  * than restarting today, so nobody loses the remainder of what they paid for.
@@ -1107,13 +1246,15 @@ router.post("/membership/enroll", verifyUserToken, async (req, res) => {
     paymentStatus: "pending",
     status: "active",
   });
+  const checkout = await attachCheckout(uid(req), "membership", String(m._id));
   ok(res, {
     ...m.toObject(),
     concessionPercent: plan.concessionPercent || 0,
     extendedFromExisting: !!existing,
+    checkout,
     message:
       plan.price > 0
-        ? "Membership activated. Payment is collected separately — it is recorded as pending."
+        ? "Complete the payment to activate your membership benefits."
         : "Membership activated.",
   });
 });
@@ -2171,6 +2312,10 @@ const toApp = (r: any) => {
     inTransitTotal: r.inTransitTotal ?? 0,
     grandTotal: r.grandTotal ?? r.amount ?? null,
     paymentStatus: r.paymentStatus || "PENDING",
+    amountPaid: r.amountPaid ?? 0,
+    // Booked but not yet paid for, so not dispatchable. The app shows a
+    // "pay to confirm" state rather than "finding an ambulance".
+    awaitingPayment: !!r.awaitingPayment,
     // Actual distance driven for this trip (dispatch point → pickup →
     // hospital), accumulated live from location pings — distinct from the
     // booking-time estimate in `distanceKm` above.
@@ -2286,7 +2431,21 @@ const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
     recipientName,
     recipientPhone: b.recipientPhone || undefined,
     status: "SEARCHING",
-    statusHistory: [{ status: "SEARCHING", at: new Date(), by: "patient", note: "Request placed" }],
+    // Non-emergency bookings are prepaid, so the request exists (we need its
+    // id to raise a gateway order against) but stays out of the dispatch
+    // queue until the money lands. An emergency never waits for payment.
+    awaitingPayment: !emergency && (amount ?? 0) > 0,
+    statusHistory: [
+      {
+        status: "SEARCHING",
+        at: new Date(),
+        by: "patient",
+        note:
+          !emergency && (amount ?? 0) > 0
+            ? "Request placed — awaiting payment"
+            : "Request placed",
+      },
+    ],
   });
   // Record the promo redemption now that we have a request id to bind it to
   // (per-user limit + global usage counter). Best-effort: a failure here must
@@ -2301,22 +2460,63 @@ const createAmbulanceRequest = async (req: Request, emergency: boolean) => {
   }
 
   // Real-time: light up the admin dispatch dashboard the instant a request
-  // (or SOS) comes in — no waiting for the 15s poll.
-  emitToAdmin(emergency ? "sos:new" : "ambulance-request:new", {
-    requestId: String(r._id),
-    emergency,
-    type: r.type || "Ambulance",
-    patientName: r.patientName || null,
-    recipientPhone: r.recipientPhone || null,
-    pickup: r.pickup || null,
-    createdAt: r.createdAt,
-  });
+  // (or SOS) comes in — no waiting for the 15s poll. A booking still waiting
+  // to be paid for is not work for the control room yet; the checkout service
+  // emits this the moment the payment lands.
+  if (!r.awaitingPayment) {
+    emitToAdmin(emergency ? "sos:new" : "ambulance-request:new", {
+      requestId: String(r._id),
+      emergency,
+      type: r.type || "Ambulance",
+      patientName: r.patientName || null,
+      recipientPhone: r.recipientPhone || null,
+      pickup: r.pickup || null,
+      createdAt: r.createdAt,
+    });
+  }
   return r;
+};
+
+/**
+ * Raise the prepaid checkout for a freshly booked ride.
+ *
+ * If the gateway cannot be reached we RELEASE the booking rather than hold it.
+ * A misconfigured payment provider must never be the reason an ambulance is
+ * not dispatched — the money can be collected after the trip, the trip cannot
+ * be un-missed.
+ */
+const prepaidCheckoutFor = async (r: any) => {
+  if (!r.awaitingPayment) return null;
+  try {
+    return await Checkout.startCheckout({
+      userId: String(r.userId),
+      purpose: "ambulance_booking",
+      refId: String(r._id),
+    });
+  } catch (err: any) {
+    console.error(
+      `[ambulance] prepaid checkout failed for ${r._id}, dispatching anyway:`,
+      err?.message || err,
+    );
+    r.awaitingPayment = false;
+    await AmbulanceRequest.updateOne({ _id: r._id }, { $set: { awaitingPayment: false } });
+    emitToAdmin("ambulance-request:new", {
+      requestId: String(r._id),
+      emergency: !!r.emergency,
+      type: r.type || "Ambulance",
+      patientName: r.patientName || null,
+      recipientPhone: r.recipientPhone || null,
+      pickup: r.pickup || null,
+      createdAt: r.createdAt,
+    });
+    return null;
+  }
 };
 
 router.post("/ambulance/book", verifyUserToken, async (req, res) => {
   const r = await createAmbulanceRequest(req, false);
-  ok(res, toApp(r.toObject()));
+  const checkout = await prepaidCheckoutFor(r);
+  ok(res, { ...toApp(r.toObject()), awaitingPayment: !!r.awaitingPayment, checkout });
 });
 
 router.post("/ambulance/emergency", verifyUserToken, async (req, res) => {
@@ -2536,26 +2736,50 @@ router.post("/ambulance/:id/rate", verifyUserToken, async (req, res) => {
   ok(res, toApp(r.toObject()));
 });
 
-// Pay the ambulance bill (ambulance fare + in-transit medical expenses).
-// NOTE: the payment gateway is still mock platform-wide, so this records the
-// payment as collected without a real charge. Real Razorpay/PSP is a separate
-// P0. The patient may also pay the crew Cash/UPI, in which case the control
-// room marks it paid from the admin side instead.
+/**
+ * Pay the ambulance bill — fare, in-transit medical expenses, or, on a
+ * cancelled booking, the cancellation charge.
+ *
+ * This used to set `paymentStatus = "PAID"` on the client's word, which meant
+ * any signed-in patient could clear their own bill. It now goes through the
+ * real gateway: the server prices the ride from its own record and hands back
+ * what the Razorpay sheet needs, or debits the wallet if that is what was
+ * asked for. The patient may still pay the crew in cash, in which case the
+ * control room records it from the admin side.
+ */
 router.post("/ambulance/:id/pay", verifyUserToken, async (req, res) => {
-  const r: any = await AmbulanceRequest.findOne({ _id: req.params.id as string, userId: uid(req) });
+  const r: any = await AmbulanceRequest.findOne({
+    _id: req.params.id as string,
+    userId: uid(req),
+  }).lean();
   if (!r) return res.status(404).json({ success: false, message: "Request not found" });
-  if (r.paymentStatus !== "PAID") {
-    r.paymentStatus = "PAID";
-    r.paymentMethod = String(req.body?.method || "ONLINE");
-    r.paidAt = new Date();
-    await r.save();
-    emitToUser(String(r.userId), "booking:status", {
-      requestId: String(r._id),
-      status: r.status,
-      paymentStatus: "PAID",
+
+  const purpose =
+    r.status === "CANCELLED"
+      ? "ambulance_cancellation"
+      : r.awaitingPayment
+        ? "ambulance_booking"
+        : "ambulance_ride";
+
+  try {
+    if (String(req.body?.method || "").toLowerCase() === "wallet") {
+      const result = await Checkout.payFromWallet({
+        userId: uid(req),
+        purpose,
+        refId: String(r._id),
+      });
+      const fresh = await AmbulanceRequest.findById(r._id).lean();
+      return ok(res, { ...toApp(fresh), paid: true, result });
+    }
+    const checkout = await Checkout.startCheckout({
+      userId: uid(req),
+      purpose,
+      refId: String(r._id),
     });
+    return ok(res, { ...toApp(r), checkout, purpose });
+  } catch (err: any) {
+    return checkoutFailed(res, err);
   }
-  ok(res, toApp(r.toObject()));
 });
 
 router.post("/ambulance/:id/cancel", verifyUserToken, async (req, res) => {

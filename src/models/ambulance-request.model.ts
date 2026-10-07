@@ -61,6 +61,21 @@ export interface IAmbulanceRequest {
   paymentStatus?: "PENDING" | "PAID";
   paidAt?: Date;
   paymentMethod?: string; // ONLINE | CASH | UPI | ...
+  /**
+   * How much has actually been collected, across however many payments it
+   * took. A prepaid ride that runs long is paid twice — the estimate up
+   * front and the balance after — so "paid" is a running total, not a flag.
+   */
+  amountPaid?: number;
+  /**
+   * Booked but not yet paid for, so NOT dispatchable.
+   *
+   * Non-emergency bookings are prepaid: the request exists (we need its id
+   * to raise a gateway order against) but the control room must not see it
+   * in the dispatch queue until the money lands. SOS never sets this —
+   * an emergency is dispatched first and billed afterwards.
+   */
+  awaitingPayment?: boolean;
   patientName?: string;
   // The hospital patient the crew registered in the field for THIS trip —
   // links a booked ("Book Ambulance") ride to a real HMS record so admin/
@@ -173,6 +188,8 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     paymentStatus: { type: String, enum: ["PENDING", "PAID"], default: "PENDING", index: true },
     paidAt: Date,
     paymentMethod: String,
+    amountPaid: { type: Number, default: 0 },
+    awaitingPayment: { type: Boolean, default: false, index: true },
     patientName: String,
     hospitalPatientId: { type: Schema.Types.ObjectId, ref: "HospitalPatient", index: true },
     notes: String,

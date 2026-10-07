@@ -26,6 +26,12 @@ export interface ActiveMembership {
 /**
  * The user's membership if it is genuinely current, else null.
  *
+ * "Current" now means PAID. Enrolment creates the row before the gateway is
+ * opened, so an abandoned checkout leaves an active-but-unpaid row behind —
+ * and that row used to hand out the plan's concession on every bill. A
+ * membership nobody paid for is not a membership. `waived` covers the
+ * genuine exceptions, which staff set from the admin side.
+ *
  * A row found to be past its validity is flipped to "expired" as a side
  * effect, so the correction happens the first time anyone looks rather than
  * waiting for a scheduled job.
@@ -33,7 +39,11 @@ export interface ActiveMembership {
 export const getActiveMembership = async (
   userId: Types.ObjectId | string,
 ): Promise<ActiveMembership | null> => {
-  const m: any = await UserMembership.findOne({ userId, status: "active" })
+  const m: any = await UserMembership.findOne({
+    userId,
+    status: "active",
+    paymentStatus: { $in: ["paid", "waived"] },
+  })
     .sort({ createdAt: -1 })
     .lean();
   if (!m) return null;

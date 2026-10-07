@@ -29,6 +29,13 @@ export const list = async (req: Request, _res: Response, next: NextFunction) => 
   if (req.query.status) query.status = req.query.status;
   else query.status = { $in: ACTIVE }; // default: open requests
 
+  // Non-emergency bookings are prepaid. One that has been created but not yet
+  // paid for is not dispatchable work — showing it here would have the control
+  // room ringing crews for a trip nobody has bought. `?unpaid=1` surfaces them
+  // deliberately, for chasing abandoned checkouts.
+  if (String(req.query.unpaid || "") === "1") query.awaitingPayment = true;
+  else query.awaitingPayment = { $ne: true };
+
   // This was a bare `.limit(200)`. That is not pagination — it is a silent
   // truncation: past 200 requests the rest simply stop existing as far as the
   // queue is concerned, with nothing on screen to say so. Paged properly, with
@@ -389,8 +396,13 @@ export const setExpenses = async (req: Request, _res: Response, next: NextFuncti
 };
 
 /**
- * POST /:id/payment — control room marks the bill collected (e.g. crew took
- * Cash/UPI on the spot). Patient-side online pay sets the same fields.
+ * POST /:id/payment — control room records money collected off-app, which in
+ * practice means cash or UPI handed to the crew. Online payments do not come
+ * through here; they go through the gateway and land as PaymentOrder rows.
+ *
+ * The amount is recorded, not just the fact. Marking a bill "paid" with no
+ * figure behind it left nothing to reconcile the crew's cash against, and no
+ * way to tell a part-payment from a full one.
  */
 export const markPaid = async (req: Request, _res: Response, next: NextFunction) => {
   const reqDoc = await AmbulanceRequest.findById(req.params.id as string);
@@ -401,9 +413,23 @@ export const markPaid = async (req: Request, _res: Response, next: NextFunction)
     return next();
   }
   const paid = req.body?.paymentStatus !== "PENDING"; // default to marking PAID
+  // Default to the whole outstanding bill, which is what "mark paid" means
+  // nearly every time; an explicit amount covers the part-payment case.
+  const payable = reqDoc.grandTotal ?? reqDoc.amount ?? 0;
+  const collected =
+    req.body?.amount != null
+      ? Math.max(0, Number(req.body.amount) || 0)
+      : Math.max(0, payable - (reqDoc.amountPaid || 0));
+
   reqDoc.paymentStatus = paid ? "PAID" : "PENDING";
   reqDoc.paymentMethod = paid ? String(req.body?.method || "CASH") : undefined;
   reqDoc.paidAt = paid ? new Date() : undefined;
+  reqDoc.amountPaid = paid
+    ? Math.round(((reqDoc.amountPaid || 0) + collected) * 100) / 100
+    : 0;
+  // Collecting the fare in cash also releases a prepaid booking that was
+  // being held — otherwise it would sit outside the dispatch queue forever.
+  if (paid) reqDoc.awaitingPayment = false;
   await reqDoc.save();
   emitToUser(String(reqDoc.userId), "booking:status", {
     requestId: String(reqDoc._id),

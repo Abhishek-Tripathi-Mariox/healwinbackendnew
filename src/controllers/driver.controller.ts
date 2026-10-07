@@ -423,53 +423,82 @@ export const getWalletTransactions = async (
   }
 };
 
+/**
+ * Driver wallet recharge.
+ *
+ * This used to hand back a fabricated `MZY_<timestamp>` order id, which the
+ * app would happily treat as a real gateway order. Nothing was ever charged
+ * and nothing was ever credited. Until driver-side top-ups are actually
+ * wired to the gateway, say so plainly rather than returning a convincing
+ * lie — a fake order id is worse than an honest refusal.
+ */
 export const rechargeWallet = async (
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction,
 ) => {
-  try {
-    const driverId = (req as any).driverId;
-    const { amount } = req.body;
-
-    // TODO: Integrate with payment gateway
-    req.rData = {
-      orderId: `MZY_${Date.now()}`,
-      amount,
-      currency: "INR",
-    };
-    req.msg = "recharge_initiated";
-    next();
-  } catch (error) {
-    next(error);
-  }
+  req.rCode = 0;
+  req.msg =
+    "Driver wallet top-up is not available yet. Earnings are credited automatically after each trip.";
+  req.rData = {};
+  return next();
 };
 
+/**
+ * Driver withdrawal.
+ *
+ * Two things were wrong here. The debit was a read-then-write, so two taps
+ * arriving together both saw a sufficient balance and both went through; and
+ * it wrote NO ledger row, making this the only money movement in the system
+ * that the wallet statement could not account for — the balance simply fell.
+ *
+ * The debit is now a conditional update (the balance check and the decrement
+ * are one operation) and every withdrawal leaves a DEBIT row behind. The row
+ * is PENDING, not COMPLETED, because no payout has actually been sent: this
+ * raises a request for finance to settle, and that is what the driver is now
+ * told.
+ */
 export const withdrawFromWallet = async (
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction,
 ) => {
   try {
     const driverId = (req as any).driverId;
-    const { amount } = req.body;
+    const amount = Number(req.body?.amount);
 
-    const wallet = await WalletModel.findOne({
-      userId: new Types.ObjectId(driverId),
-    });
+    if (!Number.isFinite(amount) || amount <= 0) {
+      req.rCode = 0;
+      req.msg = "Enter an amount greater than zero.";
+      return next();
+    }
 
-    if (!wallet || wallet.balance < amount) {
+    const userId = new Types.ObjectId(driverId);
+    const before = (await WalletModel.findOne({ userId }).lean())?.balance ?? 0;
+    const wallet = await WalletModel.findOneAndUpdate(
+      { userId, balance: { $gte: amount } },
+      { $inc: { balance: -amount } },
+      { returnDocument: "after" },
+    );
+
+    if (!wallet) {
       req.rCode = 0;
       req.msg = "insufficient_balance";
       return next();
     }
 
-    // Deduct from wallet
-    wallet.balance -= amount;
-    await wallet.save();
+    await WalletTransactionModel.create({
+      userId,
+      amount,
+      type: "DEBIT",
+      description: "Withdrawal to bank — awaiting payout",
+      balanceBefore: before,
+      balanceAfter: wallet.balance,
+      status: "PENDING",
+    });
 
-    req.rData = { newBalance: wallet.balance };
-    req.msg = "withdrawal_initiated";
+    req.rData = { newBalance: wallet.balance, amount };
+    req.msg = "withdrawal_requested";
     next();
   } catch (error) {
     next(error);

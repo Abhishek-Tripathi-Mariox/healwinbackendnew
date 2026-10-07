@@ -15,6 +15,7 @@ import { initMqtt, closeMqtt } from "./utils/mqtt.util";
 import { initializeFirebase } from "./services/notification.service";
 import { startShiftStateMachine } from "./services/shift-state-machine.service";
 import { startHmsAlertScheduler } from "./services/hms-alerts.service";
+import { startPaymentReconciler } from "./services/payment-reconciler.service";
 import { botGuard } from "./middlewares/rate-limit.middleware";
 import {
   requestTimeout,
@@ -60,6 +61,12 @@ const startServer = async () => {
 
     // HMS operational alerts digest (low stock / expiring / due follow-ups).
     startHmsAlertScheduler();
+
+    // Payment reconciler — finishes payments the gateway took but whose
+    // confirm call or webhook never reached us, and asks Razorpay about
+    // orders we still think are unpaid. Without it, a webhook missed during
+    // a deploy is money collected for nothing delivered.
+    startPaymentReconciler();
 
     // Start listening only after all connections are ready
     const PORT = config.server.port;
