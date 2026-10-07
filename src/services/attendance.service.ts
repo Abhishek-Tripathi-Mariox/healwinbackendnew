@@ -22,27 +22,17 @@ const ymd = (d: Date): string => {
 };
 
 /**
- * The shift that governs one employee on one day, most specific first:
- * the roster entry for that date, then the employee's default shift, then any
- * shift open to their department, then the General shift.
+ * The employee's standing shift, ignoring the roster: their own default, then
+ * any shift open to their department, then the General shift.
  *
- * Returns null when nothing matches — hours then stay uncomputed rather than
- * being measured against a shift the person does not actually work.
+ * Split out from `resolveShiftFor` so a bulk job can resolve this ONCE per
+ * person and apply roster overrides from a single batched query. Doing it
+ * per employee-day costs three round trips for every cell of a month-long
+ * import — several thousand queries for one upload.
  */
-export const resolveShiftFor = async (
+export const defaultShiftFor = async (
   employeeId: Types.ObjectId | string,
-  date: Date,
 ): Promise<(IWorkShift & { _id: Types.ObjectId }) | null> => {
-  const assigned: any = await EmployeeShift.findOne({
-    employeeId,
-    date: ymd(date),
-  })
-    .populate("workShiftId")
-    .lean();
-  if (assigned?.workShiftId && typeof assigned.workShiftId === "object") {
-    return assigned.workShiftId as any;
-  }
-
   const emp: any = await HrEmployee.findById(employeeId)
     .select("defaultShiftId departmentId")
     .lean();
@@ -67,6 +57,29 @@ export const resolveShiftFor = async (
     .sort({ startTime: 1 })
     .lean();
   return fallback || null;
+};
+
+/**
+ * The shift that governs one employee on one day, most specific first:
+ * the roster entry for that date, then whatever `defaultShiftFor` resolves.
+ *
+ * Returns null when nothing matches — hours then stay uncomputed rather than
+ * being measured against a shift the person does not actually work.
+ */
+export const resolveShiftFor = async (
+  employeeId: Types.ObjectId | string,
+  date: Date,
+): Promise<(IWorkShift & { _id: Types.ObjectId }) | null> => {
+  const assigned: any = await EmployeeShift.findOne({
+    employeeId,
+    date: ymd(date),
+  })
+    .populate("workShiftId")
+    .lean();
+  if (assigned?.workShiftId && typeof assigned.workShiftId === "object") {
+    return assigned.workShiftId as any;
+  }
+  return defaultShiftFor(employeeId);
 };
 
 /** Hours, overtime and lateness for a day, or null if a punch is missing. */

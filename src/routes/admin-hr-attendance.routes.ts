@@ -1,6 +1,8 @@
 import { Router } from "express";
 import * as C from "../controllers/admin/attendance.controller";
 import * as AR from "../controllers/admin/attendance-regularization.controller";
+import * as Import from "../controllers/admin/attendance-import.controller";
+import upload from "../middlewares/upload.middleware";
 import AdminAuthMiddleware from "../middlewares/admin-auth.middleware";
 import ErrorHandlerMiddleware from "../middlewares/error-handler.middleware";
 import ResponseMiddleware from "../middlewares/response.middleware";
@@ -56,6 +58,24 @@ router.post(
   auth.verifyAdminToken,
   auth.requirePermission(PERMISSIONS.ATTENDANCE_MANAGE),
   ErrorHandlerMiddleware(C.applyWeekOffs),
+  ResponseMiddleware,
+);
+
+// ---- Biometric CSV import ----
+// The template is a file download, so it writes the response itself rather
+// than going through ResponseMiddleware.
+router.get(
+  "/import/template",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.ATTENDANCE_MANAGE),
+  ErrorHandlerMiddleware(Import.template),
+);
+router.post(
+  "/import",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.ATTENDANCE_MANAGE),
+  upload.single("file"),
+  ErrorHandlerMiddleware(Import.importAttendance),
   ResponseMiddleware,
 );
 
