@@ -1830,16 +1830,44 @@ router.get("/hms/admissions", verifyUserToken, async (req, res) => {
     .sort({ admittedAt: -1 })
     .limit(50)
     .lean();
-  ok(res, rows.map((a) => ({
-    _id: String(a._id),
-    ward: a.ward,
-    bedNumber: a.bedNumber,
-    reason: a.reason || "",
-    status: a.status,
-    admittedAt: a.admittedAt,
-    dischargedAt: a.dischargedAt || null,
-    dischargeSummary: a.dischargeSummary || "",
-  })));
+
+  // Attach each stay's bill. Someone reading their discharge summary and
+  // seeing they still owe money should be able to settle it from there,
+  // rather than being sent to hunt for the matching invoice on another tab.
+  const bills: any[] = rows.length
+    ? await HospitalInvoice.find({ admissionId: { $in: rows.map((r) => r._id) } })
+        .select("admissionId invoiceNo total amountPaid balanceDue status")
+        .lean()
+    : [];
+  const billByAdmission = new Map(bills.map((b: any) => [String(b.admissionId), b]));
+
+  ok(res, rows.map((a) => {
+    const bill: any = billByAdmission.get(String(a._id));
+    return {
+      _id: String(a._id),
+      ward: a.ward,
+      bedNumber: a.bedNumber,
+      reason: a.reason || "",
+      status: a.status,
+      admittedAt: a.admittedAt,
+      dischargedAt: a.dischargedAt || null,
+      dischargeSummary: a.dischargeSummary || "",
+      // Present only once a bill has been raised for the stay.
+      bill: bill
+        ? {
+            _id: String(bill._id),
+            invoiceNo: bill.invoiceNo,
+            total: bill.total,
+            amountPaid: bill.amountPaid,
+            balanceDue: bill.balanceDue,
+            // "draft" means the counter has not finalised it. The figure can
+            // still move, so it is shown but not collectable — the same rule
+            // the checkout enforces server-side.
+            status: bill.status,
+          }
+        : null,
+    };
+  }));
 });
 
 // Available OPD slots for a doctor on a date (?date=YYYY-MM-DD). Empty list
