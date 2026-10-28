@@ -42,6 +42,9 @@ export interface ISOSSubmission {
   emergencyType?: string;
   description?: string;
   numberOfPeople?: number;
+  acknowledgedByAdminId?: Types.ObjectId;
+  acknowledgedByName?: string;
+  acknowledgedAt?: Date;
   // Status tracking
   status: "PENDING" | "IN_PROGRESS" | "RESOLVED" | "CLOSED";
   respondedBy?: Types.ObjectId;
@@ -121,6 +124,16 @@ const SOSSubmissionSchema = new Schema<ISOSSubmission>(
     },
     description: String,
     numberOfPeople: Number,
+    /**
+     * Who in the control room took this on, and when.
+     *
+     * The alarm loops on every dispatcher's screen until someone responds —
+     * so the moment one of them does, the rest need to know, or two people
+     * work the same emergency while a second one goes unheard.
+     */
+    acknowledgedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
+    acknowledgedByName: { type: String, trim: true },
+    acknowledgedAt: Date,
     status: {
       type: String,
       required: true,

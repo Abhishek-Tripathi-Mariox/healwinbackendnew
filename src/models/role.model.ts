@@ -258,6 +258,15 @@ export const PERMISSIONS = {
   // IPD (In-Patient Department) + beds/wards
   IPD_VIEW: "ipd:view",
   IPD_MANAGE: "ipd:manage",
+  /**
+   * May authorise sending a patient home with money still owing.
+   *
+   * Deliberately separate from IPD_MANAGE: the ward clerk who performs a
+   * discharge is not the person who should decide the hospital will carry the
+   * debt. Whoever holds this appears in the authoriser list and is named on
+   * the record.
+   */
+  IPD_DISCHARGE_ON_CREDIT: "ipd:discharge_on_credit",
   BEDS_VIEW: "beds:view",
   BEDS_MANAGE: "beds:manage",
 
@@ -584,6 +593,7 @@ export const PERMISSION_GROUPS = {
     PERMISSIONS.OPD_MANAGE,
     PERMISSIONS.IPD_VIEW,
     PERMISSIONS.IPD_MANAGE,
+    PERMISSIONS.IPD_DISCHARGE_ON_CREDIT,
     PERMISSIONS.BEDS_VIEW,
     PERMISSIONS.BEDS_MANAGE,
   ],

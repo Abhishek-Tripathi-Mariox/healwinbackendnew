@@ -6,6 +6,9 @@ import Attendance from "../../models/attendance.model";
 import { sendToStaff } from "../../services/notification.service";
 import { withTransaction } from "../../utils/txn.util";
 import { paginate } from "../../utils/paginate.util";
+import { Types } from "mongoose";
+import HrEmployee from "../../models/hr-employee.model";
+import { balanceSheet, runRollover, syncEntitlement } from "../../services/leave-entitlement.service";
 
 const fmtD = (d: Date) => new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
 
@@ -67,6 +70,10 @@ export const saveType = async (
     code: String(b.code).toUpperCase(),
     annualQuota: Number(b.annualQuota) || 0,
     isPaid: b.isPaid !== false,
+    accrual: (b.accrual === "monthly" ? "monthly" : "annual") as "monthly" | "annual",
+    carryForward: b.carryForward === true,
+    // Only meaningful with carryForward on; 0 means uncapped.
+    maxCarryForward: Math.max(0, Number(b.maxCarryForward) || 0),
     color: b.color,
     isActive: b.isActive !== false,
   };
@@ -232,6 +239,14 @@ export const approveRequest = async (
   const leaveType = await LeaveType.findById(lr.leaveTypeId).lean();
   const quota = leaveType?.annualQuota || 0;
 
+  // Work out what they are actually entitled to before checking against it.
+  // The old code fell back to the type's full annual quota when no balance
+  // row existed, which credited a November joiner a whole year of leave on
+  // their first request.
+  // `employeeId` is absent on an ambulance-staff request, which returns
+  // above before reaching here — but the type does not know that.
+  if (lr.employeeId) await syncEntitlement(lr.employeeId, year);
+
   // Don't let a paid-leave approval silently drive the balance negative. HR can
   // still do it deliberately with overrideBalance — some approvals genuinely
   // are granted beyond quota — but it becomes a decision, not an accident.
@@ -241,7 +256,7 @@ export const approveRequest = async (
       leaveTypeId: lr.leaveTypeId,
       year,
     }).lean();
-    const available = existing ? existing.balance : quota;
+    const available = existing ? existing.balance : 0;
     if (lr.days > available && req.body?.overrideBalance !== true) {
       req.rCode = 0;
       req.msg = "validation_failed";
@@ -292,9 +307,12 @@ export const approveRequest = async (
     // Decrement the yearly balance for this employee + type. On first use, seed
     // `allocated` (and the opening balance) from the leave type's annual quota
     // so the running balance is meaningful rather than going straight negative.
+    // `syncEntitlement` above has already created the row with the right
+    // accrued figure, so this only guards the case where it could not (an
+    // employee record that has since gone).
     await LeaveBalance.updateOne(
       { employeeId: lr.employeeId, leaveTypeId: lr.leaveTypeId, year },
-      { $setOnInsert: { allocated: quota, used: 0, balance: quota } },
+      { $setOnInsert: { allocated: quota, carriedForward: 0, used: 0, balance: quota } },
       { upsert: true, session },
     );
     await LeaveBalance.updateOne(
@@ -438,5 +456,147 @@ export const balances = async (
 
   req.rData = { year, items };
   req.msg = "leave_balance_list";
+  return next();
+};
+
+/**
+ * GET /admin/hr/leave/employee/:employeeId — one person's leave, end to end.
+ *
+ * Entitlement per type (accrued and pro-rata), what was carried in, what has
+ * been taken, what is awaiting a decision, what is left — plus the actual
+ * history of requests for the year, split paid vs unpaid.
+ *
+ * Previously the only per-employee view was a 20-row list of requests with no
+ * balances at all, and `GET /balances` only ever returned rows that happened
+ * to exist because someone had already taken leave.
+ */
+export const employeeLeave = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const employeeId = req.params.employeeId as string;
+  if (!Types.ObjectId.isValid(employeeId)) {
+    req.rCode = 5;
+    req.msg = "not_available";
+    req.rData = {};
+    return next();
+  }
+  const year = parseInt(
+    (req.query.year as string) || String(new Date().getFullYear()),
+    10,
+  );
+
+  const employee: any = await HrEmployee.findById(employeeId)
+    .select("fullName employeeCode joiningDate exitDate departmentId designationId")
+    .populate("departmentId", "name")
+    .populate("designationId", "name")
+    .lean();
+  if (!employee) {
+    req.rCode = 5;
+    req.msg = "not_available";
+    req.rData = {};
+    return next();
+  }
+
+  const [entitlements, history] = await Promise.all([
+    balanceSheet(employeeId, year),
+    LeaveRequest.find({
+      employeeId,
+      fromDate: { $lte: new Date(year, 11, 31, 23, 59, 59) },
+      toDate: { $gte: new Date(year, 0, 1) },
+    })
+      .populate("leaveTypeId", "name code isPaid")
+      .populate("approverAdminId", "fullName")
+      .sort({ fromDate: -1 })
+      .lean(),
+  ]);
+
+  // Paid vs unpaid is a property of the TYPE, so it is summed from the type
+  // rather than from anything stored on the request.
+  const approved = history.filter((h: any) => h.status === "approved");
+  const paidDays = approved
+    .filter((h: any) => h.leaveTypeId?.isPaid !== false)
+    .reduce((n: number, h: any) => n + (h.days || 0), 0);
+  const unpaidDays = approved
+    .filter((h: any) => h.leaveTypeId?.isPaid === false)
+    .reduce((n: number, h: any) => n + (h.days || 0), 0);
+
+  req.rData = {
+    year,
+    employee,
+    entitlements,
+    totals: {
+      entitled: entitlements.reduce((n, e) => n + e.allocated + e.carriedForward, 0),
+      used: entitlements.reduce((n, e) => n + e.used, 0),
+      balance: entitlements.reduce((n, e) => n + e.balance, 0),
+      pending: entitlements.reduce((n, e) => n + e.pending, 0),
+      paidDays,
+      unpaidDays,
+    },
+    history,
+  };
+  req.msg = "success";
+  return next();
+};
+
+/**
+ * POST /admin/hr/leave/balances/sync — bring entitlement up to date.
+ *
+ * Creates the missing rows and tops up monthly accrual. Run for one employee
+ * or, with no body, for everyone on the rolls — which is what makes a
+ * balance appear for people who have never taken leave.
+ */
+export const syncBalances = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const year = parseInt(
+    String(req.body?.year || new Date().getFullYear()),
+    10,
+  );
+  const one = req.body?.employeeId;
+
+  const employees: any[] = one
+    ? [{ _id: one }]
+    : await HrEmployee.find({ isDeleted: false, status: { $ne: "terminated" } })
+        .select("_id")
+        .lean();
+
+  let touched = 0;
+  for (const e of employees) {
+    touched += await syncEntitlement(e._id, year);
+  }
+
+  req.rData = { year, employees: employees.length, rowsUpdated: touched };
+  req.msg = `Entitlement updated for ${employees.length} employee(s).`;
+  return next();
+};
+
+/**
+ * POST /admin/hr/leave/balances/rollover — close a year, open the next.
+ *
+ * Unused days roll over for the types that allow it, capped by the type.
+ * Safe to run twice: it sets next year's carried-forward rather than adding
+ * to it.
+ */
+export const rolloverBalances = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const fromYear = parseInt(String(req.body?.fromYear || ""), 10);
+  const toYear = parseInt(String(req.body?.toYear || fromYear + 1), 10);
+  if (!fromYear || !toYear || toYear <= fromYear) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "Give the year being closed; the next one follows it." };
+    return next();
+  }
+
+  const result = await runRollover({ fromYear, toYear, employeeId: req.body?.employeeId });
+  req.rData = { fromYear, toYear, ...result };
+  req.msg = `${result.daysCarried} day(s) carried into ${toYear} for ${result.employees} employee(s).`;
   return next();
 };

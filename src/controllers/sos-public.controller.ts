@@ -1,7 +1,8 @@
 import { Request, Response } from "express";
 import { SOSSubmission } from "../models/sos-submission.model";
-import { emitToAdmin } from "../utils/socket.util";
 import { reverseGeocode } from "../services/geocode.service";
+import { emitToPermission } from "../utils/socket.util";
+import { PERMISSIONS } from "../models/role.model";
 
 /** Raise the admin alarm modal for a website/public SOS submission. */
 const alertAdmin = (submission: any) => {
@@ -13,7 +14,7 @@ const alertAdmin = (submission: any) => {
   const lat = Array.isArray(coords) ? coords[1] : undefined;
   const lng = Array.isArray(coords) ? coords[0] : undefined;
   const hasCoords = typeof lat === "number" && typeof lng === "number";
-  emitToAdmin("sos:new", {
+  emitToPermission(PERMISSIONS.SOS_VIEW, "sos:new", {
     sosId: String(submission._id),
     emergency: true,
     patientName: submission.name || "A caller",

@@ -43,9 +43,14 @@ const hasStaffOverlap = async (
 };
 
 /**
- * Returns true if `ambulanceId` already has a non-terminal shift for the
- * SAME role overlapping the window. (A driver shift and an attendant shift
- * may overlap on the same ambulance — that's the whole point.)
+ * Returns true if `ambulanceId` already has an overlapping DRIVER shift.
+ *
+ * Only the driver seat is exclusive — one vehicle, one person at the wheel.
+ * Attendants are a crew: a critical-care transfer can carry a nurse and a
+ * technician on the same run, so overlapping attendant shifts are allowed and
+ * this returns false for them. (It used to reject the second attendant with
+ * "This ambulance already has an attendant shift during this window", which
+ * made a two-attendant crew impossible to roster at all.)
  */
 const hasAmbulanceRoleOverlap = async (
   ambulanceId: Types.ObjectId,
@@ -54,6 +59,7 @@ const hasAmbulanceRoleOverlap = async (
   endAt: Date,
   excludeShiftId?: Types.ObjectId,
 ) => {
+  if (role !== "driver") return false;
   const query: any = {
     ambulanceId,
     role,

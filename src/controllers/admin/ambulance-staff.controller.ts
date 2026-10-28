@@ -3,6 +3,7 @@ import AmbulanceStaff from "../../models/ambulance-staff.model";
 import Ambulance from "../../models/ambulance.model";
 import { EmergencyDispatch } from "../../models/emergency-dispatch.model";
 import { escapeRegex } from "../../utils/helpers";
+import { crewFilter } from "../../utils/crew.util";
 
 export const create = async (
   req: Request,
@@ -149,6 +150,7 @@ export const detail = async (
   const ambulance = await Ambulance.findOne({
     $or: [
       { assignedDriverId: staff._id },
+      { assignedAttendantIds: staff._id },
       { assignedAttendantId: staff._id },
     ],
   })
@@ -159,12 +161,7 @@ export const detail = async (
   // the detail page activity timeline — "is this driver actually getting
   // called out?". Cheap query because EmergencyDispatch has indexes on
   // both driverStaffId and attendantStaffId.
-  const recentDispatches = await EmergencyDispatch.find({
-    $or: [
-      { driverStaffId: staff._id },
-      { attendantStaffId: staff._id },
-    ],
-  })
+  const recentDispatches = await EmergencyDispatch.find(crewFilter(staff._id))
     .sort({ dispatchedAt: -1 })
     .limit(10)
     .populate("ambulanceId", "registrationNumber ambulanceType")

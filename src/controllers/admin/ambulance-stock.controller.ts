@@ -5,6 +5,116 @@ import {
   AmbulanceStock,
   AmbulanceStockTransaction,
 } from "../../models/ambulance-stock.model";
+import { adjustAmbulanceStock, restockAmbulance } from "../../services/ambulance-stock.service";
+
+/**
+ * POST /admin/ambulance-stock/:ambulanceId/issue — load stock onto a vehicle
+ * directly, without waiting for the crew to ask.
+ *
+ * Until now the ONLY way anything reached a vehicle was fulfilling a crew
+ * stock request, so stocking a new ambulance, or topping one up before a
+ * shift, meant someone had to raise a request on the crew app first and then
+ * approve their own request. The ward side has had this since the beginning
+ * (POST /admin/ward-stock/:wardId/issue); this is its ambulance twin and uses
+ * the same service, so central inventory, FEFO batches and both journals
+ * behave identically.
+ */
+export const issueToAmbulance = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const ambulanceId = req.params.ambulanceId as string;
+  if (!Types.ObjectId.isValid(ambulanceId)) {
+    req.rCode = 5;
+    req.msg = "not_available";
+    req.rData = {};
+    return next();
+  }
+  const amb = await Ambulance.findById(ambulanceId).select("_id registrationNumber").lean();
+  if (!amb) {
+    req.rCode = 5;
+    req.msg = "not_available";
+    req.rData = {};
+    return next();
+  }
+
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  const lines = items
+    .map((i: any) => ({ itemId: i.itemId, name: i.name, qty: Number(i.qty) || 0 }))
+    .filter((i: any) => i.qty > 0 && (i.itemId || i.name));
+  if (lines.length === 0) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "Add at least one item with a quantity." };
+    return next();
+  }
+
+  const result = await restockAmbulance({
+    ambulanceId: amb._id,
+    performedByAdminId: (req as any).adminId,
+    items: lines,
+  });
+
+  req.rData = result;
+  // Partial success is the normal case when central stock has run short, so
+  // it is reported rather than hidden behind a bare "success".
+  req.msg = result.skipped.length
+    ? `${result.moved} item(s) loaded. Not loaded: ${result.skipped.join(", ")}`
+    : `${result.moved} item(s) loaded onto ${amb.registrationNumber}.`;
+  return next();
+};
+
+/**
+ * POST /admin/ambulance-stock/:ambulanceId/adjust — correct the on-hand count.
+ *
+ * For a stock-take, breakage or expiry on the vehicle. Central inventory is
+ * NOT touched: those units already left the store.
+ */
+export const adjustAmbulance = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const ambulanceId = req.params.ambulanceId as string;
+  const { itemId, delta, note } = req.body || {};
+  if (!Types.ObjectId.isValid(ambulanceId) || !Types.ObjectId.isValid(String(itemId))) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "Pick a vehicle and an item." };
+    return next();
+  }
+  const amount = Math.round(Number(delta) || 0);
+  if (!amount) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "Enter how many to add (+) or remove (−)." };
+    return next();
+  }
+  if (!String(note || "").trim()) {
+    req.rCode = 0;
+    req.msg = "validation_failed";
+    req.rData = { hint: "Say why the count is being corrected." };
+    return next();
+  }
+
+  const result = await adjustAmbulanceStock({
+    ambulanceId,
+    itemId,
+    delta: amount,
+    note: String(note).trim(),
+    performedByAdminId: (req as any).adminId,
+  });
+  if (!result) {
+    req.rCode = 5;
+    req.msg = "not_available";
+    req.rData = { hint: "That item could not be found." };
+    return next();
+  }
+  req.rData = result;
+  req.msg = `${result.itemName} is now ${result.balanceAfter} on this vehicle.`;
+  return next();
+};
 
 /** GET /admin/ambulance-stock/:ambulanceId?page=&limit= — on-hand stock + recent movements. */
 export const ambulanceStock = async (req: Request, _res: Response, next: NextFunction) => {
@@ -146,13 +256,23 @@ export const reports = async (req: Request, _res: Response, next: NextFunction) 
         $facet: {
           rows: [
             { $sort: { totalSpend: -1 } },
-            ...(tab === "patients" ? [{ $skip: skip }, { $limit: limit }] : [{ $limit: 0 }]),
+            // On the ambulances tab only the COUNT of patients is wanted,
+            // not their rows. `$limit: 0` was used to skip them — but Mongo
+            // rejects a zero limit outright ("the limit must be positive"),
+            // so the whole report 400'd and the page rendered empty. A match
+            // that cannot succeed costs nothing and is valid.
+            ...(tab === "patients"
+              ? [{ $skip: skip }, { $limit: limit }]
+              : [{ $match: { _id: { $exists: false } } }]),
           ],
           count: [{ $count: "total" }],
         },
       },
     ]),
-    Ambulance.find({}).select("registrationNumber ambulanceType").lean(),
+    Ambulance.find({ isActive: { $ne: false } })
+      .select("registrationNumber ambulanceType")
+      .sort({ registrationNumber: 1 })
+      .lean(),
   ]);
   const byPatient: any[] = patientFacet[0]?.rows ?? [];
   const patientTotal: number = patientFacet[0]?.count?.[0]?.total ?? 0;
@@ -163,7 +283,23 @@ export const reports = async (req: Request, _res: Response, next: NextFunction) 
   const consumedMap = new Map(consumedAgg.map((c: any) => [String(c._id), c]));
   const onHandMap = new Map(onHandAgg.map((o: any) => [String(o._id), o]));
 
-  const ids = new Set<string>([...consumedMap.keys(), ...onHandMap.keys()]);
+  /**
+   * Every vehicle on the fleet, not only the ones that already hold stock.
+   *
+   * This used to be built from the stock aggregates alone, so an ambulance
+   * that had never been loaded simply did not appear — and on a fresh
+   * system the page was blank. That also hid the question an inventory
+   * screen most needs to answer ("which of my ambulances are empty?"), and
+   * left no row to click to load the first item onto one.
+   */
+  const ids = new Set<string>([
+    ...ambMap.keys(),
+    // Keep a vehicle that has stock history but has since been deactivated —
+    // its consumption is still real spend and should not vanish from the
+    // totals.
+    ...consumedMap.keys(),
+    ...onHandMap.keys(),
+  ]);
   const allAmbulances = [...ids].map((id) => {
     const c: any = consumedMap.get(id);
     const o: any = onHandMap.get(id);
@@ -178,7 +314,14 @@ export const reports = async (req: Request, _res: Response, next: NextFunction) 
       consumedQty: c?.consumedQty || 0,
     };
   });
-  allAmbulances.sort((a, b) => b.consumedValue - a.consumedValue);
+  // Busiest first, then whatever is actually stocked; the empty vehicles
+  // settle at the bottom, which is where they are easiest to spot.
+  allAmbulances.sort(
+    (a, b) =>
+      b.consumedValue - a.consumedValue ||
+      b.onHandQty - a.onHandQty ||
+      a.registrationNumber.localeCompare(b.registrationNumber),
+  );
 
   req.rData = {
     byAmbulance:

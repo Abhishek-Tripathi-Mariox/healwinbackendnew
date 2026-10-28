@@ -10,6 +10,9 @@ import { autoDraftInvoiceOnDischarge } from "./billing.controller";
 import { getMarForDate } from "../../services/mar.service";
 import { computeAdmissionCharges } from "./billing.controller";
 import { escapeRegex } from "../../utils/helpers";
+import { Admin } from "../../models/admin.model";
+import Role, { PERMISSIONS } from "../../models/role.model";
+import { emitToUser } from "../../utils/socket.util";
 
 /**
  * Doctor Panel / HMS — IPD: bed master + admissions (admit, transfer,
@@ -245,6 +248,10 @@ export const listAdmissions = async (
   );
   const query: any = {};
   if (req.query.status) query.status = req.query.status;
+  // Stays that went home owing money. The live notification to the authoriser
+  // is gone the moment they close the tab — this is how anyone finds them
+  // afterwards, which is the whole point of recording it.
+  if (String(req.query.withDues || "") === "1") query.dischargedWithDues = true;
   const [items, total] = await Promise.all([
     Admission.find(query)
       .sort({ admittedAt: -1 })
@@ -252,6 +259,7 @@ export const listAdmissions = async (
       .limit(limit)
       .populate("patientId", "patientId fullName phone gender age")
       .populate("attendingDoctorId", "fullName")
+      .populate("creditAuthorisedBy", "fullName")
       .lean(),
     Admission.countDocuments(query),
   ]);
@@ -426,6 +434,51 @@ export const transfer = async (
   return next();
 };
 
+/**
+ * GET /admin/ipd/credit-authorisers — who may allow a discharge with money
+ * still owing.
+ *
+ * A dedicated endpoint rather than a generic "list admins by permission":
+ * the ward clerk needs to read this to pick an authoriser, and a generic
+ * version would let anyone enumerate the whole organisation by permission.
+ */
+export const creditAuthorisers = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+) => {
+  const roles: any[] = await Role.find({
+    $or: [
+      { permissions: PERMISSIONS.IPD_DISCHARGE_ON_CREDIT },
+      // Super Admin bypasses permission checks everywhere, so it holds this
+      // whether or not the array lists it.
+      { name: "Super Admin" },
+    ],
+  })
+    .select("_id")
+    .lean();
+
+  const admins: any[] = await Admin.find({
+    roleId: { $in: roles.map((r) => r._id) },
+    isActive: true,
+    isDeleted: { $ne: true },
+  })
+    .select("fullName email roleName")
+    .sort({ fullName: 1 })
+    .lean();
+
+  req.rData = {
+    items: admins.map((a) => ({
+      _id: a._id,
+      fullName: a.fullName,
+      email: a.email,
+      roleName: a.roleName,
+    })),
+  };
+  req.msg = "success";
+  return next();
+};
+
 /** POST /admin/ipd/admissions/:id/discharge — discharge and free the bed. */
 export const discharge = async (
   req: Request,
@@ -442,27 +495,78 @@ export const discharge = async (
   }
   // Discharge clearance: a stay with money outstanding must not walk out
   // unnoticed. Not a hard block — a hospital does discharge on credit, against
-  // insurance, or on a waiver — so it requires an explicit acknowledgement
-  // rather than failing outright, and records who allowed it.
-  if (!b.overrideUnpaid) {
-    const openBill: any = await HospitalInvoice.findOne({
-      admissionId: admission._id,
-      status: { $in: ["unpaid", "partial"] },
-    })
-      .select("invoiceNo balanceDue")
-      .lean();
-    if (openBill && openBill.balanceDue > 0) {
+  // insurance, or on a waiver — so it asks for an authoriser rather than
+  // failing outright, and records who allowed it.
+  const openBill: any = await HospitalInvoice.findOne({
+    admissionId: admission._id,
+    status: { $in: ["unpaid", "partial"] },
+  })
+    .select("invoiceNo balanceDue")
+    .lean();
+  const balanceDue = openBill?.balanceDue > 0 ? openBill.balanceDue : 0;
+
+  if (balanceDue > 0) {
+    if (!b.overrideUnpaid) {
       req.rCode = 0;
       req.msg = "unpaid_balance";
       req.rData = {
         invoiceNo: openBill.invoiceNo,
-        balanceDue: openBill.balanceDue,
-        hint: `₹${openBill.balanceDue} is still due on ${openBill.invoiceNo}. Collect it, or resubmit with overrideUnpaid: true and a reason to discharge on credit.`,
+        balanceDue,
+        hint: `₹${balanceDue} is still due on ${openBill.invoiceNo}. Collect it, or name someone who can authorise a discharge on credit.`,
       };
       return next();
     }
-  } else if (b.overrideReason) {
-    admission.dischargeSummary = `${admission.dischargeSummary || ""}\n[Discharged with balance outstanding — ${b.overrideReason}]`.trim();
+
+    // Overriding needs a NAME, and that name has to be someone who actually
+    // holds the authority. Without this check the override was a free pass:
+    // whoever could discharge could also write off the clearance, and nothing
+    // recorded who decided the hospital would carry the debt.
+    const authoriser: any = b.authorisedBy
+      ? await Admin.findOne({
+          _id: b.authorisedBy,
+          isActive: true,
+          isDeleted: { $ne: true },
+        })
+          .select("fullName roleId roleName")
+          .lean()
+      : null;
+    if (!authoriser) {
+      req.rCode = 0;
+      req.msg = "authoriser_required";
+      req.rData = {
+        balanceDue,
+        hint: "Choose who is authorising this discharge on credit.",
+      };
+      return next();
+    }
+    const role: any = await Role.findById(authoriser.roleId).select("name permissions").lean();
+    const mayAuthorise =
+      role?.name === "Super Admin" ||
+      (role?.permissions || []).includes(PERMISSIONS.IPD_DISCHARGE_ON_CREDIT);
+    if (!mayAuthorise) {
+      req.rCode = 0;
+      req.msg = "authoriser_not_permitted";
+      req.rData = {
+        hint: `${authoriser.fullName} cannot authorise a discharge on credit. Choose someone from the authoriser list.`,
+      };
+      return next();
+    }
+
+    const reason = String(b.overrideReason || "").trim();
+    if (!reason) {
+      req.rCode = 0;
+      req.msg = "reason_required";
+      req.rData = { hint: "Say why the balance is being carried." };
+      return next();
+    }
+
+    admission.dischargedWithDues = true;
+    admission.duesAtDischarge = balanceDue;
+    admission.creditAuthorisedBy = authoriser._id;
+    admission.creditAuthorisedAt = new Date();
+    admission.creditReason = reason;
+    admission.dischargeSummary =
+      `${admission.dischargeSummary || ""}\n[Discharged with ₹${balanceDue} outstanding — authorised by ${authoriser.fullName}: ${reason}]`.trim();
   }
 
   const now = b.dischargedAt ? new Date(b.dischargedAt) : new Date();
@@ -490,6 +594,19 @@ export const discharge = async (
     admissionId: admission._id,
     adminId: (req as any).adminId,
   }).catch(() => null);
+
+  // Tell the authoriser, by name, that a discharge went out on their
+  // authority with money still owing. The bell is live-only, so the durable
+  // record is the admission itself — `dischargedWithDues` makes these
+  // findable in the IPD list long after the socket event is gone.
+  if (admission.dischargedWithDues && admission.creditAuthorisedBy) {
+    emitToUser(String(admission.creditAuthorisedBy), "ipd:discharged-on-credit", {
+      admissionId: String(admission._id),
+      admissionNo: admission.admissionNo,
+      balanceDue: admission.duesAtDischarge,
+      reason: admission.creditReason,
+    });
+  }
 
   // Notify the patient their discharge summary is available in the app.
   void notifyHospitalPatient(

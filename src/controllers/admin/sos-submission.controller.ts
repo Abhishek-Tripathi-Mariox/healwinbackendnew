@@ -12,6 +12,9 @@ import { Admin } from "../../models/admin.model";
 import config from "../../config";
 import { clickToCall, isConfigured, tenDigits, usesUserDial } from "../../services/myoperator.service";
 import { escapeRegex } from "../../utils/helpers";
+import { crewIdsOf } from "../../utils/crew.util";
+import { emitToPermission } from "../../utils/socket.util";
+import { PERMISSIONS } from "../../models/role.model";
 
 /**
  * Wraps up an SOS-linked dispatch when the admin resolves/closes the
@@ -61,45 +64,25 @@ const cascadeResolveDispatch = async (
       dispatchId: String(dispatch._id),
       sosId: String(sosId),
     };
-    const [driver, attendant] = await Promise.all([
-      dispatch.driverStaffId
-        ? AmbulanceStaff.findById(dispatch.driverStaffId)
-            .select("fcmToken")
-            .lean()
-        : null,
-      dispatch.attendantStaffId
-        ? AmbulanceStaff.findById(dispatch.attendantStaffId)
-            .select("fcmToken")
-            .lean()
-        : null,
-    ]);
-    if (driver?.fcmToken) {
+    // Everyone aboard, not just the driver and one attendant — a transfer
+    // can carry several, and the ones left out kept a closed case on screen.
+    const crew = crewIdsOf(dispatch);
+    const staff: any[] = crew.length
+      ? await AmbulanceStaff.find({ _id: { $in: crew } })
+          .select("fcmToken")
+          .lean()
+      : [];
+    for (const member of staff) {
+      if (!member?.fcmToken) continue;
       sendPushNotification(
-        driver.fcmToken,
+        member.fcmToken,
         "Dispatch resolved",
         "The case has been closed by admin.",
         data,
-      ).catch((e) => console.error("FCM driver resolved-push failed:", e));
+      ).catch((e) => console.error("FCM resolved-push failed:", e));
     }
-    if (attendant?.fcmToken) {
-      sendPushNotification(
-        attendant.fcmToken,
-        "Dispatch resolved",
-        "The case has been closed by admin.",
-        data,
-      ).catch((e) =>
-        console.error("FCM attendant resolved-push failed:", e),
-      );
-    }
-    if (dispatch.driverStaffId) {
-      emitToUser(String(dispatch.driverStaffId), "dispatch:resolved", data);
-    }
-    if (dispatch.attendantStaffId) {
-      emitToUser(
-        String(dispatch.attendantStaffId),
-        "dispatch:resolved",
-        data,
-      );
+    for (const staffId of crew) {
+      emitToUser(staffId, "dispatch:resolved", data);
     }
 
     // Audit log line so ops can see which admin closed which dispatch.
@@ -395,6 +378,51 @@ export const callSubmitter = async (req: Request, res: Response) => {
 /**
  * Update submission status (respond / resolve / close)
  */
+/**
+ * POST /admin/sos-submissions/:id/acknowledge — "I am taking this one."
+ *
+ * The alarm loops on every dispatcher's screen until it is answered, and
+ * acknowledging it used to only silence the browser it was clicked in. Two
+ * people would work the same emergency while the alarm kept everyone else
+ * from hearing the next one. This records who picked it up and silences the
+ * rest.
+ */
+export const acknowledgeSubmission = async (req: Request, res: Response) => {
+  const id = req.params.id as string;
+  if (!Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ success: false, message: "Invalid SOS id" });
+  }
+  const by = (req as any).admin?.fullName || "Control room";
+
+  const submission = await SOSSubmission.findOneAndUpdate(
+    // Only the first responder is recorded — a later click must not overwrite
+    // who actually took it on.
+    { _id: id, acknowledgedAt: { $exists: false } },
+    {
+      $set: {
+        acknowledgedByAdminId: (req as any).adminId,
+        acknowledgedByName: by,
+        acknowledgedAt: new Date(),
+      },
+    },
+    { new: true },
+  );
+
+  // Silence every other panel either way: if it was already acknowledged, the
+  // clicker's own screen still needs to clear.
+  emitToPermission(PERMISSIONS.SOS_VIEW, "sos:claimed", {
+    sosId: String(id),
+    by: submission?.acknowledgedByName || by,
+    reason: "acknowledged",
+  });
+
+  return res.json({
+    success: true,
+    message: submission ? `Acknowledged by ${by}.` : "Already being handled.",
+    data: { sosId: id, acknowledgedBy: submission?.acknowledgedByName || null },
+  });
+};
+
 export const updateSubmissionStatus = async (req: Request, res: Response) => {
   try {
     const adminId = (req as any).admin._id;
@@ -442,8 +470,15 @@ export const updateSubmissionStatus = async (req: Request, res: Response) => {
     // Emit socket event
     const io = req.app.get("io");
     if (io) {
-      io.to("admin").emit("sos:submission-updated", {
+      emitToPermission(PERMISSIONS.SOS_VIEW, "sos:submission-updated", {
         submission,
+      });
+      // A status change IS someone acting on it, so every other dispatcher's
+      // alarm should stop — they are not needed on this one any more.
+      emitToPermission(PERMISSIONS.SOS_VIEW, "sos:claimed", {
+        sosId: String(id),
+        by: (req as any).admin?.fullName || "Control room",
+        reason: `marked ${String(status).toLowerCase()}`,
       });
       // Public website caller watching this submission's live status.
       io.to(`sos-submission:${id}`).emit("sos:status", {

@@ -12,20 +12,43 @@ import {
 } from "../../services/account-email.service";
 
 /**
+ * Match an account by whatever the person typed.
+ *
+ * Staff who are not desk-based often have a phone and no email, so an email
+ * was never a workable single identifier — it got faked, and then password
+ * resets went to an address nobody read. Either now identifies an account.
+ *
+ * A pure 10-digit run (optionally pasted with +91 or a leading 0) is read as
+ * a mobile; anything else as an email. The two can never collide, so there is
+ * no ambiguity to resolve.
+ */
+export const adminIdentifierFilter = (raw: string) => {
+  const value = String(raw || "").trim();
+  const digits = value.replace(/\D/g, "");
+  const looksLikeMobile = /^(\+?91|0)?[6-9]\d{9}$/.test(value.replace(/[\s-]/g, ""));
+  return looksLikeMobile
+    ? { phone: digits.slice(-10) }
+    : { email: value.toLowerCase() };
+};
+
+/**
  * Admin Login
  */
 export const login = async (req: Request, res: Response) => {
-  const { email, password } = req.body;
+  // `identifier` is the field the login form now sends; `email` is kept so an
+  // older build of the panel, or anything scripted against this, keeps working.
+  const identifier = String(req.body?.identifier ?? req.body?.email ?? "").trim();
+  const { password } = req.body;
 
-  if (!email || !password) {
+  if (!identifier || !password) {
     return res.status(400).json({
       success: false,
-      message: "Email and password are required",
+      message: "Enter your email or mobile number, and your password",
     });
   }
 
   const admin = await Admin.findOne({
-    email: email.toLowerCase(),
+    ...adminIdentifierFilter(identifier),
     isDeleted: false,
   })
     .select("+password")
@@ -219,7 +242,7 @@ export const forgotPassword = async (req: Request, res: Response) => {
 
   const result = await sendPasswordReset({
     fullName: admin.fullName,
-    email: admin.email,
+    email: admin.email!,
     token: resetToken,
     expiresInMinutes: RESET_TTL_MINUTES,
   });
@@ -284,7 +307,7 @@ export const resetPassword = async (req: Request, res: Response) => {
 
   // Told after the fact, so a reset the owner did not ask for is noticed
   // rather than discovered the next time they cannot sign in.
-  void sendPasswordChanged({ fullName: admin.fullName, email: admin.email });
+  if (admin.email) void sendPasswordChanged({ fullName: admin.fullName, email: admin.email });
 
   res.locals.data = { message: "Password reset successful" };
 };
@@ -354,7 +377,7 @@ export const changeMyPassword = async (req: Request, res: Response) => {
     { isActive: false },
   );
 
-  void sendPasswordChanged({ fullName: admin.fullName, email: admin.email });
+  if (admin.email) void sendPasswordChanged({ fullName: admin.fullName, email: admin.email });
 
   res.locals.data = {
     message: "Password changed. Your other sessions have been signed out.",

@@ -14,7 +14,9 @@ export interface IAmbulance extends Document {
   rcFrontImage?: string;
   rcBackImage?: string;
   assignedDriverId: Types.ObjectId | null;
+  /** @deprecated read via attendantIdsOf(); `assignedAttendantIds` is the source. */
   assignedAttendantId: Types.ObjectId | null;
+  assignedAttendantIds?: Types.ObjectId[];
   currentLocation: { type: "Point"; coordinates: [number, number] };
   lastLocationAt?: Date;
   status: AmbulanceStatus;

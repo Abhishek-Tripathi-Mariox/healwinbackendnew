@@ -151,7 +151,8 @@ export const rateLimiters = {
     keyPrefix: "rl:auth",
     keyGenerator: (req) => {
       const b: any = req.body || {};
-      const id = b.email || b.mobileNumber || b.phone || b.username;
+      const id =
+        b.identifier || b.email || b.mobileNumber || b.phone || b.username;
       return id ? `rl:auth:id:${String(id).trim().toLowerCase()}` : "";
     },
     message: "Too many login attempts for this account. Try again in 5 minutes.",

@@ -55,6 +55,8 @@ export interface IAmbulanceStockTransaction {
   dispatchId?: Types.ObjectId; // EmergencyDispatch (SOS)
   patientId?: Types.ObjectId; // HospitalPatient consumed on
   patientName?: string;
+  note?: string;
+  performedByAdminId?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -82,6 +84,9 @@ const AmbulanceStockTransactionSchema = new Schema<IAmbulanceStockTransaction>(
     dispatchId: { type: Schema.Types.ObjectId, ref: "EmergencyDispatch" },
     patientId: { type: Schema.Types.ObjectId, ref: "HospitalPatient", index: true },
     patientName: String,
+    /** Why an adjustment was made — a stock-take, expiry, breakage. */
+    note: { type: String, trim: true },
+    performedByAdminId: { type: Schema.Types.ObjectId, ref: "Admin" },
   },
   { timestamps: true },
 );

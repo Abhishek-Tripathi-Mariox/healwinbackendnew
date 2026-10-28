@@ -130,4 +130,16 @@ router.get(
   ResponseMiddleware,
 );
 
+/**
+ * Who may authorise a discharge on credit. Readable by anyone who can run a
+ * discharge — they have to pick from it.
+ */
+router.get(
+  "/credit-authorisers",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.IPD_MANAGE),
+  ErrorHandlerMiddleware(C.creditAuthorisers),
+  ResponseMiddleware,
+);
+
 export default router;

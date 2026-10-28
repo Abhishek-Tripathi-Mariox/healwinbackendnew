@@ -59,6 +59,18 @@ export interface IAdmission {
   medicationLog: IMedicationLog[];
   progressNotes: IProgressNote[];
   dischargedAt?: Date;
+  /**
+   * Sent home with the bill still open.
+   *
+   * A hospital does discharge on credit — against insurance, on a waiver, or
+   * because the family will settle later — but it must never happen
+   * anonymously. These record how much was owing and who allowed it.
+   */
+  dischargedWithDues?: boolean;
+  duesAtDischarge?: number;
+  creditAuthorisedBy?: Types.ObjectId;
+  creditAuthorisedAt?: Date;
+  creditReason?: string;
   dischargeSummary?: string;
   createdByAdminId: Types.ObjectId;
   createdAt: Date;
@@ -146,6 +158,11 @@ const AdmissionSchema = new Schema<IAdmission>(
     medicationLog: { type: [MedicationLogSchema], default: [] },
     progressNotes: { type: [ProgressNoteSchema], default: [] },
     dischargedAt: Date,
+    dischargedWithDues: { type: Boolean, default: false, index: true },
+    duesAtDischarge: { type: Number, default: 0 },
+    creditAuthorisedBy: { type: Schema.Types.ObjectId, ref: "Admin", index: true },
+    creditAuthorisedAt: Date,
+    creditReason: { type: String, trim: true },
     dischargeSummary: { type: String, trim: true },
     createdByAdminId: {
       type: Schema.Types.ObjectId,

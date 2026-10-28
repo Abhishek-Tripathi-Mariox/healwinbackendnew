@@ -53,6 +53,7 @@ export const list = async (
       .populate("providerId", "name phone")
       .populate("assignedDriverId", "fullName mobileNumber")
       .populate("assignedAttendantId", "fullName mobileNumber")
+      .populate("assignedAttendantIds", "fullName mobileNumber")
       .lean(),
     Ambulance.countDocuments(filter),
   ]);
@@ -71,6 +72,7 @@ export const detail = async (
     .populate("providerId")
     .populate("assignedDriverId")
     .populate("assignedAttendantId")
+    .populate("assignedAttendantIds")
     .lean();
   if (!ambulance) {
     req.rCode = 5;
@@ -137,12 +139,14 @@ export const assign = async (
     return next();
   }
 
-  const field = role === "driver" ? "assignedDriverId" : "assignedAttendantId";
-
   try {
+    // The driver seat is single and gets replaced; attendants accumulate, so
+    // adding a second one must not knock the first off the vehicle.
     const updated = await Ambulance.findByIdAndUpdate(
       (req.params.id as string),
-      { [field]: staff._id },
+      role === "driver"
+        ? { $set: { assignedDriverId: staff._id } }
+        : { $addToSet: { assignedAttendantIds: staff._id } },
       { returnDocument: "after" },
     );
     req.rData = { ambulance: updated };
@@ -165,11 +169,22 @@ export const unassign = async (
   res: Response,
   next: NextFunction,
 ) => {
-  const { role } = req.body as { role: "driver" | "attendant" };
-  const field = role === "driver" ? "assignedDriverId" : "assignedAttendantId";
+  const { role, staffId } = req.body as {
+    role: "driver" | "attendant";
+    staffId?: string;
+  };
+  // Removing an attendant now needs to say WHICH one. Without a staffId the
+  // whole attendant crew is stood down, which is what the old single-seat
+  // button meant.
+  const update =
+    role === "driver"
+      ? { $set: { assignedDriverId: null } }
+      : staffId
+        ? { $pull: { assignedAttendantIds: staffId } }
+        : { $set: { assignedAttendantIds: [], assignedAttendantId: null } };
   const updated = await Ambulance.findByIdAndUpdate(
     (req.params.id as string),
-    { [field]: null },
+    update as any,
     { returnDocument: "after" },
   );
   if (!updated) {
@@ -205,6 +220,7 @@ export const softDelete = async (
   ambulance.status = "offline";
   ambulance.assignedDriverId = null;
   ambulance.assignedAttendantId = null;
+  ambulance.assignedAttendantIds = [] as any;
   await ambulance.save();
   req.rData = { ambulance };
   req.msg = "ambulance_deleted";

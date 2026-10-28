@@ -3,9 +3,10 @@ import mongoose, { Types } from "mongoose";
 import * as SOSService from "../services/sos.service";
 import { SOSSubmission } from "../models/sos-submission.model";
 import User from "../models/Users";
-import { emitToAdmin } from "../utils/socket.util";
 import PatientFamilyMember from "../models/patient-family-member.model";
 import { sendToUser } from "../services/notification.service";
+import { emitToPermission } from "../utils/socket.util";
+import { PERMISSIONS } from "../models/role.model";
 
 /**
  * Get emergency contacts
@@ -348,7 +349,10 @@ export const triggerSOS = async (req: Request, res: Response) => {
     // something the raiser deliberately kept private would dispatch an
     // ambulance nobody asked for.
     if (notifyControlRoom) {
-    emitToAdmin("sos:new", {
+    // Only the people who can actually act on it. The siren used to go off
+    // for every signed-in panel user — a pharmacist, an accountant — which
+    // taught everyone to ignore it.
+    emitToPermission(PERMISSIONS.SOS_VIEW, "sos:new", {
       sosId: String(submission?._id || sosAlert._id),
       emergency: true,
       patientName: req.body.name || patient?.fullName || "A patient",

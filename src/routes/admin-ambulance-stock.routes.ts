@@ -20,6 +20,25 @@ router.get(
   ResponseMiddleware,
 );
 
+// Declared BEFORE "/:ambulanceId" is irrelevant for POSTs, but kept together
+// so the write surface is obvious. Both move real stock, so they need
+// INVENTORY_ADJUST — the same gate the ward equivalents use.
+router.post(
+  "/:ambulanceId/issue",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.INVENTORY_ADJUST),
+  ErrorHandlerMiddleware(C.issueToAmbulance),
+  ResponseMiddleware,
+);
+
+router.post(
+  "/:ambulanceId/adjust",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.INVENTORY_ADJUST),
+  ErrorHandlerMiddleware(C.adjustAmbulance),
+  ResponseMiddleware,
+);
+
 router.get(
   "/:ambulanceId",
   auth.verifyAdminToken,

@@ -40,6 +40,8 @@ import { Admission } from "../models/admission.model";
 import { calculateFare } from "../services/fare.service";
 import * as PromoService from "../services/promo.service";
 import * as Checkout from "../services/checkout.service";
+import { cancelDispatch } from "../services/dispatch-cancel.service";
+import { SOSAlert } from "../models/sos.model";
 import Wallet from "../models/wallet.model";
 import PaymentOrder from "../models/payment-order.model";
 import { reverseGeocode, searchPlaces, resolvePlace } from "../services/geocode.service";
@@ -51,6 +53,8 @@ import config from "../config";
 import jwt from "jsonwebtoken";
 import { Types } from "mongoose";
 import { uploadFileToAws } from "../utils/s3";
+import { emitToPermission } from "../utils/socket.util";
+import { PERMISSIONS } from "../models/role.model";
 import {
   InsurancePayer,
   PatientPolicy,
@@ -2616,6 +2620,80 @@ router.get("/ambulance/history", verifyUserToken, async (req, res) => {
 });
 
 // Active SOS dispatch (admin-dispatched EmergencyDispatch) for live tracking.
+/**
+ * Call off an SOS.
+ *
+ * The patient could raise an emergency but never stand it down: the only
+ * patient-facing cancel hit the legacy `SOSAlert`, which `createDispatch` has
+ * already moved past, so once an ambulance was assigned it 404'd — and even
+ * when it did match it left the vehicle marked on-dispatch and the crew
+ * driving to a call nobody needed.
+ *
+ * Works whether or not an ambulance has been assigned yet, and takes either
+ * the dispatch id or the submission id, because that is what the tracking
+ * screen holds in the two cases. Refused once the trip is under way — by then
+ * the patient is in the vehicle.
+ */
+router.post("/sos/:id/cancel", verifyUserToken, async (req, res) => {
+  const id = String(req.params.id || "");
+  const note = String(req.body?.reason || "").trim();
+  if (!Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ success: false, message: "Invalid request" });
+  }
+
+  // The id may be the dispatch's (ambulance assigned) or the submission's
+  // (still waiting on the control room) — `sosToApp` returns whichever exists.
+  const dispatch: any = await EmergencyDispatch.findOne({
+    $or: [{ _id: id }, { sosSubmission: id }],
+    patientUserId: uid(req),
+    status: { $nin: ["COMPLETED", "CANCELLED"] },
+  }).sort({ dispatchedAt: -1 });
+
+  if (dispatch) {
+    const result = await cancelDispatch({
+      dispatch,
+      by: "patient",
+      note,
+      // The patient does not want an ambulance any more, so the emergency is
+      // closed rather than handed back to the queue.
+      reopenSos: false,
+      actorId: uid(req),
+    });
+    if (!result.ok) {
+      return res.status(409).json({ success: false, message: result.reason });
+    }
+    return ok(res, { cancelled: true, dispatchId: String(dispatch._id) });
+  }
+
+  // No ambulance assigned yet — close the submission itself so the control
+  // room stops working it.
+  const sub: any = await SOSSubmission.findOne({
+    _id: id,
+    userId: uid(req),
+    status: { $in: ["PENDING", "IN_PROGRESS"] },
+  });
+  if (!sub) {
+    return res
+      .status(404)
+      .json({ success: false, message: "No active SOS to cancel." });
+  }
+  sub.status = "CLOSED";
+  await sub.save();
+  await SOSAlert.updateOne(
+    { userId: uid(req), status: { $in: ["ACTIVE", "RESPONDED"] } },
+    {
+      status: "FALSE_ALARM",
+      resolvedAt: new Date(),
+      resolutionNotes: note || "Cancelled by patient",
+    },
+  ).catch(() => undefined);
+  emitToPermission(PERMISSIONS.SOS_VIEW, "sos:submission-updated", {
+    sosId: String(sub._id),
+    status: "CLOSED",
+  });
+  return ok(res, { cancelled: true, submissionId: String(sub._id) });
+});
+
 router.get("/sos/active", verifyUserToken, async (req, res) => {
   const d: any = await EmergencyDispatch.findOne({
     patientUserId: uid(req),

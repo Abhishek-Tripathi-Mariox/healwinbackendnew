@@ -16,6 +16,34 @@ import DutyEvent from "../models/duty-event.model";
 import { uploadFileToAws } from "../utils/s3";
 import config from "../config";
 import { evaluateGeofence } from "../services/attendance.service";
+import { ambulanceCrewFilter, attendantIdsOf, crewFilter } from "../utils/crew.util";
+
+/**
+ * Is this vehicle's whole crew clocked in?
+ *
+ * The driver must be on duty, and so must EVERY assigned attendant. With one
+ * attendant this is the rule that has always applied; generalised to a crew it
+ * stays deliberately strict — an ambulance that goes out a nurse short is
+ * worse than one that shows offline until they clock in.
+ *
+ * A vehicle with no attendants assigned is ready on the driver alone.
+ */
+const isCrewReady = async (amb: any): Promise<boolean> => {
+  const driver: any = amb.assignedDriverId
+    ? await AmbulanceStaff.findById(amb.assignedDriverId).select("isDutyOn").lean()
+    : null;
+  if (!driver?.isDutyOn) return false;
+
+  const attendantIds = attendantIdsOf(amb);
+  if (attendantIds.length === 0) return true;
+  const attendants: any[] = await AmbulanceStaff.find({ _id: { $in: attendantIds } })
+    .select("isDutyOn")
+    .lean();
+  return (
+    attendants.length === attendantIds.length &&
+    attendants.every((a) => !!a?.isDutyOn)
+  );
+};
 
 // Drivers/attendants are allowed to clock in this many ms before their
 // shift's startAt — matches the state-machine's grace window so a 5-min-
@@ -46,7 +74,7 @@ export const me = async (
     .lean();
 
   const assignedAmbulance = await Ambulance.findOne({
-    $or: [{ assignedDriverId: staff._id }, { assignedAttendantId: staff._id }],
+    ...ambulanceCrewFilter(staff._id),
     isActive: true,
   }).lean();
 
@@ -204,16 +232,10 @@ export const setDuty = async (
   // when the driver is on duty (and the attendant, when assigned, is too),
   // otherwise "offline" (and thus invisible to getNearbyAmbulances/dispatch).
   const amb = await Ambulance.findOne({
-    $or: [{ assignedDriverId: staff._id }, { assignedAttendantId: staff._id }],
+    ...ambulanceCrewFilter(staff._id),
   });
   if (amb && amb.status !== "on_dispatch" && amb.status !== "maintenance") {
-    const driver: any = amb.assignedDriverId
-      ? await AmbulanceStaff.findById(amb.assignedDriverId).select("isDutyOn").lean()
-      : null;
-    const attendant: any = amb.assignedAttendantId
-      ? await AmbulanceStaff.findById(amb.assignedAttendantId).select("isDutyOn").lean()
-      : null;
-    const crewReady = !!driver?.isDutyOn && (!amb.assignedAttendantId || !!attendant?.isDutyOn);
+    const crewReady = await isCrewReady(amb);
     const next = crewReady ? "available" : "offline";
     if (amb.status !== next) {
       amb.status = next;
@@ -279,16 +301,10 @@ export const adminSetDuty = async (
 
   // Recompute the ambulance availability from the full crew (driver + attendant).
   const amb = await Ambulance.findOne({
-    $or: [{ assignedDriverId: staff._id }, { assignedAttendantId: staff._id }],
+    ...ambulanceCrewFilter(staff._id),
   });
   if (amb && amb.status !== "on_dispatch" && amb.status !== "maintenance") {
-    const driver: any = amb.assignedDriverId
-      ? await AmbulanceStaff.findById(amb.assignedDriverId).select("isDutyOn").lean()
-      : null;
-    const attendant: any = amb.assignedAttendantId
-      ? await AmbulanceStaff.findById(amb.assignedAttendantId).select("isDutyOn").lean()
-      : null;
-    const crewReady = !!driver?.isDutyOn && (!amb.assignedAttendantId || !!attendant?.isDutyOn);
+    const crewReady = await isCrewReady(amb);
     const next2 = crewReady ? "available" : "offline";
     if (amb.status !== next2) {
       amb.status = next2;
@@ -417,7 +433,7 @@ export const updateLocation = async (
     // odometer for the whole route so SOS trips can be billed on actual
     // distance driven instead of a flat placeholder.
     const dispFilter = {
-      $or: [{ driverStaffId: staff._id }, { attendantStaffId: staff._id }],
+      ...crewFilter(staff._id),
       status: { $in: ["ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE", "ON_TRIP"] },
     } as any;
     const prevDisp: any = await EmergencyDispatch.findOne(dispFilter, {
@@ -588,7 +604,7 @@ export const activeDispatch = async (
 ) => {
   const staffId = (req as any).staffId;
   const d: any = await EmergencyDispatch.findOne({
-    $or: [{ driverStaffId: staffId }, { attendantStaffId: staffId }],
+    ...crewFilter(staffId),
     status: { $in: ["DISPATCHED", "ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE"] },
   })
     .populate("ambulanceId")
@@ -790,7 +806,7 @@ export const dispatchHistory = async (
     Math.max(1, parseInt((req.query.limit as string) || "30", 10)),
   );
   const raw = await EmergencyDispatch.find({
-    $or: [{ driverStaffId: staffId }, { attendantStaffId: staffId }],
+    ...crewFilter(staffId),
     status: { $in: ["COMPLETED", "CANCELLED"] },
   })
     .sort({ updatedAt: -1 })
@@ -923,11 +939,11 @@ export const earnings = async (
   next: NextFunction,
 ) => {
   const staffId = (req as any).staffId;
-  const sid = new Types.ObjectId(String(staffId));
+const sid = new Types.ObjectId(String(staffId));
 
   const completed = await EmergencyDispatch.find({
     status: "COMPLETED",
-    $or: [{ driverStaffId: sid }, { attendantStaffId: sid }],
+    ...crewFilter(sid),
   })
     .sort({ completedAt: -1 })
     .lean();

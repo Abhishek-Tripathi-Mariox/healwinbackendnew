@@ -12,6 +12,10 @@ import AmbulanceStaff from "../../models/ambulance-staff.model";
 import Ambulance from "../../models/ambulance.model";
 import { sendDispatchPush, sendToUser } from "../../services/notification.service";
 import { emitToUser, emitToSosSubmission } from "../../utils/socket.util";
+import { attendantIdsOf, crewIdsOf } from "../../utils/crew.util";
+import { cancelDispatch as sharedCancel, CANCELLABLE } from "../../services/dispatch-cancel.service";
+import { emitToPermission } from "../../utils/socket.util";
+import { PERMISSIONS } from "../../models/role.model";
 
 const STALE_LOCATION_MS = 5 * 60 * 1000;
 
@@ -89,10 +93,20 @@ const fleetDiagnostics = async () => {
       },
     },
     {
+      // Both shapes: the attendant crew list, and the legacy single id on
+      // vehicles crewed before attendants became a list.
       $lookup: {
         from: "ambulancestaffs",
-        localField: "assignedAttendantId",
-        foreignField: "_id",
+        let: {
+          ids: {
+            $cond: [
+              { $gt: [{ $size: { $ifNull: ["$assignedAttendantIds", []] } }, 0] },
+              "$assignedAttendantIds",
+              { $cond: [{ $ifNull: ["$assignedAttendantId", false] }, ["$assignedAttendantId"], []] },
+            ],
+          },
+        },
+        pipeline: [{ $match: { $expr: { $in: ["$_id", "$$ids"] } } }],
         as: "attendant",
       },
     },
@@ -342,6 +356,13 @@ export const dispatch = async (
     sosId: String((req.params.sosId as string)),
     dispatchId: String(dispatchDoc._id),
   });
+  // An ambulance is on its way, so nobody else needs to be working this one —
+  // stop the alarm on every other dispatcher's screen.
+  emitToPermission(PERMISSIONS.SOS_VIEW, "sos:claimed", {
+    sosId: String((req.params.sosId as string)),
+    by: (req as any).admin?.fullName || "Control room",
+    reason: "ambulance dispatched",
+  });
 
   // Public website caller (anonymous) watching this submission → "ambulance on
   // the way" with ETA.
@@ -416,6 +437,7 @@ export const getDispatchForSos = async (
     .populate("ambulanceId")
     .populate("driverStaffId")
     .populate("attendantStaffId")
+    .populate("attendantStaffIds")
     .lean();
 
   if (!dispatchDoc) {
@@ -458,7 +480,8 @@ export const listDispatches = async (
       populate: { path: "providerId", select: "name" },
     })
     .populate("driverStaffId", "fullName mobileNumber")
-    .populate("attendantStaffId", "fullName mobileNumber");
+    .populate("attendantStaffId", "fullName mobileNumber")
+    .populate("attendantStaffIds", "fullName mobileNumber");
 
   const [items, total] = await Promise.all([
     query.lean(),
@@ -484,21 +507,22 @@ export const listDispatches = async (
 };
 
 /**
- * Manual override — cancel the active dispatch for an SOS. Frees the
- * ambulance (back to "available"), reverts the SOS to its actionable
- * state, and marks the dispatch CANCELLED. After this the admin can
- * dispatch a different ambulance (i.e. reassign = cancel + re-dispatch).
+ * Manual override — cancel the active dispatch for an SOS.
+ *
+ * Goes through the shared cancel so it does the same five things every other
+ * cancel does: closes the dispatch, frees the ambulance, puts the SOS back in
+ * the actionable queue, tells the crew AND the patient, and lights up the
+ * board. Reassignment is still cancel-then-re-dispatch; this is the cancel
+ * half of it.
  */
 export const cancelDispatch = async (
   req: Request,
   res: Response,
   next: NextFunction,
 ) => {
-  const adminId = req.adminId!;
-
   const dispatch: any = await EmergencyDispatch.findOne({
     sosSubmission: (req.params.sosId as string),
-    status: { $in: ["DISPATCHED", "ACKNOWLEDGED", "EN_ROUTE", "ON_SCENE"] },
+    status: { $in: [...CANCELLABLE] },
   }).sort({ dispatchedAt: -1 });
 
   if (!dispatch) {
@@ -508,50 +532,25 @@ export const cancelDispatch = async (
     return next();
   }
 
-  dispatch.status = "CANCELLED";
-  await dispatch.save();
-
-  // Release the ambulance so it (and its crew) can take another run.
-  if (dispatch.ambulanceId) {
-    await Ambulance.updateOne(
-      { _id: dispatch.ambulanceId },
-      { status: "available", currentDispatchId: null },
-    );
+  const result = await sharedCancel({
+    dispatch,
+    by: "admin",
+    note: String(req.body?.reason || "").trim(),
+    // The emergency is still live — this is a reassign, so it goes back in
+    // the queue for another ambulance.
+    reopenSos: true,
+    actorId: req.adminId!,
+  });
+  if (!result.ok) {
+    req.rCode = 0;
+    req.msg = result.reason || "This dispatch can no longer be cancelled.";
+    req.rData = {};
+    return next();
   }
 
-  // Revert the SOS to the state createDispatch advanced it from, so it
-  // reappears in the actionable queue for re-dispatch.
-  await SOSAlert.updateOne(
-    { _id: (req.params.sosId as string), status: "RESPONDED" },
-    { status: "ACTIVE" },
-  );
-  await SOSSubmission.updateOne(
-    { _id: (req.params.sosId as string), status: "IN_PROGRESS" },
-    { status: "PENDING" },
-  );
-
-  // Best-effort notifications.
-  if (dispatch.driverStaffId)
-    emitToUser(String(dispatch.driverStaffId), "dispatch:cancelled", {
-      dispatchId: String(dispatch._id),
-      sosId: String((req.params.sosId as string)),
-    });
-  if (dispatch.attendantStaffId)
-    emitToUser(String(dispatch.attendantStaffId), "dispatch:cancelled", {
-      dispatchId: String(dispatch._id),
-      sosId: String((req.params.sosId as string)),
-    });
-  emitToUser(String(adminId), "sos:dispatch-cancelled", {
-    sosId: String((req.params.sosId as string)),
-    dispatchId: String(dispatch._id),
-  });
-
-  // Tell the patient app to stop tracking — their ride was cancelled.
-  await notifyPatientCancelled(dispatch);
-
-  req.rData = { dispatch };
+  req.rData = { dispatch: result.dispatch };
   req.msg = "dispatch_cancelled";
-  next();
+  return next();
 };
 
 const ACTIVE_DISPATCH_STATUSES = [
@@ -579,9 +578,8 @@ const notifyPatientCancelled = async (dispatch: any) => {
 
 /** FCM + socket the crew that their ringing/active dispatch was cancelled. */
 const notifyCrewCancelled = async (dispatch: any) => {
-  for (const staffId of [dispatch.driverStaffId, dispatch.attendantStaffId]) {
-    if (!staffId) continue;
-    emitToUser(String(staffId), "dispatch:cancelled", { dispatchId: String(dispatch._id) });
+  for (const staffId of crewIdsOf(dispatch)) {
+    emitToUser(staffId, "dispatch:cancelled", { dispatchId: String(dispatch._id) });
     const staff: any = await AmbulanceStaff.findById(staffId).select("fcmToken").lean();
     if (staff?.fcmToken) {
       sendDispatchPush(

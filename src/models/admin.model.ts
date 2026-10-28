@@ -3,7 +3,8 @@ import mongoose, { Schema, Types } from "mongoose";
 export interface IAdmin {
   _id: Types.ObjectId;
   fullName: string;
-  email: string;
+  /** One of email / phone is required — both are login identifiers. */
+  email?: string;
   password: string;
   phone?: string;
   roleId: Types.ObjectId; // Reference to Role model
@@ -65,10 +66,18 @@ const AdminSchema = new Schema<IAdmin>(
       required: true,
       trim: true,
     },
+    /**
+     * Either this or `phone` must be present — both are login identifiers.
+     *
+     * No longer unconditionally required: a ward boy or a driver often has a
+     * phone and no email, and demanding one meant inventing
+     * `name.surname@placeholder` addresses that then collected password
+     * resets nobody could read.
+     */
     email: {
       type: String,
-      required: true,
       unique: true,
+      sparse: true,
       lowercase: true,
       trim: true,
       index: true,
@@ -78,7 +87,20 @@ const AdminSchema = new Schema<IAdmin>(
       required: true,
       select: false,
     },
-    phone: String,
+    /**
+     * Login identifier as well as a contact number, so it has to be unique
+     * and stored in one shape. Kept as the bare 10 digits — the same form the
+     * staff form collects and `/admin/people` searches on.
+     */
+    phone: {
+      type: String,
+      trim: true,
+      set: (v: unknown) => {
+        const digits = String(v ?? "").replace(/\D/g, "");
+        // Tolerate a pasted +91 / 0 prefix rather than storing two shapes.
+        return digits.length > 10 ? digits.slice(-10) : digits;
+      },
+    },
     roleId: {
       type: Schema.Types.ObjectId,
       ref: "Role",
@@ -172,6 +194,32 @@ const AdminSessionSchema = new Schema<IAdminSession>(
 
 // Compound indexes
 AdminSchema.index({ email: 1, isDeleted: 1 });
+/**
+ * Phone is a login identifier, so it must identify exactly one account.
+ *
+ * Partial, not sparse: most existing rows have `phone: ""` rather than no
+ * phone at all, and a plain unique index would reject the second blank one.
+ */
+AdminSchema.index(
+  { phone: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { phone: { $type: "string", $gt: "" } },
+  },
+);
+AdminSchema.index({ phone: 1, isDeleted: 1 });
+
+/**
+ * An account with no way to log in is an account nobody can use. One of the
+ * two identifiers must be present; which one is up to whoever creates it.
+ */
+AdminSchema.pre("validate", async function () {
+  const hasEmail = !!String((this as any).email || "").trim();
+  const hasPhone = !!String((this as any).phone || "").trim();
+  if (!hasEmail && !hasPhone) {
+    throw new Error("An email address or a mobile number is required.");
+  }
+});
 AdminSessionSchema.index({ adminId: 1, isActive: 1 });
 
 export const Admin = mongoose.model<IAdmin>("Admin", AdminSchema);

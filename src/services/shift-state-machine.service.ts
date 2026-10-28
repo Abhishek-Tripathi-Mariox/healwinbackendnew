@@ -40,11 +40,13 @@ const activateShift = async (shiftId: Types.ObjectId) => {
     { returnDocument: "after" },
   );
   if (!shift) return; // already moved on by another worker
-  const field =
-    shift.role === "driver" ? "assignedDriverId" : "assignedAttendantId";
+  // One driver per vehicle, so that seat is replaced. Attendants are a crew
+  // — a second one joining must not displace the first.
   await Ambulance.updateOne(
     { _id: shift.ambulanceId },
-    { $set: { [field]: shift.staffId } },
+    shift.role === "driver"
+      ? { $set: { assignedDriverId: shift.staffId } }
+      : { $addToSet: { assignedAttendantIds: shift.staffId } },
   );
 };
 
@@ -58,13 +60,24 @@ const completeShift = async (shiftId: Types.ObjectId) => {
     { returnDocument: "after" },
   );
   if (!shift) return;
-  const field =
-    shift.role === "driver" ? "assignedDriverId" : "assignedAttendantId";
-  // Only clear the cache if we still hold THIS staff member — otherwise a
-  // back-to-back shift handoff would race and clear the new shift's crew.
+  if (shift.role === "driver") {
+    // Only clear the cache if we still hold THIS staff member — otherwise a
+    // back-to-back shift handoff would race and clear the new shift's crew.
+    await Ambulance.updateOne(
+      { _id: shift.ambulanceId, assignedDriverId: shift.staffId },
+      { $set: { assignedDriverId: null } },
+    );
+    return;
+  }
+  // Pulling by id is already handoff-safe: it removes this attendant and
+  // leaves whoever else is aboard.
   await Ambulance.updateOne(
-    { _id: shift.ambulanceId, [field]: shift.staffId },
-    { $set: { [field]: null } },
+    { _id: shift.ambulanceId },
+    { $pull: { assignedAttendantIds: shift.staffId } },
+  );
+  await Ambulance.updateOne(
+    { _id: shift.ambulanceId, assignedAttendantId: shift.staffId },
+    { $set: { assignedAttendantId: null } },
   );
 };
 

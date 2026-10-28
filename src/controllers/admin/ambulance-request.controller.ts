@@ -10,6 +10,7 @@ import { paginate } from "../../utils/paginate.util";
 import { emitToUser } from "../../utils/socket.util";
 import { sendToUser, sendDispatchPush } from "../../services/notification.service";
 import { mintOtp } from "../../services/ambulance-dispatch.service";
+import { attendantIdsOf } from "../../utils/crew.util";
 
 /**
  * Admin dispatch for patient ambulance requests. List incoming requests and
@@ -151,9 +152,8 @@ export const assign = async (req: Request, _res: Response, next: NextFunction) =
     }
     // The ambulance's attendant rides along — record them so they're notified
     // and can track the trip (read-only), exactly like the SOS dispatch flow.
-    if (reserved.assignedAttendantId) {
-      reqDoc.attendantStaffId = reserved.assignedAttendantId;
-    }
+    const attendants = attendantIdsOf(reserved);
+    if (attendants.length) reqDoc.attendantStaffIds = attendants as any;
     if (b.etaMinutes != null) reqDoc.etaMinutes = Number(b.etaMinutes);
   } else {
     // ===== Path B (manual fallback): admin typed driver details directly.
@@ -258,8 +258,7 @@ export const assign = async (req: Request, _res: Response, next: NextFunction) =
   // Ring the ATTENDANT too — the "patient inbound" (info-only) variant: they
   // acknowledge + ride along (they don't drive the lifecycle). Without this the
   // attendant never learned an ambulance-request dispatch was assigned to them.
-  if (reqDoc.attendantStaffId) {
-    const attId = String(reqDoc.attendantStaffId);
+  for (const attId of attendantIdsOf(reqDoc)) {
     emitToUser(attId, "dispatch:incoming_info", {
       requestId: String(reqDoc._id),
       kind: "request",
@@ -496,8 +495,8 @@ export const updateStatus = async (req: Request, _res: Response, next: NextFunct
         kind: "request",
       });
     }
-    if (reqDoc.attendantStaffId) {
-      emitToUser(String(reqDoc.attendantStaffId), "dispatch:cancelled", {
+    for (const attId of attendantIdsOf(reqDoc)) {
+      emitToUser(attId, "dispatch:cancelled", {
         requestId: String(reqDoc._id),
         dispatchId: String(reqDoc._id),
         kind: "request",

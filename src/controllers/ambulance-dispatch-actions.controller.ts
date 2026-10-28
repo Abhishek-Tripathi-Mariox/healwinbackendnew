@@ -2,11 +2,12 @@ import { Request, Response, NextFunction } from "express";
 import { Types } from "mongoose";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
 import {
-  rejectDispatch,
   transitionDispatch,
 } from "../services/ambulance-dispatch.service";
 import { emitToUser, emitToSosSubmission } from "../utils/socket.util";
 import { sendToUser } from "../services/notification.service";
+import { attendantIdsOf, crewIdsOf } from "../utils/crew.util";
+import { cancelDispatch } from "../services/dispatch-cancel.service";
 
 const asId = (v: string) => new Types.ObjectId(v);
 
@@ -63,14 +64,13 @@ const notifyParties = (d: any) => {
   // Dispatch screen advances/clears instead of staying stuck. On a terminal
   // status, send `dispatch:resolved` so their screen clears the active card.
   const resolved = d?.status === "COMPLETED" || d?.status === "CANCELLED";
-  for (const crewId of [d?.driverStaffId, d?.attendantStaffId]) {
-    if (!crewId) continue;
-    emitToUser(String(crewId), "dispatch:status", {
+  for (const crewId of crewIdsOf(d)) {
+    emitToUser(crewId, "dispatch:status", {
       dispatchId: String(d._id),
       status: d.status,
     });
     if (resolved) {
-      emitToUser(String(crewId), "dispatch:resolved", { dispatchId: String(d._id) });
+      emitToUser(crewId, "dispatch:resolved", { dispatchId: String(d._id) });
     }
   }
 };
@@ -98,43 +98,59 @@ export const accept = async (
   }
 };
 
+/**
+ * The crew cannot take this run.
+ *
+ * Allowed right up to ON_SCENE, not only while the dispatch is still
+ * ringing. A vehicle breaks down on the way, a tyre goes, the road is shut —
+ * and until now the driver's only option after accepting was to telephone
+ * the control room, with the dispatch still showing as live on the board and
+ * the ambulance still marked busy.
+ *
+ * `reasonCode` comes from a fixed list so ops can count breakdowns later;
+ * `note` is whatever the driver adds. The SOS goes straight back into the
+ * actionable queue and the board is told another ambulance is needed.
+ */
 export const reject = async (
   req: Request,
   res: Response,
   next: NextFunction,
 ) => {
   const staffId = (req as any).staffId;
-  const { reason } = req.body || {};
+  const body = req.body || {};
+  const reasonCode = String(body.reasonCode || body.reason || "").trim() || undefined;
+  const note = String(body.note || "").trim();
 
-  const existing = await EmergencyDispatch.findById((req.params.id as string));
+  const existing: any = await EmergencyDispatch.findById((req.params.id as string));
   if (!existing) {
     return res
       .status(404)
       .json({ rCode: 0, rMsg: "dispatch_not_found", rData: {} });
   }
-  if (String(existing.driverStaffId) !== String(staffId)) {
+  // Any crew member aboard may stand the run down, not just the driver — an
+  // attendant taken ill is as real a reason as a breakdown.
+  if (!crewIdsOf(existing).includes(String(staffId))) {
     return res
       .status(403)
       .json({ rCode: 0, rMsg: "forbidden", rData: {} });
   }
 
-  try {
-    const d = await rejectDispatch(asId((req.params.id as string)), reason);
-    if (d?.dispatchedBy) {
-      emitToUser(String(d.dispatchedBy), "dispatch:status", {
-        dispatchId: String(d._id),
-        status: d.status,
-        sosId: String(d.sosSubmission),
-      });
-    }
-    req.rData = { dispatch: d };
-    req.msg = "rejected";
-    next();
-  } catch (e: any) {
-    return res
-      .status(errCodeMap[e.message] || 500)
-      .json({ rCode: 0, rMsg: e.message, rData: {} });
+  const result = await cancelDispatch({
+    dispatch: existing,
+    by: "crew",
+    reasonCode,
+    note,
+    // Someone still needs an ambulance — put the emergency back in the queue.
+    reopenSos: true,
+    actorId: staffId,
+  });
+  if (!result.ok) {
+    return res.status(409).json({ rCode: 0, rMsg: result.reason, rData: {} });
   }
+
+  req.rData = { dispatch: result.dispatch };
+  req.msg = "rejected";
+  return next();
 };
 
 const makeTransition =

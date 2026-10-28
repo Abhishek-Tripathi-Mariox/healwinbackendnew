@@ -107,24 +107,48 @@ export const createStaff = async (req: Request, res: Response) => {
   const { fullName, email, password, phone, roleId, customPermissions, doctorProfile, labId, pharmacyId } =
     req.body;
 
-  // Validate required fields
-  if (!fullName || !email || !password || !roleId) {
+  // Either identifier will do, but one of them must be there — both are
+  // login credentials now, and an account with neither cannot be signed into.
+  const cleanEmail = String(email || "").toLowerCase().trim();
+  const cleanPhone = String(phone || "").replace(/\D/g, "").slice(-10);
+
+  if (!fullName || !password || !roleId) {
     return res.status(400).json({
       success: false,
-      message: "Full name, email, password, and role are required",
+      message: "Full name, password and role are required",
+    });
+  }
+  if (!cleanEmail && !cleanPhone) {
+    return res.status(400).json({
+      success: false,
+      message: "Add an email address or a mobile number — they sign in with it",
+    });
+  }
+  if (cleanPhone && !/^[6-9]\d{9}$/.test(cleanPhone)) {
+    return res.status(400).json({
+      success: false,
+      message: "That mobile number does not look right — 10 digits starting 6-9",
     });
   }
 
-  // Check if email already exists
-  const existingStaff = await Admin.findOne({
-    email: email.toLowerCase(),
+  // Both identifiers have to be free, not just the email.
+  const clash = await Admin.findOne({
     isDeleted: false,
-  });
+    $or: [
+      ...(cleanEmail ? [{ email: cleanEmail }] : []),
+      ...(cleanPhone ? [{ phone: cleanPhone }] : []),
+    ],
+  })
+    .select("email phone")
+    .lean();
 
-  if (existingStaff) {
+  if (clash) {
     return res.status(400).json({
       success: false,
-      message: "Email already in use",
+      message:
+        clash.email === cleanEmail
+          ? "Email already in use"
+          : "That mobile number already signs in to another account",
     });
   }
 
@@ -147,9 +171,11 @@ export const createStaff = async (req: Request, res: Response) => {
 
   const newStaff = await Admin.create({
     fullName,
-    email: email.toLowerCase(),
+    // Undefined, not "", so the sparse unique index skips an absent email
+    // instead of treating every blank one as the same value.
+    ...(cleanEmail ? { email: cleanEmail } : {}),
     password: hashedPassword,
-    phone,
+    ...(cleanPhone ? { phone: cleanPhone } : {}),
     roleId: role._id,
     roleName: role.name,
     permissions: allPermissions,
@@ -177,7 +203,7 @@ export const createStaff = async (req: Request, res: Response) => {
   let hrError: string | undefined;
   try {
     hrRecord = await ensureEmployeeForAdmin(
-      { _id: newStaff._id, fullName, email, phone },
+      { _id: newStaff._id, fullName, email: cleanEmail, phone: cleanPhone },
       req.adminId,
     );
   } catch (err: any) {
@@ -188,13 +214,17 @@ export const createStaff = async (req: Request, res: Response) => {
   // Send them their sign-in details. The password was chosen by whoever
   // filled this form, so it is theirs to pass on either way — but emailing it
   // means the person can actually get in without being told verbally.
-  const mail = await sendPanelCredentials({
-    fullName,
-    email: String(email).toLowerCase(),
-    password,
-    roleName: role.name,
-    employeeCode: hrRecord?.employeeCode,
-  });
+  // With no email there is nowhere to send it, so the password comes back to
+  // the screen instead — that is the only moment it exists in readable form.
+  const mail = cleanEmail
+    ? await sendPanelCredentials({
+        fullName,
+        email: cleanEmail,
+        password,
+        roleName: role.name,
+        employeeCode: hrRecord?.employeeCode,
+      })
+    : { sent: false };
 
   const staffData = await Admin.findById(newStaff._id)
     .select("-password -resetPasswordToken -resetPasswordExpires")

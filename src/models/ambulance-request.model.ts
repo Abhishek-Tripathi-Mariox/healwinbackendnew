@@ -95,7 +95,17 @@ export interface IAmbulanceRequest {
   ambulanceId?: Types.ObjectId;
   driverStaffId?: Types.ObjectId;
   // The crew attendant riding along (notified + tracks the trip read-only).
+  /** @deprecated superseded by `attendantStaffIds` — read via attendantIdsOf(). */
   attendantStaffId?: Types.ObjectId;
+  /**
+   * The attendants riding along. A list because a critical-care transfer can
+   * carry more than one — a nurse plus a technician, say.
+   *
+   * The old singular `attendantStaffId` is kept READ-ONLY for journeys that
+   * were created before this field existed; nothing writes it any more. Always
+   * read through `attendantIdsOf()` so both shapes resolve to one list.
+   */
+  attendantStaffIds?: Types.ObjectId[];
   driverName?: string;
   driverPhone?: string;
   vehicleNumber?: string;
@@ -206,6 +216,11 @@ const AmbulanceRequestSchema = new Schema<IAmbulanceRequest>(
     ambulanceId: { type: Schema.Types.ObjectId, ref: "Ambulance" },
     driverStaffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff" },
     attendantStaffId: { type: Schema.Types.ObjectId, ref: "AmbulanceStaff" },
+    attendantStaffIds: {
+      type: [{ type: Schema.Types.ObjectId, ref: "AmbulanceStaff" }],
+      default: [],
+      index: true,
+    },
     driverName: String,
     driverPhone: String,
     vehicleNumber: String,

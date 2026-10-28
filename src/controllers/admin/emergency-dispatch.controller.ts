@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import { EmergencyDispatch } from "../../models/emergency-dispatch.model";
 import { SOSSubmission } from "../../models/sos-submission.model";
 import Ambulance from "../../models/ambulance.model";
+import { emitToPermission } from "../../utils/socket.util";
+import { PERMISSIONS } from "../../models/role.model";
 
 /**
  * Create new emergency dispatch for an SOS submission
@@ -70,6 +72,11 @@ export const createDispatch = async (req: Request, res: Response) => {
     // Emit socket event
     const io = req.app.get("io");
     if (io) {
+      emitToPermission(PERMISSIONS.SOS_VIEW, "sos:claimed", {
+        sosId: String(dispatch.sosSubmission || ""),
+        by: (req as any).admin?.fullName || "Control room",
+        reason: "ambulance dispatched",
+      });
       io.to("admin").emit("sos:dispatch-created", {
         dispatch: populated,
         submissionId: id,

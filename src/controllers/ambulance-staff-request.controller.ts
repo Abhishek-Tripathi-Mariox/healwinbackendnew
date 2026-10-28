@@ -5,6 +5,8 @@ import { emitToUser, emitToAdmin } from "../utils/socket.util";
 import { sendToUser } from "../services/notification.service";
 import { calculateFare } from "../services/fare.service";
 import { uploadMultipleFilesToAws } from "../utils/s3";
+import { attendantIdsOf, crewFilter } from "../utils/crew.util";
+import { crewReasonLabel } from "../services/dispatch-cancel.service";
 
 /**
  * Ambulance-staff actions on a patient AmbulanceRequest (the SOS / "Book
@@ -46,12 +48,12 @@ const notifyPatient = async (
  * clears their card on completion — same contract as the SOS dispatch flow.
  */
 const notifyAttendant = (reqDoc: any, status: string) => {
-  if (!reqDoc.attendantStaffId) return;
-  const attId = String(reqDoc.attendantStaffId);
   const dispatchId = String(reqDoc._id);
-  emitToUser(attId, "dispatch:status", { dispatchId, status });
-  if (status === "COMPLETED") {
-    emitToUser(attId, "dispatch:resolved", { dispatchId });
+  for (const attId of attendantIdsOf(reqDoc)) {
+    emitToUser(attId, "dispatch:status", { dispatchId, status });
+    if (status === "COMPLETED") {
+      emitToUser(attId, "dispatch:resolved", { dispatchId });
+    }
   }
 };
 
@@ -59,7 +61,7 @@ const notifyAttendant = (reqDoc: any, status: string) => {
 export const activeRequest = async (req: Request, _res: Response, next: NextFunction) => {
   const r: any = await AmbulanceRequest.findOne({
     // Driver OR attendant — so the attendant's app also loads the active trip.
-    $or: [{ driverStaffId: sid(req) }, { attendantStaffId: sid(req) }],
+    ...crewFilter(sid(req)),
     status: { $in: ACTIVE },
   } as any)
     .sort({ assignedAt: -1 })
@@ -223,13 +225,36 @@ export const complete = async (req: Request, _res: Response, next: NextFunction)
 };
 
 /**
- * POST /requests/:id/reject — crew declines the dispatch (same as SOS reject).
- * Releases the reserved ambulance, reverts the request to SEARCHING so admin can
- * re-dispatch, and clears the assignment so the patient app shows "Finding…".
+ * POST /requests/:id/reject — the crew cannot take this run.
+ *
+ * Allowed right up to ARRIVED, so a breakdown after accepting is handled in
+ * the app rather than over the phone. It had NO status check at all: the
+ * assigned driver could reject a trip already under way, or even a completed
+ * one, and the row would be resurrected to SEARCHING with the patient
+ * aboard. ON_TRIP and later are now refused.
+ *
+ * Releases the reserved ambulance, reverts the request to SEARCHING so admin
+ * can re-dispatch, and clears the assignment so the patient app shows
+ * "Finding…".
  */
+const REJECTABLE = ["ASSIGNED", "ACCEPTED", "ARRIVED"];
+
 export const reject = async (req: Request, _res: Response, next: NextFunction) => {
   const r = await own(req);
   if (!guard(req, next, r)) return;
+  if (!REJECTABLE.includes(String(r.status))) {
+    req.rCode = 0;
+    req.msg =
+      r.status === "ON_TRIP"
+        ? "The trip has already started — call the control room instead."
+        : `This booking is ${String(r.status).toLowerCase()} and can no longer be declined.`;
+    req.rData = {};
+    return next();
+  }
+
+  const reasonCode = String(req.body?.reasonCode || "").trim() || undefined;
+  const note = String(req.body?.note || "").trim();
+  const reasonText = [crewReasonLabel(reasonCode), note].filter(Boolean).join(" — ");
   if (r.ambulanceId) {
     await Ambulance.updateOne(
       { _id: r.ambulanceId },
@@ -238,13 +263,15 @@ export const reject = async (req: Request, _res: Response, next: NextFunction) =
   }
   const userId = String(r.userId);
   // Clear the attendant's ride-along card before we drop the assignment.
-  if (r.attendantStaffId) {
-    emitToUser(String(r.attendantStaffId), "dispatch:cancelled", { dispatchId: String(r._id) });
+  for (const attId of attendantIdsOf(r)) {
+    emitToUser(attId, "dispatch:cancelled", { dispatchId: String(r._id) });
   }
   r.status = "SEARCHING";
+  r.cancelReason = reasonText;
   r.ambulanceId = undefined;
   r.driverStaffId = undefined;
   r.attendantStaffId = undefined;
+  r.attendantStaffIds = [];
   r.driverName = undefined;
   r.driverPhone = undefined;
   r.vehicleNumber = undefined;
@@ -253,8 +280,22 @@ export const reject = async (req: Request, _res: Response, next: NextFunction) =
   await r.save();
   // Patient app flips back to "Finding an ambulance".
   emitToUser(userId, "booking:status", { requestId: String(r._id), status: "SEARCHING" });
-  // Admin queue needs to know it's back in the SEARCHING pool for re-dispatch.
-  emitToAdmin("ambulance-request:status", { requestId: String(r._id), status: "SEARCHING" });
+  await sendToUser(
+    r.userId,
+    "BOOKING",
+    "Finding you another ambulance",
+    "The assigned ambulance could not come. We are arranging another one.",
+    { route: "Tracking", requestId: String(r._id), screen: "Tracking" },
+  ).catch(() => undefined);
+  // The queue needs to know it is back in the SEARCHING pool — and WHY, so
+  // the control room can see a breakdown rather than a mystery re-listing.
+  emitToAdmin("ambulance-request:status", {
+    requestId: String(r._id),
+    status: "SEARCHING",
+    cancelledBy: "crew",
+    reason: reasonText,
+    needsReassign: true,
+  });
   req.rData = { request: r };
   req.msg = "success";
   return next();

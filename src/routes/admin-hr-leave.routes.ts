@@ -80,4 +80,34 @@ router.post(
   ResponseMiddleware,
 );
 
+/**
+ * One employee's leave, end to end — entitlement, used, pending, balance and
+ * the year's history. Declared after the other /balances routes so a literal
+ * path is never read as an id.
+ */
+router.get(
+  "/employee/:employeeId",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.LEAVE_VIEW),
+  ErrorHandlerMiddleware(C.employeeLeave),
+  ResponseMiddleware,
+);
+
+// Both of these change what people are entitled to, so they sit behind
+// LEAVE_MANAGE rather than LEAVE_VIEW.
+router.post(
+  "/balances/sync",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.LEAVE_MANAGE),
+  ErrorHandlerMiddleware(C.syncBalances),
+  ResponseMiddleware,
+);
+router.post(
+  "/balances/rollover",
+  auth.verifyAdminToken,
+  auth.requirePermission(PERMISSIONS.LEAVE_MANAGE),
+  ErrorHandlerMiddleware(C.rolloverBalances),
+  ResponseMiddleware,
+);
+
 export default router;

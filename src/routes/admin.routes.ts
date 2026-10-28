@@ -39,6 +39,7 @@ import ErrorHandlerMiddleware from "../middlewares/error-handler.middleware";
 import ResponseMiddleware from "../middlewares/response.middleware";
 import { PERMISSIONS } from "../models/role.model";
 import upload from "../middlewares/upload.middleware";
+import { rateLimiters } from "../middlewares/rate-limit.middleware";
 
 const adminRouter = Router();
 const { verifyAdminToken, requirePermission } = AdminAuthMiddleware();
@@ -46,14 +47,21 @@ const { verifyAdminToken, requirePermission } = AdminAuthMiddleware();
 // Activity logging is mounted globally for /admin in routes/index.ts.
 
 // ============ AUTH ONLY ============
+// `rateLimiters.auth` has existed, fully written, since the limiter file was
+// added — and was wired to nothing. The panel's login was the one credential
+// endpoint in the system with no attempt limit at all. It keys on the account
+// rather than the IP, so a shared office NAT does not lock everyone out, and
+// it fails open if Redis is down.
 adminRouter.post(
   "/auth/login",
+  rateLimiters.auth,
   ErrorHandlerMiddleware(AdminAuthController.login),
   ResponseMiddleware,
 );
 
 adminRouter.post(
   "/auth/forgot-password",
+  rateLimiters.auth,
   ErrorHandlerMiddleware(AdminAuthController.forgotPassword),
   ResponseMiddleware,
 );
@@ -1208,6 +1216,14 @@ adminRouter.get(
   verifyAdminToken,
   ErrorHandlerMiddleware(SOSSubmissionController.getSubmissionDetails),
   ResponseMiddleware,
+);
+// "I am taking this one" — silences the looping alarm on every other
+// dispatcher's screen. Gated on SOS_VIEW: whoever can see it can answer it.
+adminRouter.post(
+  "/sos-submissions/:id/acknowledge",
+  verifyAdminToken,
+  requirePermission(PERMISSIONS.SOS_VIEW),
+  ErrorHandlerMiddleware(SOSSubmissionController.acknowledgeSubmission),
 );
 adminRouter.put(
   "/sos-submissions/:id/status",

@@ -199,14 +199,19 @@ export const resetAdminPassword = async (
 
   await AdminSession.updateMany({ adminId: admin._id }, { isActive: false });
 
-  const mail = await sendPanelCredentials({
-    fullName: admin.fullName,
-    email: admin.email,
-    password: value,
-    roleName: admin.roleName || "",
-  });
+  // No email on file means the password can only be handed over in person —
+  // it is returned to the caller for exactly that, and the screen shows it
+  // once. Mailing is skipped rather than failing the reset.
+  const mail = admin.email
+    ? await sendPanelCredentials({
+        fullName: admin.fullName,
+        email: admin.email,
+        password: value,
+        roleName: admin.roleName || "",
+      })
+    : { sent: false };
 
-  return { email: admin.email, password: value, emailSent: mail.sent };
+  return { email: admin.email || "", password: value, emailSent: mail.sent };
 };
 
 /** A readable one-time password — no ambiguous characters to mistype. */
@@ -229,16 +234,24 @@ export const createAdminForEmployee = async (
   input: AdminForEmployeeInput,
 ): Promise<AdminForEmployeeResult> => {
   const email = String(input.email || "").toLowerCase().trim();
-  if (!email) {
-    throw new Error("An email address is required to create a panel login.");
+  const phone = String((input as any).phone || "").replace(/\D/g, "").slice(-10);
+  // Either identifier will do — both sign in. Demanding an email here is what
+  // forced fake addresses onto staff who only have a phone.
+  if (!email && !phone) {
+    throw new Error(
+      "An email address or a mobile number is required to create a panel login.",
+    );
   }
 
-  const existing = await Admin.findOne({ email, isDeleted: false })
+  const existing = await Admin.findOne({
+    isDeleted: false,
+    $or: [...(email ? [{ email }] : []), ...(phone ? [{ phone }] : [])],
+  })
     .select("_id")
     .lean();
   if (existing) {
     throw new Error(
-      `${email} already has a panel login. Link the existing account instead of creating a second one.`,
+      `${email || phone} already has a panel login. Link the existing account instead of creating a second one.`,
     );
   }
 
@@ -253,9 +266,10 @@ export const createAdminForEmployee = async (
 
   const admin = await Admin.create({
     fullName: input.fullName,
-    email,
+    // Undefined rather than "" so the sparse unique index skips it.
+    ...(email ? { email } : {}),
     password: await bcrypt.hash(password, 12),
-    phone: input.phone,
+    ...(phone ? { phone } : {}),
     roleId: role._id,
     roleName: role.name,
     permissions: role.permissions,
@@ -264,14 +278,17 @@ export const createAdminForEmployee = async (
   });
 
   // The one moment the password exists in readable form — it is hashed from
-  // here on and cannot be recovered, so if it is not sent now the only way
-  // back in is a reset.
-  const mail = await sendPanelCredentials({
-    fullName: input.fullName,
-    email,
-    password,
-    roleName: role.name,
-  });
+  // here on and cannot be recovered. With an email on file it is sent; with
+  // only a mobile there is nowhere to send it, so it is returned to the
+  // caller to hand over, and the screen shows it once.
+  const mail = email
+    ? await sendPanelCredentials({
+        fullName: input.fullName,
+        email,
+        password,
+        roleName: role.name,
+      })
+    : { sent: false };
 
   return {
     adminId: admin._id,

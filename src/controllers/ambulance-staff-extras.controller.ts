@@ -20,6 +20,9 @@ import AmbulanceRequest from "../models/ambulance-request.model";
 import { SOSAlert } from "../models/sos.model";
 import { EmergencyDispatch } from "../models/emergency-dispatch.model";
 import User from "../models/Users";
+import { crewFilter } from "../utils/crew.util";
+import { emitToPermission } from "../utils/socket.util";
+import { PERMISSIONS } from "../models/role.model";
 
 /** Leave / Patient / Case-notes / Stock / SOS for the ambulance-staff app. */
 
@@ -61,7 +64,7 @@ export const raiseSos = async (req: Request, _res: Response, next: NextFunction)
     status: "ACTIVE",
   });
   // Ring the control-centre dashboards (SOS-Alerts live feed).
-  emitToAdmin("sos-alert:new", {
+  emitToPermission(PERMISSIONS.SOS_VIEW, "sos-alert:new", {
     alertId: String(alert._id),
     source: "crew",
     staffId: String(sid(req)),
@@ -222,7 +225,7 @@ export const addPatient = async (req: Request, _res: Response, next: NextFunctio
   if (b.dispatchId) {
     const assignedToThisCrew = {
       _id: b.dispatchId,
-      $or: [{ driverStaffId: sid(req) }, { attendantStaffId: sid(req) }],
+      ...crewFilter(sid(req)),
     };
     const updDispatch = await EmergencyDispatch.updateOne(assignedToThisCrew, {
       $set: { hospitalPatientId: item._id },

@@ -12,6 +12,55 @@ interface AuthenticatedSocket extends Socket {
 
 let io: Server | null = null;
 
+/** One room per permission. Namespaced so it cannot collide with a user id. */
+const permissionRoom = (permission: string) => `perm:${permission}`;
+
+/**
+ * Put an admin socket into a room for each permission they hold.
+ *
+ * Read once at connect rather than looked up per event — an SOS must not wait
+ * on a database round trip to reach the control room. Super Admin bypasses
+ * permission checks everywhere else, so it joins every room here too.
+ *
+ * Imported lazily: this file is loaded by `server.ts` before the models are,
+ * and a top-level import would pull the whole model graph in at boot.
+ */
+const joinPermissionRooms = async (socket: AuthenticatedSocket): Promise<void> => {
+  if (!socket.userId) return;
+  try {
+    const { Admin } = await import("../models/admin.model");
+    const { default: Role, PERMISSIONS } = await import("../models/role.model");
+
+    const admin: any = await Admin.findById(socket.userId)
+      .select("roleId roleName permissions")
+      .lean();
+    if (!admin) return;
+
+    const isSuper = admin.roleName === "Super Admin";
+    if (isSuper) {
+      for (const p of Object.values(PERMISSIONS) as string[]) {
+        socket.join(permissionRoom(p));
+      }
+      return;
+    }
+
+    // The admin's own list is the cache; the role is the source. Union of
+    // both, so a permission granted on either reaches them.
+    const role: any = admin.roleId
+      ? await Role.findById(admin.roleId).select("permissions").lean()
+      : null;
+    const held = new Set<string>([
+      ...(admin.permissions || []),
+      ...((role?.permissions as string[]) || []),
+    ]);
+    for (const p of held) socket.join(permissionRoom(p));
+  } catch (err: any) {
+    // A failure here must not drop the socket — they simply keep the
+    // broadcast "admin" room and miss the scoped events.
+    console.error("[socket] could not resolve permissions:", err?.message || err);
+  }
+};
+
 /**
  * Initialize Socket.io with Redis adapter for scaling
  */
@@ -94,7 +143,11 @@ export const initSocket = async (httpServer: HttpServer): Promise<Server> => {
 
     // Admin web clients explicitly opt into the "admin" broadcast room (their
     // JWT may not carry userType=ADMIN), so they receive sos/dispatch events.
-    socket.on("join:admin", () => socket.join("admin"));
+    socket.on("join:admin", () => {
+      socket.join("admin");
+      void joinPermissionRooms(socket);
+    });
+    if (socket.userType === "ADMIN") void joinPermissionRooms(socket);
 
     // Public website caller watches their own SOS submission's live status.
     socket.on("sos:subscribe", (data) => {
@@ -245,6 +298,29 @@ export const emitToUser = (userId: string, event: string, data: any): void => {
 export const emitToAdmin = (event: string, data: any): void => {
   if (io) {
     io.to("admin").emit(event, data);
+  }
+};
+
+/**
+ * Push to only the panel users who hold a permission.
+ *
+ * `emitToAdmin` reaches everyone signed into the panel, which is right for
+ * most things but wrong for an emergency: the SOS siren was going off on the
+ * screen of anyone who happened to be logged in — a pharmacist, an
+ * accountant — none of whom can act on it, while the alarm trained everyone
+ * to ignore it.
+ *
+ * Rooms are joined once when the socket connects, so this costs nothing per
+ * event. A permission changed mid-session only takes effect when that person
+ * reconnects, which a sign-out or a refresh does.
+ */
+export const emitToPermission = (
+  permission: string,
+  event: string,
+  data: any,
+): void => {
+  if (io) {
+    io.to(permissionRoom(permission)).emit(event, data);
   }
 };
 

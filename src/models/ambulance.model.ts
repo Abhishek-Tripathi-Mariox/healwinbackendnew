@@ -34,10 +34,23 @@ const AmbulanceSchema = new Schema<IAmbulance>(
       ref: "AmbulanceStaff",
       default: null,
     },
+    /** @deprecated superseded by `assignedAttendantIds` — read via attendantIdsOf(). */
     assignedAttendantId: {
       type: Schema.Types.ObjectId,
       ref: "AmbulanceStaff",
       default: null,
+    },
+    /**
+     * The attendants currently crewing this ambulance.
+     *
+     * A list, because one vehicle can carry more than one attendant — a nurse
+     * and a technician on a critical-care transfer. The old singular field is
+     * kept readable for vehicles crewed before this existed; nothing writes it
+     * any more. Read both through `attendantIdsOf()`.
+     */
+    assignedAttendantIds: {
+      type: [{ type: Schema.Types.ObjectId, ref: "AmbulanceStaff" }],
+      default: [],
     },
     currentLocation: {
       type: {
@@ -82,5 +95,6 @@ AmbulanceSchema.index({ status: 1, isActive: 1 });
 //   db.ambulances.dropIndex("assignedAttendantId_1");
 AmbulanceSchema.index({ assignedDriverId: 1 });
 AmbulanceSchema.index({ assignedAttendantId: 1 });
+AmbulanceSchema.index({ assignedAttendantIds: 1 });
 
 export default mongoose.model<IAmbulance>("Ambulance", AmbulanceSchema);

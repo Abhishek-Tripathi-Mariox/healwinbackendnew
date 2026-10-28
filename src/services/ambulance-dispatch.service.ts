@@ -9,6 +9,7 @@ import User from "../models/Users";
 import VehicleType from "../models/vehicle-type.model";
 import { calculateFare } from "./fare.service";
 import { OTP_LENGTH } from "../utils/helpers";
+import { attendantIdsOf } from "../utils/crew.util";
 
 // Pickup-verification code — the patient reads it out to the crew once they
 // arrive, driver enters it to start the trip. Previously SOS dispatches never
@@ -128,8 +129,11 @@ export interface NearbyAmbulance {
   driverId: string;
   driverName: string;
   driverPhone: string;
+  /** The first attendant, kept so existing callers keep working. */
   attendantId: string;
   attendantName: string;
+  /** Everyone riding along — a transfer can carry more than one. */
+  attendants: { id: string; name: string }[];
   ambulanceLocation: { lat: number; lng: number };
   straightLineKm: number;
   roadDistanceKm: number;
@@ -185,15 +189,23 @@ export const getNearbyAmbulances = async (
     },
     { $unwind: "$driver" },
     {
+      // A vehicle can carry several attendants, and older rows carry one in
+      // the legacy single field — join on both and keep the result as a LIST.
       $lookup: {
         from: "ambulancestaffs",
-        localField: "assignedAttendantId",
-        foreignField: "_id",
-        as: "attendant",
+        let: {
+          ids: {
+            $cond: [
+              { $gt: [{ $size: { $ifNull: ["$assignedAttendantIds", []] } }, 0] },
+              "$assignedAttendantIds",
+              { $cond: [{ $ifNull: ["$assignedAttendantId", false] }, ["$assignedAttendantId"], []] },
+            ],
+          },
+        },
+        pipeline: [{ $match: { $expr: { $in: ["$_id", "$$ids"] } } }],
+        as: "attendants",
       },
     },
-    // Attendant is optional — keep ambulances that have only a driver.
-    { $unwind: { path: "$attendant", preserveNullAndEmptyArrays: true } },
     {
       $match: {
         "driver.isActive": true,
@@ -245,8 +257,12 @@ export const getNearbyAmbulances = async (
       driverId: String(a.driver._id),
       driverName: a.driver.fullName,
       driverPhone: a.driver.mobileNumber,
-      attendantId: a.attendant?._id ? String(a.attendant._id) : "",
-      attendantName: a.attendant?.fullName || "",
+      attendantId: a.attendants?.[0]?._id ? String(a.attendants[0]._id) : "",
+      attendantName: a.attendants?.[0]?.fullName || "",
+      attendants: (a.attendants || []).map((x: any) => ({
+        id: String(x._id),
+        name: x.fullName || "",
+      })),
       // Ambulance position = assigned driver's last reported position.
       ambulanceLocation: { lat: hasLoc ? lat : 0, lng: hasLoc ? lng : 0 },
       straightLineKm: Math.round(straightKm * 100) / 100,
@@ -300,6 +316,7 @@ export const searchAmbulancesByMobile = async (
         status: { $ne: "on_dispatch" }, // exclude occupied
         $or: [
           { assignedDriverId: { $in: staffIds } },
+          { assignedAttendantIds: { $in: staffIds } },
           { assignedAttendantId: { $in: staffIds } },
         ],
       },
@@ -316,12 +333,19 @@ export const searchAmbulancesByMobile = async (
     {
       $lookup: {
         from: "ambulancestaffs",
-        localField: "assignedAttendantId",
-        foreignField: "_id",
-        as: "attendant",
+        let: {
+          ids: {
+            $cond: [
+              { $gt: [{ $size: { $ifNull: ["$assignedAttendantIds", []] } }, 0] },
+              "$assignedAttendantIds",
+              { $cond: [{ $ifNull: ["$assignedAttendantId", false] }, ["$assignedAttendantId"], []] },
+            ],
+          },
+        },
+        pipeline: [{ $match: { $expr: { $in: ["$_id", "$$ids"] } } }],
+        as: "attendants",
       },
     },
-    { $unwind: { path: "$attendant", preserveNullAndEmptyArrays: true } },
     {
       $lookup: {
         from: "ambulanceserviceproviders",
@@ -358,8 +382,12 @@ export const searchAmbulancesByMobile = async (
       driverId: String(a.driver?._id || ""),
       driverName: a.driver?.fullName || "(unassigned)",
       driverPhone: a.driver?.mobileNumber || "",
-      attendantId: String(a.attendant?._id || ""),
-      attendantName: a.attendant?.fullName || "(unassigned)",
+      attendantId: String(a.attendants?.[0]?._id || ""),
+      attendantName: a.attendants?.[0]?.fullName || "(unassigned)",
+      attendants: (a.attendants || []).map((x: any) => ({
+        id: String(x._id),
+        name: x.fullName || "",
+      })),
       ambulanceLocation: {
         lat: lat ?? 0,
         lng: lng ?? 0,
@@ -425,8 +453,14 @@ export const createDispatch = async (params: {
           .select("mobileNumber")
           .lean()
       : null;
-    const attendantDoc = ambulance.assignedAttendantId
-      ? await AmbulanceStaff.findById(ambulance.assignedAttendantId)
+    // Any attendant's number will do as the fallback contact — it is only
+    // used when the driver has none on file.
+    const attendantIds = attendantIdsOf(ambulance);
+    const attendantDoc = attendantIds.length
+      ? await AmbulanceStaff.findOne({
+          _id: { $in: attendantIds },
+          mobileNumber: { $nin: [null, ""] },
+        })
           .select("mobileNumber")
           .lean()
       : null;
@@ -445,7 +479,7 @@ export const createDispatch = async (params: {
         status: "DISPATCHED",
         ambulanceId: ambulance._id,
         driverStaffId: ambulance.assignedDriverId,
-        attendantStaffId: ambulance.assignedAttendantId,
+        attendantStaffIds: attendantIdsOf(ambulance),
         patientLocation: {
           type: "Point",
           coordinates: [params.patientLng, params.patientLat],
@@ -505,8 +539,12 @@ export const createDispatch = async (params: {
             .session(session)
             .lean()
         : null;
-      const attendantDoc = ambulance.assignedAttendantId
-        ? await AmbulanceStaff.findById(ambulance.assignedAttendantId)
+      const attendantIds = attendantIdsOf(ambulance);
+      const attendantDoc = attendantIds.length
+        ? await AmbulanceStaff.findOne({
+            _id: { $in: attendantIds },
+            mobileNumber: { $nin: [null, ""] },
+          })
             .select("mobileNumber")
             .session(session)
             .lean()
@@ -531,7 +569,7 @@ export const createDispatch = async (params: {
             status: "DISPATCHED",
             ambulanceId: ambulance._id,
             driverStaffId: ambulance.assignedDriverId,
-            attendantStaffId: ambulance.assignedAttendantId,
+            attendantStaffIds: attendantIdsOf(ambulance),
             patientLocation: {
               type: "Point",
               coordinates: [params.patientLng, params.patientLat],
@@ -596,38 +634,6 @@ export const createDispatch = async (params: {
   );
 
   return await EmergencyDispatch.findById(dispatchId!).lean();
-};
-
-export const rejectDispatch = async (
-  dispatchId: Types.ObjectId,
-  reason?: string,
-) => {
-  const dispatch = await EmergencyDispatch.findById(dispatchId);
-  if (!dispatch) throw new Error("dispatch_not_found");
-  if (!["DISPATCHED"].includes(dispatch.status)) {
-    throw new Error("dispatch_not_rejectable");
-  }
-
-  dispatch.status = "CANCELLED";
-  dispatch.cancelledAt = new Date();
-  dispatch.cancelReason = reason || "driver_rejected";
-  await dispatch.save();
-
-  if (dispatch.ambulanceId) {
-    await Ambulance.updateOne(
-      { _id: dispatch.ambulanceId },
-      { status: "available", currentDispatchId: null },
-    );
-    await SOSAlert.updateOne(
-      { _id: dispatch.sosSubmission },
-      {
-        $addToSet: { rejectedAmbulanceIds: dispatch.ambulanceId },
-        status: "ACTIVE",
-      },
-    );
-  }
-
-  return dispatch;
 };
 
 export const transitionDispatch = async (

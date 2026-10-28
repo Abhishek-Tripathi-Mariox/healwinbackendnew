@@ -8,6 +8,7 @@ import {
   AmbulanceStockTransaction,
 } from "../models/ambulance-stock.model";
 import { issueFefo } from "./inventory-batch.service";
+import { ambulanceCrewFilter } from "../utils/crew.util";
 
 /**
  * Which ambulance is this crew member on?
@@ -23,7 +24,7 @@ export const resolveCrewAmbulanceId = async (staffId: any): Promise<any> => {
 
   const amb: any = await Ambulance.findOne({
     isActive: { $ne: false },
-    $or: [{ assignedDriverId: staffId }, { assignedAttendantId: staffId }],
+    ...ambulanceCrewFilter(staffId),
   })
     .select("_id")
     .lean();
@@ -132,6 +133,61 @@ export const restockAmbulance = async (opts: {
     moved += 1;
   }
   return { moved, skipped };
+};
+
+/**
+ * Correct what the system thinks is on a vehicle.
+ *
+ * Not a transfer from central stock — a stock-take found three fewer oxygen
+ * masks than recorded, or an expired box was binned on the vehicle. Central
+ * inventory is deliberately NOT touched: those units already left the store,
+ * so adjusting both would double-count the loss.
+ *
+ * `delta` may be negative (shrinkage, expiry) or positive (something found,
+ * or a load that was never recorded). On-hand never goes below zero.
+ */
+export const adjustAmbulanceStock = async (opts: {
+  ambulanceId: any;
+  itemId: any;
+  delta: number;
+  note?: string;
+  performedByAdminId?: any;
+}): Promise<{ itemName: string; balanceAfter: number } | null> => {
+  const delta = Math.round(Number(opts.delta) || 0);
+  if (!delta) return null;
+
+  const item: any = await InventoryItem.findById(opts.itemId).lean();
+  if (!item) return null;
+
+  const current: any = await AmbulanceStock.findOne({
+    ambulanceId: opts.ambulanceId,
+    itemId: item._id,
+  }).lean();
+  const have = current?.quantity || 0;
+  // Clamp rather than refuse: a stock-take saying "none left" on a vehicle
+  // the system thinks has two is the correction, not an error.
+  const applied = delta < 0 ? -Math.min(have, -delta) : delta;
+  if (!applied) return { itemName: item.name, balanceAfter: have };
+
+  const stock: any = await AmbulanceStock.findOneAndUpdate(
+    { ambulanceId: opts.ambulanceId, itemId: item._id },
+    { $inc: { quantity: applied } },
+    { new: true, upsert: true },
+  );
+  await AmbulanceStockTransaction.create({
+    ambulanceId: opts.ambulanceId,
+    itemId: item._id,
+    itemName: item.name,
+    type: applied > 0 ? "in" : "out",
+    quantity: Math.abs(applied),
+    balanceAfter: stock.quantity,
+    unitCost: item.unitCost,
+    sellingPrice: item.sellingPrice,
+    reason: "adjustment",
+    note: opts.note,
+    performedByAdminId: opts.performedByAdminId,
+  });
+  return { itemName: item.name, balanceAfter: stock.quantity };
 };
 
 export type ConsumedLine = {
