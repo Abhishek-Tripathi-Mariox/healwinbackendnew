@@ -60,6 +60,15 @@ const AmbulanceStaffSchema = new Schema<IAmbulanceStaff>(
     // distinguishing a code/permission problem on the device from a
     // backend filter dropping the ping.
     lastLocationAttemptAt: Date,
+    // The crew member's own last position. The vehicle's `currentLocation`
+    // is written by whichever crew member pinged, so it cannot answer
+    // "where is the ASSIGNED DRIVER?" — dispatch ranks on that, and an
+    // attendant's phone sitting at home must not stand in for the vehicle.
+    currentLocation: {
+      type: { type: String, enum: ["Point"], default: "Point" },
+      coordinates: { type: [Number], default: undefined },
+    },
+    lastLocationAt: Date,
     isActive: { type: Boolean, default: true, index: true },
     isDeleted: { type: Boolean, default: false },
     // Optional monthly salary structure — when set, the crew member is included
@@ -82,6 +91,7 @@ AmbulanceStaffSchema.index(
 AmbulanceStaffSchema.index({ providerId: 1, role: 1 });
 AmbulanceStaffSchema.index({ hospitalId: 1, role: 1 });
 AmbulanceStaffSchema.index({ isOnline: 1, isActive: 1 });
+AmbulanceStaffSchema.index({ currentLocation: "2dsphere" });
 
 // "Exactly one employer" invariant. Reject saves that try to set both
 // providerId AND hospitalId (the staff member would be billable twice),

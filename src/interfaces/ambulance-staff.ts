@@ -28,6 +28,14 @@ export interface IAmbulanceStaff extends Document {
   isDutyOn: boolean;
   lastSeenAt?: Date;
   lastLocationAttemptAt?: Date;
+  /**
+   * Where this crew member last actually was. Only the attempt timestamp
+   * used to be kept, so there was no way to ask "where is the assigned
+   * driver?" — the position was written straight onto the vehicle by
+   * whichever crew member pinged, driver or attendant.
+   */
+  currentLocation?: { type: "Point"; coordinates: [number, number] };
+  lastLocationAt?: Date;
   isActive: boolean;
   isDeleted: boolean;
   salaryStructure?: ISalaryStructure;

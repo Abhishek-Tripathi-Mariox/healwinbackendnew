@@ -5,6 +5,7 @@ import {
   createDispatch,
   searchAmbulancesByMobile,
 } from "../../services/ambulance-dispatch.service";
+import { roadLegs } from "../../services/distance-matrix.service";
 import { SOSAlert } from "../../models/sos.model";
 import { SOSSubmission } from "../../models/sos-submission.model";
 import { EmergencyDispatch } from "../../models/emergency-dispatch.model";
@@ -252,6 +253,19 @@ export const dispatch = async (
     0,
   );
   const picked = nearby.find((n) => n.ambulanceId === String(ambulanceId));
+  if (picked && picked.distanceSource !== "road" && picked.locationSource !== "none") {
+    // The ranked list only road-measures its leading few, and the dispatcher
+    // may have picked from further down (or via the by-mobile search). The
+    // figures below are written onto the dispatch and shown to the crew and
+    // the patient, so this one vehicle is worth measuring properly. Usually
+    // a cache hit; a failure silently leaves the straight-line estimate.
+    const [leg] = await roadLegs({ lat, lng }, [picked.ambulanceLocation]);
+    if (leg) {
+      picked.roadDistanceKm = leg.km;
+      picked.etaMinutes = leg.minutes;
+      picked.distanceSource = "road";
+    }
+  }
   if (!picked) {
     req.rCode = 0;
     req.msg = "ambulance_not_available_for_dispatch";

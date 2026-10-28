@@ -331,7 +331,15 @@ export const updateLocation = async (
   // can't act on them" from "the device hasn't sent any pings at all".
   const staff = await AmbulanceStaff.findByIdAndUpdate(
     staffId,
-    { lastSeenAt: now, lastLocationAttemptAt: now },
+    {
+      lastSeenAt: now,
+      lastLocationAttemptAt: now,
+      // Keep the fix on the PERSON as well as the vehicle. Dispatch ranks
+      // ambulances by where their assigned driver is, which the vehicle's
+      // own `currentLocation` cannot answer — any crew member overwrites it.
+      currentLocation: { type: "Point", coordinates: [lng, lat] },
+      lastLocationAt: now,
+    },
     { returnDocument: "after" },
   );
   if (!staff) {
@@ -349,10 +357,12 @@ export const updateLocation = async (
   // to dispatch whenever ANY on-duty crew member is in the cab.
   const amb = await Ambulance.findOneAndUpdate(
     {
-      $or: [
-        { assignedDriverId: staff._id },
-        { assignedAttendantId: staff._id },
-      ],
+      // Matches the driver, the attendant crew LIST, and the legacy single
+      // attendant field. Spelling the $or out by hand here is what left
+      // `assignedAttendantIds` out when attendants became a list — every
+      // ping from an attendant added that way was logged as ORPHANED and
+      // the vehicle's position silently stopped refreshing.
+      ...ambulanceCrewFilter(staff._id),
       isActive: true,
     },
     {

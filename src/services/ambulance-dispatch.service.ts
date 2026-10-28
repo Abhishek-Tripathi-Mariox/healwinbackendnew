@@ -10,6 +10,8 @@ import VehicleType from "../models/vehicle-type.model";
 import { calculateFare } from "./fare.service";
 import { OTP_LENGTH } from "../utils/helpers";
 import { attendantIdsOf } from "../utils/crew.util";
+import { roadLegs } from "./distance-matrix.service";
+import config from "../config";
 
 // Pickup-verification code — the patient reads it out to the crew once they
 // arrive, driver enters it to start the trip. Previously SOS dispatches never
@@ -135,27 +137,66 @@ export interface NearbyAmbulance {
   /** Everyone riding along — a transfer can carry more than one. */
   attendants: { id: string; name: string }[];
   ambulanceLocation: { lat: number; lng: number };
+  /**
+   * Whose fix the position came from. The vehicle is ranked on where its
+   * ASSIGNED DRIVER is; an attendant's phone is a fallback and says so, so
+   * a dispatcher is never shown a confident distance measured from someone
+   * who is not driving.
+   */
+  locationSource: "driver" | "attendant" | "none";
+  /** Minutes since that fix. Null when there is no position at all. */
+  locationAgeMin: number | null;
   straightLineKm: number;
+  /**
+   * Driving distance where Google could route it, otherwise a copy of the
+   * crow-flies figure. `distanceSource` says which, so the screen never
+   * presents an estimate as a measurement.
+   */
   roadDistanceKm: number;
+  distanceSource: "road" | "straight-line";
   etaMinutes: number;
 }
 
 /**
- * Two-stage lookup: $geoNear shortlist then Distance Matrix re-rank.
+ * A GPS fix we can actually measure against.
  *
- * `maxDistanceKm` caps the straight-line search radius — anything farther
- * than this is never considered, even if it's the only available vehicle.
- * Default 10km matches the patient SLA: a dispatch farther than that
- * isn't useful anyway (>20 min ETA in a city). Pass a larger number for
- * rural ops or 0 to disable the cap.
+ * A vehicle that has never pinged carries [0,0] — that is not a position, it
+ * is the null-island origin, and measuring against it produced distances like
+ * "8778 km". Anything off the globe is rejected the same way.
+ */
+const realFix = (point: any): { lat: number; lng: number } | null => {
+  const lat = point?.coordinates?.[1];
+  const lng = point?.coordinates?.[0];
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat === 0 && lng === 0) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat, lng };
+};
+
+/** How stale a fix is, so the dispatcher can judge the distance shown. */
+const minutesSince = (at: any): number | null => {
+  const t = at ? new Date(at).getTime() : NaN;
+  return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 60000)) : null;
+};
+
+/**
+ * Every dispatchable ambulance, nearest to the patient first.
+ *
+ * Distance is measured from the ASSIGNED DRIVER's last GPS fix. The vehicle
+ * carries a `currentLocation` too, but any crew member overwrites it, so
+ * ranking on it can place a vehicle by an attendant's phone that never left
+ * home. The vehicle's own fix is kept only as a fallback, flagged as such.
+ *
+ * `maxDistanceKm` caps the search radius; 0 disables the cap. A vehicle with
+ * no position at all is never excluded by the radius — there is nothing to
+ * measure — it just sorts last.
  */
 export const getNearbyAmbulances = async (
   patientLat: number,
   patientLng: number,
   excludeAmbulanceIds: Types.ObjectId[] = [],
   limit = 10,
-  // Kept for API compatibility; ignored in GPS-optional mode (see below).
-  _maxDistanceKm = 10,
+  maxDistanceKm = 10,
 ): Promise<NearbyAmbulance[]> => {
   // GPS-OPTIONAL MODE (live GPS not available yet): we no longer require a
   // fresh ambulance location to dispatch. We list every eligible ambulance
@@ -227,28 +268,43 @@ export const getNearbyAmbulances = async (
     },
     // Provider is optional — hospital-owned ambulances have no service provider.
     { $unwind: { path: "$provider", preserveNullAndEmptyArrays: true } },
-    { $limit: limit * 3 },
+    // NO narrowing limit here. Distance is worked out below, in JS, so a cut
+    // made at this point is made before anything knows which vehicle is
+    // closest: Mongo would hand back an arbitrary slice and the nearest
+    // ambulance could be the one left out of it — silently, with the list
+    // still looking correctly sorted. The $match above has already reduced
+    // this to on-duty, crewed, available vehicles; the cap below is a
+    // runaway guard, not a shortlist.
+    { $limit: 500 },
   ];
 
   const shortlist = await Ambulance.aggregate(pipeline);
   if (shortlist.length === 0) return [];
 
   const results: NearbyAmbulance[] = shortlist.map((a: any) => {
-    const lat = a.currentLocation?.coordinates?.[1];
-    const lng = a.currentLocation?.coordinates?.[0];
-    // A vehicle that has never pinged real GPS has currentLocation [0,0] — that
-    // is NOT a real position, so don't compute distance against it (it produced
-    // nonsense like "8778 km" from the null-island origin). Treat as unknown.
-    const hasLoc =
-      Number.isFinite(lat) &&
-      Number.isFinite(lng) &&
-      (lat !== 0 || lng !== 0) &&
-      Math.abs(lat) <= 90 &&
-      Math.abs(lng) <= 180;
+    // The assigned driver's own fix first — that is the person who will
+    // actually move the vehicle. The position written on the vehicle is a
+    // fallback, because any crew member writes it.
+    const driverFix = realFix(a.driver?.currentLocation);
+    const vehicleFix = realFix(a.currentLocation);
+    const fix = driverFix ?? vehicleFix;
+    const locationSource: "driver" | "attendant" | "none" = driverFix
+      ? "driver"
+      : vehicleFix
+        ? "attendant"
+        : "none";
+    const fixAt = driverFix ? a.driver?.lastLocationAt : a.lastLocationAt;
+    const hasLoc = !!fix;
+    const lat = fix?.lat ?? 0;
+    const lng = fix?.lng ?? 0;
     const straightKm = hasLoc
       ? haversineKm(patientLat, patientLng, lat, lng)
       : 0;
     return {
+      locationSource,
+      locationAgeMin: hasLoc ? minutesSince(fixAt) : null,
+      // Upgraded to "road" below for the handful Google is asked about.
+      distanceSource: "straight-line" as const,
       ambulanceId: String(a._id),
       providerId: a.provider?._id ? String(a.provider._id) : "",
       providerName: a.provider?.name || "Hospital fleet",
@@ -271,15 +327,70 @@ export const getNearbyAmbulances = async (
     };
   });
 
-  // Known-distance vehicles first (nearest first); unknown-location ones last.
-  results.sort((a, b) => {
-    const au = a.roadDistanceKm === 0;
-    const bu = b.roadDistanceKm === 0;
-    if (au && !bu) return 1;
-    if (bu && !au) return -1;
-    return a.roadDistanceKm - b.roadDistanceKm;
+  // Apply the radius the caller asked for. The dispatch screen has a radius
+  // selector and was sending it all along; it was being dropped here, so
+  // every setting returned the same list. A vehicle with NO fix is never cut
+  // by the radius — we do not know that it is far away, only that we cannot
+  // see it — so it stays on the list, at the bottom.
+  const capped =
+    maxDistanceKm > 0
+      ? results.filter(
+          (r) => r.locationSource === "none" || r.straightLineKm <= maxDistanceKm,
+        )
+      : results;
+
+  // Nearest first; vehicles whose position we don't know sort last, since an
+  // unknown distance must never outrank a measured one.
+  const byLine = (x: NearbyAmbulance, y: NearbyAmbulance) => {
+    const xu = x.locationSource === "none";
+    const yu = y.locationSource === "none";
+    if (xu !== yu) return xu ? 1 : -1;
+    return x.straightLineKm - y.straightLineKm;
+  };
+  capped.sort(byLine);
+
+  // Straight line has ranked them; now ask Google how far they actually have
+  // to DRIVE. It matters: a vehicle 2 km away across a river can be twenty
+  // minutes behind one 4 km away on the same road, and the crow-flies figure
+  // puts the wrong one at the top of an emergency list.
+  //
+  // Only the leading few are re-ranked, because the call is billed per
+  // vehicle asked about. Straight line is a sound pre-filter — the true
+  // road-nearest is reliably somewhere in the crow-flies nearest handful —
+  // so paying to road-measure the whole fleet buys nothing.
+  const measurable = capped.filter((r) => r.locationSource !== "none");
+  const reRankCount = Math.min(
+    Math.max(0, config.googleMaps?.roadDistanceLimit ?? 0),
+    measurable.length,
+  );
+  if (reRankCount > 0) {
+    const head = measurable.slice(0, reRankCount);
+    const legs = await roadLegs(
+      { lat: patientLat, lng: patientLng },
+      head.map((r) => r.ambulanceLocation),
+    );
+    head.forEach((r, i) => {
+      const leg = legs[i];
+      // Null means Google could not route to it (or was unreachable). The
+      // straight-line figure already sitting on the row stands.
+      if (!leg) return;
+      r.roadDistanceKm = leg.km;
+      r.etaMinutes = leg.minutes;
+      r.distanceSource = "road";
+    });
+  }
+
+  // Re-sort on whatever each row now holds. A row measured by road and one
+  // still on straight line are compared directly: both are the best estimate
+  // available for that vehicle, and road distance is never shorter than the
+  // crow-flies one, so this cannot promote an unmeasured vehicle unfairly.
+  capped.sort((x, y) => {
+    const xu = x.locationSource === "none";
+    const yu = y.locationSource === "none";
+    if (xu !== yu) return xu ? 1 : -1;
+    return x.roadDistanceKm - y.roadDistanceKm;
   });
-  return results.slice(0, limit);
+  return capped.slice(0, limit);
 };
 
 /**
@@ -367,13 +478,27 @@ export const searchAmbulancesByMobile = async (
   const havePatient =
     typeof patientLat === "number" && typeof patientLng === "number";
   return rows.map((a: any) => {
-    const lat = a.currentLocation?.coordinates?.[1];
-    const lng = a.currentLocation?.coordinates?.[0];
+    // Same preference as the ranked list: the assigned driver's own fix,
+    // then whatever the vehicle last recorded.
+    const driverFix = realFix(a.driver?.currentLocation);
+    const vehicleFix = realFix(a.currentLocation);
+    const fix = driverFix ?? vehicleFix;
+    const lat = fix?.lat;
+    const lng = fix?.lng;
     let straightKm = 0;
     if (havePatient && lat != null && lng != null) {
       straightKm = haversineKm(patientLat!, patientLng!, lat, lng);
     }
     return {
+      locationSource: (driverFix
+        ? "driver"
+        : vehicleFix
+          ? "attendant"
+          : "none") as "driver" | "attendant" | "none",
+      locationAgeMin: fix
+        ? minutesSince(driverFix ? a.driver?.lastLocationAt : a.lastLocationAt)
+        : null,
+      distanceSource: "straight-line" as const,
       ambulanceId: String(a._id),
       providerId: String(a.provider?._id || ""),
       providerName: a.provider?.name || "",

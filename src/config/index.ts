@@ -195,6 +195,19 @@ const config = {
 
   googleMaps: {
     apiKey: optional("GOOGLE_MAPS_API_KEY"),
+    // Dispatch ranking calls Distance Matrix, which bills PER ELEMENT
+    // (origins x destinations). The dispatch screen re-polls every 10s while
+    // it is open, so an uncapped wiring would run up a bill measured in
+    // dollars per hour for one operator who leaves the modal open.
+    // Two things hold that down, and both matter:
+    //   - only the nearest few vehicles by straight line are re-ranked
+    //   - answers are cached, so the repeat polls cost nothing
+    // Set the limit to 0 to turn road distance off and stay on straight line.
+    roadDistanceLimit: Number(process.env.ROAD_DISTANCE_LIMIT ?? 10),
+    roadDistanceCacheSeconds: Number(process.env.ROAD_DISTANCE_CACHE_SECONDS ?? 60),
+    // Live-traffic ETAs are a different, pricier Google SKU. Off by default;
+    // worth turning on where traffic actually decides the response time.
+    roadDistanceTraffic: process.env.ROAD_DISTANCE_TRAFFIC === "true",
   },
 
   // SMTP Email Configuration.
