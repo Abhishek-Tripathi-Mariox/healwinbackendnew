@@ -1471,6 +1471,30 @@ adminRouter.post(
 );
 
 // ============ NOTIFICATIONS ============
+// The signed-in user's own inbox. No permission gate: the handler scopes
+// every query to the token's own adminId, and a person must be able to read
+// mail addressed to them by name — a discharge authorised on their say-so,
+// for one — regardless of which notification permissions they hold.
+adminRouter.get(
+  "/my-notifications",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminNotificationController.myNotifications),
+  ResponseMiddleware,
+);
+adminRouter.post(
+  "/my-notifications/read-all",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminNotificationController.markAllMyNotificationsRead),
+  ResponseMiddleware,
+);
+// Registered AFTER read-all so that literal path is not swallowed by :id.
+adminRouter.post(
+  "/my-notifications/:id/read",
+  verifyAdminToken,
+  ErrorHandlerMiddleware(AdminNotificationController.markMyNotificationRead),
+  ResponseMiddleware,
+);
+
 adminRouter.get(
   "/notifications/stats",
   verifyAdminToken,

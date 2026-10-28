@@ -20,7 +20,14 @@ export type BillingSection =
   | "diagnostics"
   | "other";
 
-export type PaymentMethod = "cash" | "card" | "upi" | "insurance" | "wallet";
+export type PaymentMethod =
+  | "cash"
+  | "card"
+  | "upi"
+  | "insurance"
+  | "wallet"
+  /** Gateway payment the patient made themselves from the app. */
+  | "online";
 
 export interface IInvoiceLineItem {
   section: BillingSection;
@@ -35,7 +42,8 @@ export interface IInvoicePayment {
   amount: number;
   reference?: string;
   paidAt: Date;
-  recordedByAdminId: Types.ObjectId;
+  /** Absent for a payment the patient made themselves in the app. */
+  recordedByAdminId?: Types.ObjectId;
   isRefund?: boolean;
   isAdvance?: boolean; // advance deposit collected before/independent of items
 }
@@ -95,16 +103,21 @@ const PaymentSchema = new Schema<IInvoicePayment>(
   {
     method: {
       type: String,
-      enum: ["cash", "card", "upi", "insurance", "wallet"],
+      // "online" is the patient paying their own bill from the app through
+      // the gateway. It is deliberately NOT offered to the counter: nobody
+      // types it in by hand, it is only ever written by a settled payment.
+      enum: ["cash", "card", "upi", "insurance", "wallet", "online"],
       required: true,
     },
     amount: { type: Number, required: true },
     reference: { type: String, trim: true },
     paidAt: { type: Date, default: Date.now },
+    // Who took the money at the counter. Absent when the PATIENT paid it
+    // themselves from the app — there is no admin in that story, and
+    // requiring one here would have meant inventing a fake.
     recordedByAdminId: {
       type: Schema.Types.ObjectId,
       ref: "Admin",
-      required: true,
     },
     isRefund: { type: Boolean, default: false },
     isAdvance: { type: Boolean, default: false },

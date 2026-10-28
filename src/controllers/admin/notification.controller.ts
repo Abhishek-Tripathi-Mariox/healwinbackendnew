@@ -1,4 +1,4 @@
-import { Request, Response } from "express";
+import { Request, Response, NextFunction } from "express";
 import { Types } from "mongoose";
 import * as NotificationService from "../../services/notification.service";
 import { DeviceToken } from "../../models/device-token.model";
@@ -430,4 +430,50 @@ export const cleanupNotifications = async (req: Request, res: Response) => {
       message: error.message || "Failed to cleanup notifications",
     });
   }
+};
+
+/**
+ * The signed-in panel user's own inbox.
+ *
+ * Deliberately NOT behind a notifications permission. These are messages
+ * addressed to this person — most often "a patient went home owing money on
+ * your authority" — and someone who cannot read their own mail cannot answer
+ * for the decision. The scope is the token's own adminId and nothing else, so
+ * there is nothing here to grant or withhold.
+ */
+export const myNotifications = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const adminId = (req as any).adminId;
+  const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "30"), 10)));
+  req.rData = await NotificationService.getAdminNotifications(adminId, limit);
+  req.msg = "success";
+  return next();
+};
+
+export const markMyNotificationRead = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  const adminId = (req as any).adminId;
+  // Scoped to the owner, so an id guessed from someone else's inbox does
+  // nothing rather than silently marking their mail read.
+  await NotificationService.markAdminNotificationRead(String(req.params.id), adminId);
+  req.rData = {};
+  req.msg = "success";
+  return next();
+};
+
+export const markAllMyNotificationsRead = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  await NotificationService.markAllAdminNotificationsRead((req as any).adminId);
+  req.rData = {};
+  req.msg = "success";
+  return next();
 };

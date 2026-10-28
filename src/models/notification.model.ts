@@ -5,6 +5,7 @@ export interface INotification {
   userId?: Types.ObjectId;
   driverId?: Types.ObjectId;
   staffId?: Types.ObjectId;
+  adminId?: Types.ObjectId;
   title: string;
   body: string;
   type: "BOOKING" | "PAYMENT" | "PROMO" | "SYSTEM" | "CHAT" | "REWARD";
@@ -44,6 +45,15 @@ const NotificationSchema = new Schema<INotification>(
     staffId: {
       type: Schema.Types.ObjectId,
       ref: "AmbulanceStaff",
+      index: true,
+    },
+    // Panel user inbox owner. Some things the panel must tell one named
+    // person — "a patient went home owing money on YOUR authority" — and a
+    // socket event cannot do that: it reaches them only if they happen to
+    // have the tab open at that second, and a refresh loses it.
+    adminId: {
+      type: Schema.Types.ObjectId,
+      ref: "Admin",
       index: true,
     },
     title: {
@@ -117,6 +127,7 @@ const PushTemplateSchema = new Schema<IPushTemplate>(
 NotificationSchema.index({ userId: 1, isRead: 1, createdAt: -1 });
 NotificationSchema.index({ driverId: 1, isRead: 1, createdAt: -1 });
 NotificationSchema.index({ staffId: 1, isRead: 1, createdAt: -1 });
+NotificationSchema.index({ adminId: 1, isRead: 1, createdAt: -1 });
 // Opening the bell shows ALL notifications, read and unread. With `isRead`
 // between the owner and the sort key, that list sorted in memory — on the
 // collection that grows fastest of any here.

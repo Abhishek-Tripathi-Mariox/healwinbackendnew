@@ -13,6 +13,7 @@ import { escapeRegex } from "../../utils/helpers";
 import { Admin } from "../../models/admin.model";
 import Role, { PERMISSIONS } from "../../models/role.model";
 import { emitToUser } from "../../utils/socket.util";
+import { sendToAdmin } from "../../services/notification.service";
 
 /**
  * Doctor Panel / HMS — IPD: bed master + admissions (admit, transfer,
@@ -279,6 +280,9 @@ export const detailAdmission = async (
   const admission = await Admission.findById(req.params.id)
     .populate("patientId", "patientId fullName phone gender age bloodGroup")
     .populate("attendingDoctorId", "fullName")
+    // Without this the drawer can only show a raw id for whoever allowed a
+    // discharge on credit, which is no answer to "who authorised this?".
+    .populate("creditAuthorisedBy", "fullName")
     .lean();
   if (!admission) {
     req.rCode = 5;
@@ -596,10 +600,34 @@ export const discharge = async (
   }).catch(() => null);
 
   // Tell the authoriser, by name, that a discharge went out on their
-  // authority with money still owing. The bell is live-only, so the durable
-  // record is the admission itself — `dischargedWithDues` makes these
-  // findable in the IPD list long after the socket event is gone.
+  // authority with money still owing.
+  //
+  // This used to be the socket event alone, which meant the one person who
+  // most needed to know was told only if they happened to have the panel
+  // open at that instant — a refresh, or being away from the desk, and the
+  // message was gone with no trace. It is now written to their inbox first
+  // and emitted second, so it is waiting for them whenever they next look.
   if (admission.dischargedWithDues && admission.creditAuthorisedBy) {
+    // `admission` was loaded without populate, so the patient is an id here
+    // — read the name, since a notification saying "a patient" is no use to
+    // someone being asked to account for the decision later.
+    const patient: any = await HospitalPatient.findById(admission.patientId)
+      .select("fullName")
+      .lean();
+    const patientName = patient?.fullName || "A patient";
+    void sendToAdmin(
+      String(admission.creditAuthorisedBy),
+      "PAYMENT",
+      "Discharge on your authority",
+      `${patientName} (${admission.admissionNo}) was discharged with ₹${admission.duesAtDischarge} still outstanding. Reason given: ${admission.creditReason}`,
+      {
+        admissionId: String(admission._id),
+        admissionNo: admission.admissionNo,
+        balanceDue: admission.duesAtDischarge,
+        reason: admission.creditReason,
+        route: "/admin/ipd?withDues=1",
+      },
+    );
     emitToUser(String(admission.creditAuthorisedBy), "ipd:discharged-on-credit", {
       admissionId: String(admission._id),
       admissionNo: admission.admissionNo,

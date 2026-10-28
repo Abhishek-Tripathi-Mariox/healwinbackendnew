@@ -14,6 +14,11 @@ import { UserMembership } from "../models/membership.model";
 import Wallet from "../models/wallet.model";
 import WalletTransaction from "../models/wallet-transaction.model";
 import { emitToAdmin, emitToUser } from "../utils/socket.util";
+import { HospitalInvoice } from "../models/hospital-invoice.model";
+import {
+  applyGatewayPayment,
+  hospitalPatientIdsForUser,
+} from "./hospital-billing.service";
 import {
   createOrder,
   fetchPayment,
@@ -258,6 +263,62 @@ const PURPOSES: Record<string, PurposeHandler> = {
     quote: (u, r) =>
       commerceQuote(PharmacyOrder, u, r, "totalAmount", "Pharmacy order", "Order not found."),
     fulfil: commerceFulfil(PharmacyOrder, { from: "PLACED", to: "CONFIRMED" }),
+  },
+
+  /**
+   * A hospital bill, paid by the patient from the app.
+   *
+   * This is the one purpose whose owner is not a `userId` on the document.
+   * The bill belongs to a HospitalPatient — a counter record that exists
+   * whether or not the person ever installed the app — so ownership is
+   * resolved by phone through the family group, and a bill outside that set
+   * is simply not found rather than refused, which would confirm it exists.
+   */
+  hospital_invoice: {
+    async quote(userId, refId) {
+      const mine = await hospitalPatientIdsForUser(userId);
+      const inv: any = mine.length
+        ? await HospitalInvoice.findOne({
+            _id: refId,
+            patientId: { $in: mine },
+          }).lean()
+        : null;
+      if (!inv) throw new CheckoutError("Bill not found.", 404);
+      if (inv.status === "cancelled") {
+        throw new CheckoutError("This bill has been cancelled.");
+      }
+      if (inv.status === "draft") {
+        // A draft is still being assembled at the counter; its total can
+        // still move, and taking money against a figure that is about to
+        // change is how refunds get created.
+        throw new CheckoutError("This bill is not finalised yet.");
+      }
+      const total = round2(Number(inv.total) || 0);
+      const paid = round2(Number(inv.amountPaid) || 0);
+      return {
+        amount: round2(Math.max(0, total - paid)),
+        total,
+        paid,
+        description: `Hospital bill ${inv.invoiceNo}`,
+      };
+    },
+    async fulfil(order) {
+      // `refId` is optional on the ledger only because wallet top-ups have
+      // nothing to point at; a bill payment always names its invoice.
+      if (!order.refId) return;
+      await applyGatewayPayment({
+        invoiceId: order.refId,
+        amount: order.amount,
+        // The gateway payment id is the receipt reference AND the thing that
+        // makes a replayed webhook a no-op.
+        reference: order.gatewayPaymentId || String(order._id),
+      });
+      emitToUser(String(order.userId), "order:paid", {
+        id: String(order.refId),
+        purpose: "hospital_invoice",
+        amount: order.amount,
+      });
+    },
   },
 
   membership: {

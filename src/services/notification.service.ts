@@ -768,3 +768,78 @@ export const sendPromoNotification = async (
     failureCount: totalFailure,
   };
 };
+
+/**
+ * A notification for one named panel user, kept.
+ *
+ * The panel already pushes live events over the socket, and for a shared
+ * activity feed that is fine — a missed "new lab booking" is picked up by the
+ * next person looking at the list. It is not fine for anything addressed to
+ * one person by name. A discharge authorised on someone's say-so reaches them
+ * only if they happen to have the tab open at that second; close it, refresh,
+ * or be at lunch, and nobody is ever told.
+ *
+ * So this writes the row first and emits second. The socket is the fast path;
+ * the row is the one that is actually relied on.
+ */
+export const sendToAdmin = async (
+  adminId: Types.ObjectId | string,
+  type: "BOOKING" | "PAYMENT" | "PROMO" | "SYSTEM" | "CHAT" | "REWARD",
+  title: string,
+  body: string,
+  data?: Record<string, any>,
+): Promise<boolean> => {
+  try {
+    const notification = new Notification({
+      adminId,
+      type,
+      title,
+      body,
+      data,
+      isRead: false,
+    });
+    await notification.save();
+    emitToUser(String(adminId), "notification:new", notificationPayload(notification));
+    return true;
+  } catch (error) {
+    // Never the reason an action fails. The caller has already done the thing
+    // being announced; losing the announcement is bad, undoing the discharge
+    // because the announcement failed would be worse.
+    console.error("Failed to notify admin:", error);
+    return false;
+  }
+};
+
+/** One panel user's inbox, newest first. Read and unread both — the bell
+ *  shows history, not just what is outstanding. */
+export const getAdminNotifications = async (
+  adminId: Types.ObjectId | string,
+  limit = 30,
+) => {
+  const [items, unread] = await Promise.all([
+    Notification.find({ adminId }).sort({ createdAt: -1 }).limit(limit).lean(),
+    Notification.countDocuments({ adminId, isRead: false }),
+  ]);
+  return { items, unread };
+};
+
+/** Scoped by adminId as well as id, so one panel user cannot mark another's
+ *  notification read by guessing an id. */
+export const markAdminNotificationRead = async (
+  notificationId: Types.ObjectId | string,
+  adminId: Types.ObjectId | string,
+) => {
+  await Notification.updateOne(
+    { _id: notificationId, adminId },
+    { isRead: true, readAt: new Date() },
+  );
+};
+
+export const markAllAdminNotificationsRead = async (
+  adminId: Types.ObjectId | string,
+) => {
+  await Notification.updateMany(
+    { adminId, isRead: false },
+    { isRead: true, readAt: new Date() },
+  );
+};

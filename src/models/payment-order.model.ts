@@ -28,6 +28,8 @@ export type PaymentPurpose =
   | "consultation"
   | "lab_booking"
   | "pharmacy_order"
+  /** A hospital bill, usually the balance left after a discharge. */
+  | "hospital_invoice"
   | "membership";
 
 export const PAYMENT_PURPOSES: PaymentPurpose[] = [
@@ -38,6 +40,7 @@ export const PAYMENT_PURPOSES: PaymentPurpose[] = [
   "consultation",
   "lab_booking",
   "pharmacy_order",
+  "hospital_invoice",
   "membership",
 ];
 
