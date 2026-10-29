@@ -16,7 +16,12 @@ import DutyEvent from "../models/duty-event.model";
 import { uploadFileToAws } from "../utils/s3";
 import config from "../config";
 import { evaluateGeofence } from "../services/attendance.service";
-import { ambulanceCrewFilter, attendantIdsOf, crewFilter } from "../utils/crew.util";
+import {
+  ambulanceCrewFilter,
+  attendantIdsOf,
+  crewContactsOf,
+  crewFilter,
+} from "../utils/crew.util";
 
 /**
  * Is this vehicle's whole crew clocked in?
@@ -650,6 +655,11 @@ export const activeDispatch = async (
               dateOfBirth: hp.dateOfBirth,
             }
           : null,
+        // The rest of the crew on this case, with numbers. Neither seat
+        // could reach the other without going through the control room —
+        // and "where are you, I have the patient" is the commonest thing
+        // either of them needs to say.
+        crew: await crewContactsOf(d),
       }
     : null;
   req.rData = { dispatch };

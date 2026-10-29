@@ -33,6 +33,7 @@ import { Appointment } from "../models/appointment.model";
 import { getDoctorSlots, isSlotAvailable } from "../services/doctor-slots.service";
 import DoctorSchedule from "../models/doctor-schedule.model";
 import { HospitalInvoice } from "../models/hospital-invoice.model";
+import { crewContactsOf } from "../utils/crew.util";
 import { DiagnosticOrder } from "../models/diagnostic-order.model";
 import { EmrEncounter } from "../models/emr-encounter.model";
 import { nextSequence } from "../models/counter.model";
@@ -2577,7 +2578,10 @@ router.get("/ambulance/active", verifyUserToken, async (req, res) => {
   } as any)
     .sort({ createdAt: -1 })
     .lean();
-  ok(res, r ? toApp(r) : null);
+  // Who is aboard, with numbers. The patient used to get the driver alone —
+  // and the driver is driving. The attendant is the one who can actually
+  // talk about the patient, and often the only one who can safely answer.
+  ok(res, r ? { ...toApp(r), crew: await crewContactsOf(r) } : null);
 });
 
 // Full booking history for "My Bookings" — every ambulance request the user
@@ -2804,9 +2808,12 @@ router.get("/sos/active", verifyUserToken, async (req, res) => {
     kind: "sos",
     status: String(d.status || "DISPATCHED").toLowerCase(),
     otp: d.otp || null,
+    // `driver` stays for older app builds that read it; `crew` is the whole
+    // vehicle, labelled by seat.
     driver: d.driverStaffId
       ? { name: d.driverStaffId.fullName, phone: d.driverStaffId.mobileNumber }
       : null,
+    crew: await crewContactsOf(d),
     vehicle: amb?.registrationNumber ? { number: amb.registrationNumber } : null,
     pickup,
     driverLocation,
@@ -2821,7 +2828,7 @@ router.get("/ambulance/:id", verifyUserToken, async (req, res) => {
   const famIds = await familyMemberIdsFor(req);
   const r = await AmbulanceRequest.findOne({ _id: (req.params.id as string), ...ownOrFamilyFilter(req, famIds) }).lean();
   if (!r) return res.status(404).json({ success: false, message: "Request not found" });
-  ok(res, toApp(r));
+  ok(res, { ...toApp(r), crew: await crewContactsOf(r) });
 });
 
 // Rate a completed ride (1–5 + optional review).

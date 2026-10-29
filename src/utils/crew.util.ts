@@ -1,4 +1,5 @@
 import { Types } from "mongoose";
+import AmbulanceStaff from "../models/ambulance-staff.model";
 
 /**
  * Who is crewing a vehicle or a job.
@@ -85,4 +86,79 @@ export const ambulanceCrewFilter = (staffId: Id) => ({
   ],
 });
 
-export default { attendantIdsOf, crewIdsOf, crewFilter, ambulanceCrewFilter };
+export interface CrewContact {
+  id: string;
+  role: "driver" | "attendant";
+  name: string;
+  phone: string;
+}
+
+/**
+ * Everyone aboard, with a number to ring, labelled by seat.
+ *
+ * A patient was only ever given the driver's number. On a critical-care
+ * transfer the driver is driving — the attendant is the one who can say
+ * anything about the patient, and often the only one who can safely pick up.
+ * The crew had the same gap in the other direction: neither could ring the
+ * other without going through the control room.
+ *
+ * Reads through `attendantIdsOf` so it covers the attendant LIST and the
+ * legacy single field, and returns an empty list rather than throwing when a
+ * job has no crew assigned yet.
+ */
+export const crewContactsOf = async (
+  doc:
+    | {
+        driverStaffId?: any;
+        attendantStaffIds?: any[];
+        attendantStaffId?: any;
+        driverName?: string;
+        driverPhone?: string;
+      }
+    | null
+    | undefined,
+): Promise<CrewContact[]> => {
+  if (!doc) return [];
+
+  const attendantIds = attendantIdsOf(doc as any);
+  const driverRef: any = doc.driverStaffId;
+  const driverId = driverRef ? String(driverRef._id ?? driverRef) : "";
+
+  const ids = [...(driverId ? [driverId] : []), ...attendantIds];
+  if (!ids.length) return [];
+
+  const staff: any[] = await AmbulanceStaff.find({ _id: { $in: ids } })
+    .select("fullName mobileNumber role")
+    .lean();
+  const byId = new Map(staff.map((s) => [String(s._id), s]));
+
+  const out: CrewContact[] = [];
+  if (driverId) {
+    const s = byId.get(driverId);
+    // The request carries a denormalised driver name/phone from assignment
+    // time; fall back to it so a journey whose staff record was since deleted
+    // still shows who drove.
+    const name = s?.fullName || doc.driverName || "";
+    const phone = s?.mobileNumber || doc.driverPhone || "";
+    if (name || phone) out.push({ id: driverId, role: "driver", name, phone });
+  }
+  for (const id of attendantIds) {
+    const s = byId.get(id);
+    if (!s) continue;
+    out.push({
+      id,
+      role: "attendant",
+      name: s.fullName || "",
+      phone: s.mobileNumber || "",
+    });
+  }
+  return out;
+};
+
+export default {
+  attendantIdsOf,
+  crewIdsOf,
+  crewFilter,
+  ambulanceCrewFilter,
+  crewContactsOf,
+};
