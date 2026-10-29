@@ -2,6 +2,31 @@ import mongoose, { Schema } from "mongoose";
 import { IAmbulanceStaff } from "../interfaces/ambulance-staff";
 import { SalaryStructureSchema } from "./hr-employee.model";
 
+/**
+ * A GPS point, or nothing at all.
+ *
+ * Written as an inline object with `type` defaulting to "Point", every new
+ * crew member was born carrying `{ type: "Point" }` and no coordinates —
+ * which the 2dsphere index rejects outright ("Point must be an array or
+ * object, instead got type missing"), so creating staff failed entirely.
+ *
+ * A sub-schema with `default: undefined` is not created until something is
+ * actually assigned to it, so a crew member who has never pinged simply has
+ * no location — which is the truth, and what the index wants to see.
+ *
+ * Note the Ambulance model gets away with the inline form only because its
+ * coordinates default to [0,0]. That is a VALID point and a false one: it
+ * is the null-island origin, and measuring against it is what produced
+ * distances like "8778 km". Hence the absent-by-default shape here.
+ */
+const GeoPointSchema = new Schema(
+  {
+    type: { type: String, enum: ["Point"], default: "Point" },
+    coordinates: { type: [Number], required: true },
+  },
+  { _id: false },
+);
+
 const AmbulanceStaffSchema = new Schema<IAmbulanceStaff>(
   {
     mobileNumber: {
@@ -64,10 +89,7 @@ const AmbulanceStaffSchema = new Schema<IAmbulanceStaff>(
     // is written by whichever crew member pinged, so it cannot answer
     // "where is the ASSIGNED DRIVER?" — dispatch ranks on that, and an
     // attendant's phone sitting at home must not stand in for the vehicle.
-    currentLocation: {
-      type: { type: String, enum: ["Point"], default: "Point" },
-      coordinates: { type: [Number], default: undefined },
-    },
+    currentLocation: { type: GeoPointSchema, default: undefined },
     lastLocationAt: Date,
     isActive: { type: Boolean, default: true, index: true },
     isDeleted: { type: Boolean, default: false },
